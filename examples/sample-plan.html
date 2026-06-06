@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sample Plan — Component Showcase</title>
+  <!-- ── highlight.js (syntax highlighting) ── -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+  <!-- ── Inline loader: this file lives at <skill>/examples/, so it
+       resolves assets relative to itself — works under any folder name ── -->
+  <script>
+    (function() {
+      var dir = location.pathname.replace(/\/[^/]*$/, '');   // .../examples
+      var skillBase = dir.replace(/\/[^/]*$/, '');           // .../<skill root>
+      var link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = skillBase + '/plan-styles.css';
+      document.head.appendChild(link);
+      var script = document.createElement('script');
+      script.src = skillBase + '/plan-runtime.js';
+      document.head.appendChild(script);
+    })();
+  </script>
+</head>
+<body>
+
+<plan-nav></plan-nav>
+
+<plan-header
+  title="Sample Plan — Component Showcase"
+  subtitle="Every html-planning component in one file"
+  status="draft"
+  date="2026-05-26"
+  chips="Backend | Frontend | Phase 1">
+</plan-header>
+
+<main>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="overview" num="1" title="Overview">
+  <p>This sample plan demonstrates every component in the html-planning skill. Use it to iterate on styling, test highlight.js, and preview the design system.</p>
+
+  <plan-callout type="info">This is an <strong>info</strong> callout — for key insights and notes.</plan-callout>
+  <plan-callout type="warn">This is a <strong>warn</strong> callout — for things to watch out for.</plan-callout>
+  <plan-callout type="success">This is a <strong>success</strong> callout — for confirmed decisions.</plan-callout>
+  <plan-callout type="danger">This is a <strong>danger</strong> callout — for critical risks.</plan-callout>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="metrics" num="2" title="Cards &amp; Metrics">
+  <plan-cards>
+    <plan-card label="Monthly Cost" value="$780" color="red" subtitle="Projected at scale">
+      <p>Compute: $600</p>
+      <p>Storage: $180</p>
+    </plan-card>
+    <plan-card label="Revenue" value="$2,400" color="green" subtitle="100 customers"></plan-card>
+    <plan-card label="Margin" value="68%" color="blue"></plan-card>
+    <plan-card label="Requests/s" value="~22" color="purple" subtitle="peak per instance"></plan-card>
+  </plan-cards>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="tables" num="3" title="Tables">
+  <plan-table>
+    <table>
+      <thead>
+        <tr><th>File</th><th>Key Content</th><th class="right">Lines</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="mono">server/app/orders/models.py</td><td>Order, OrderAuditLog</td><td class="right">890</td></tr>
+        <tr><td class="mono">server/app/orders/views.py</td><td>DeleteOrderView</td><td class="right">726</td></tr>
+        <tr><td class="mono">client/src/utils/pdf.js</td><td>renderInvoicePage</td><td class="right">795</td></tr>
+        <tr class="row-total"><td></td><td><strong>Total</strong></td><td class="right"><strong>2,411</strong></td></tr>
+      </tbody>
+    </table>
+  </plan-table>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="tabs" num="4" title="Tabs">
+  <plan-tabs>
+    <plan-tab label="Summary">
+      <p>This is the summary tab. First tab is active by default.</p>
+      <plan-badge type="decided"></plan-badge>
+      <plan-badge type="open"></plan-badge>
+      <plan-badge type="deferred"></plan-badge>
+      <plan-badge type="high"></plan-badge>
+      <plan-badge type="medium"></plan-badge>
+      <plan-badge type="low"></plan-badge>
+    </plan-tab>
+    <plan-tab label="Details">
+      <p>This is the details tab with a nested table.</p>
+      <plan-table>
+        <table>
+          <thead><tr><th>#</th><th>Decision</th><th>Rationale</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Use <code>SET_NULL</code> instead of <code>CASCADE</code></td><td>Audit records must survive order deletion</td></tr>
+            <tr><td>2</td><td>Denormalize <code>customer_email</code></td><td>Avoid JOINs on the hot path for audit log retrieval</td></tr>
+          </tbody>
+        </table>
+      </plan-table>
+    </plan-tab>
+    <plan-tab label="Anti-Patterns">
+      <plan-table>
+        <table>
+          <thead><tr><th>#</th><th>Don't</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Don't use <code>CASCADE</code> on audit FK</td><td>Destroys the audit trail when parent is deleted</td></tr>
+            <tr><td>2</td><td>Don't store the audit log as client-side state only</td><td>Not durable — lost when browser cache clears</td></tr>
+          </tbody>
+        </table>
+      </plan-table>
+    </plan-tab>
+  </plan-tabs>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="code" num="5" title="Code Blocks">
+  <h3>Python (auto-detected)</h3>
+  <pre><code>class OrderAuditLog(models.Model):
+    """Immutable audit record that survives order deletion."""
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='order_audit_logs')
+    order_uuid = models.UUIDField(db_index=True)
+    checksum = models.CharField(max_length=64)
+    actor_email = models.EmailField()
+    recorded_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-recorded_at']
+        indexes = [
+            models.Index(fields=['customer', 'order_uuid']),
+        ]
+
+    def __str__(self):
+        return f"AuditLog {self.pk} — {self.actor_email} @ {self.recorded_at}"</code></pre>
+
+  <h3>Python test (with language hint)</h3>
+  <pre><code class="language-python">class TestAuditLogSurvivesOrderDeletion(TestCase):
+    def setUp(self):
+        self.customer = CustomerFactory()
+        self.order = OrderFactory(customer=self.customer)
+        self.log = OrderAuditLog.objects.create(
+            customer=self.customer,
+            order_uuid=self.order.uuid,
+            checksum='a' * 64,
+            actor_email='actor@example.com',
+            recorded_at=timezone.now(),
+        )
+
+    def test_audit_log_survives_order_deletion(self):
+        """Deleting the order must NOT cascade to audit logs."""
+        self.order.delete()
+        self.assertTrue(
+            OrderAuditLog.objects.filter(pk=self.log.pk).exists()
+        )</code></pre>
+
+  <h3>JavaScript</h3>
+  <pre><code class="language-javascript">export const fetchOrderAuditLogs = (orderUuid) => async (dispatch) => {
+  dispatch({ type: ORDER_AUDIT_LOGS_LOADING });
+  try {
+    const response = await api.get(`/api/order-audit-logs/${orderUuid}/`);
+    dispatch({ type: ORDER_AUDIT_LOGS_SUCCESS, payload: response.data });
+  } catch (error) {
+    dispatch({ type: ORDER_AUDIT_LOGS_ERROR, payload: error.message });
+  }
+};</code></pre>
+
+  <h3>Bash</h3>
+  <pre><code class="language-bash">docker compose -f local.yml exec django bash -c \
+  'export DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}" && \
+   python manage.py test app.orders.tests.TestOrderAuditLog \
+     --settings=config.settings.test --keepdb --noinput'</code></pre>
+
+  <h3>Collapsible code (details)</h3>
+  <details>
+    <summary>Test infrastructure setup</summary>
+    <pre><code class="language-python">from django.test import TestCase
+from app.orders.models import OrderAuditLog
+from app.customers.factories import CustomerFactory
+from app.orders.factories import OrderFactory</code></pre>
+  </details>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="file-refs" num="6" title="File References &amp; Diffs">
+  <h3>File reference (auto-detected language from extension)</h3>
+  <plan-file path="server/app/orders/models.py" lines="42-58">
+class OrderAuditLog(models.Model):
+    """Immutable audit record that survives order deletion."""
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE,
+        related_name='order_audit_logs',
+    )
+    order_uuid = models.UUIDField(db_index=True)
+    checksum = models.CharField(max_length=64)
+    actor_email = models.EmailField()
+    recorded_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-recorded_at']
+        indexes = [
+            models.Index(fields=['customer', 'order_uuid']),
+        ]
+  </plan-file>
+
+  <h3>Mid-block snippet (first line is indented — indentation preserved)</h3>
+  <plan-file path="server/app/orders/models.py" lines="60-64">
+    def create_from_order(cls, order):
+        return cls.objects.create(
+            customer=order.customer,
+            order_uuid=order.uuid,
+        )
+  </plan-file>
+
+  <h3>File reference (explicit language override)</h3>
+  <plan-file path="client/src/redux/actions/orders.js" lines="12-22" lang="javascript">
+export const fetchOrderAuditLogs = (orderUuid) => async (dispatch) => {
+  dispatch({ type: ORDER_AUDIT_LOGS_LOADING });
+  try {
+    const response = await api.get(`/api/order-audit-logs/${orderUuid}/`);
+    dispatch({ type: ORDER_AUDIT_LOGS_SUCCESS, payload: response.data });
+  } catch (error) {
+    dispatch({ type: ORDER_AUDIT_LOGS_ERROR, payload: error.message });
+  }
+};
+  </plan-file>
+
+  <h3>New / added file (gutter shows <code>+N</code>)</h3>
+  <plan-file path="server/app/orders/serializers.py" add lang="python">
+class OrderAuditLogSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderAuditLog
+        fields = ['order_uuid', 'checksum', 'actor_email', 'recorded_at']
+        read_only_fields = fields
+  </plan-file>
+
+  <h3>Diff view</h3>
+  <plan-diff path="server/app/orders/models.py" old-start="45" new-start="45">
+ class Order(models.Model):
+     customer = models.ForeignKey(
+-        Customer, on_delete=models.CASCADE,
++        Customer, on_delete=models.SET_NULL, null=True,
+         related_name='orders',
+     )
++    customer_uuid = models.UUIDField(
++        db_index=True, editable=False,
++        help_text="Preserved copy of the customer FK — survives nullification so audit logs stay attributable after the customer record is deleted",
++    )
+     placed_at = models.DateTimeField()
+  </plan-diff>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="steps" num="7" title="Implementation Steps">
+  <p>This section demonstrates <code>&lt;plan-subsection&gt;</code> — each step gets its own nav dropdown entry.</p>
+
+  <plan-subsection id="step-1" num="1" title="Add OrderAuditLog model + migration">
+    <plan-callout type="info">Red phase — write failing test first.</plan-callout>
+    <plan-file path="server/app/orders/tests.py" lines="1-12">
+class TestOrderAuditLogModel(TestCase):
+    def test_log_created_on_checkout(self):
+        order = OrderFactory()
+        log = OrderAuditLog.objects.create(
+            customer=order.customer,
+            order_uuid=order.uuid,
+            checksum='a' * 64,
+            actor_email='actor@example.com',
+            recorded_at=timezone.now(),
+        )
+        self.assertEqual(log.customer, order.customer)
+    </plan-file>
+    <p>Then implement the model (green phase) and run migrations.</p>
+  </plan-subsection>
+
+  <plan-subsection id="step-2" num="2" title="Wire up signal handler">
+    <p>Hook into <code>CheckoutView.post()</code> to create an audit log on each checkout event.</p>
+    <plan-diff path="server/app/orders/views.py" old-start="189" new-start="189">
+     def post(self, request, *args, **kwargs):
+         order = self.perform_checkout(request)
++        OrderAuditLog.create_from_order(order)
+         return Response(self.get_serializer(order).data)
+    </plan-diff>
+  </plan-subsection>
+
+  <plan-subsection id="step-3" num="3" title="Add audit log retrieval API">
+    <p>New DRF viewset for listing audit logs filtered by order UUID.</p>
+    <ul>
+      <li>GET <code>/api/order-audit-logs/{uuid}/</code></li>
+      <li>Permission: order owner or staff</li>
+      <li>Pagination: cursor-based, 25 per page</li>
+    </ul>
+  </plan-subsection>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="formulas" num="8" title="Formulas &amp; Principles">
+  <plan-formula expr="Total = Subtotal × (1 + TAX_RATE)" note="TAX_RATE = 0.0875 (applied at checkout)"></plan-formula>
+
+  <plan-principles>
+    <plan-principle label="Append-Only">Never mutate ledger entries. All adjustments are new rows.</plan-principle>
+    <plan-principle label="Idempotent">Safe to retry any write operation without double-applying.</plan-principle>
+    <plan-principle label="Supersede, Don't Delete">Use timestamps to soft-hide. Never delete user data.</plan-principle>
+    <plan-principle label="Tests First">Red-green-refactor is non-negotiable for every step.</plan-principle>
+  </plan-principles>
+</plan-section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="timeline" num="9" title="Timeline">
+  <plan-timeline>
+    <plan-phase num="1" title="Data Foundation" weeks="Weeks 1-2" color="blue">
+      <ul>
+        <li>OrderAuditLog model + migration</li>
+        <li>FK decoupling (CASCADE → SET_NULL)</li>
+        <li>Admin registration</li>
+      </ul>
+    </plan-phase>
+    <plan-phase num="2" title="Event Capture" weeks="Weeks 3-4" color="green">
+      <ul>
+        <li>Hook into CheckoutView.post()</li>
+        <li>Capture checksum + metadata at checkout time</li>
+        <li>Backfill existing orders</li>
+      </ul>
+    </plan-phase>
+    <plan-phase num="3" title="API + Frontend" weeks="Weeks 5-6" color="purple">
+      <ul>
+        <li>Audit log retrieval API endpoint</li>
+        <li>Server-generated PDF summary</li>
+        <li>Frontend download UI</li>
+      </ul>
+    </plan-phase>
+  </plan-timeline>
+</plan-section>
+
+</main>
+
+</body>
+</html>
