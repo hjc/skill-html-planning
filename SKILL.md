@@ -187,6 +187,23 @@ GitHub-style unified diff view with add/delete line coloring and dual line numbe
 
 **Line prefix convention:** Lines starting with `+` are additions (green), `-` are deletions (red), space or no prefix are context lines.
 
+### Diagrams
+
+#### `<plan-diagram>`
+Renders a [Mermaid](https://mermaid.js.org/) diagram from plain text — flowcharts, sequence diagrams, state diagrams, ER diagrams, Gantt charts, etc. Prefer this over hand-drawn SVG: it's far more compact, expressive, and themed automatically to match the plan. The element's text content **is** the Mermaid source.
+```html
+<plan-diagram caption="Audit log write path on checkout">
+flowchart LR
+    A[Checkout request] --> B{Order valid?}
+    B -- No --> C[Return 400]
+    B -- Yes --> D[Persist Order]
+    D --> E[Create OrderAuditLog]
+</plan-diagram>
+```
+**Attributes:** `caption` (optional muted caption shown below the diagram).
+
+The Mermaid library is **lazy-loaded from cdnjs at runtime** the first time a `<plan-diagram>` appears — nothing is added to the plan skeleton, and plans without diagrams load nothing extra. A diagram needs network access on first render; opened fully offline, it falls back to showing its source text. Write standard Mermaid syntax (don't escape `<`/`>`/`&` — the runtime handles the raw text).
+
 ### Timeline
 
 #### `<plan-timeline>` / `<plan-phase>`
@@ -269,3 +286,5 @@ Apply these to any element:
 ```
 
 The inline loader in each generated plan file finds `.claude/` in the file path and resolves the skill assets from there, appending the install subpath that `generate.js` baked in at generation time (so the skill works under any folder name within `.claude/skills/`). Plan files contain only semantic markup — no CSS or JS.
+
+Every rendered plan also gets a **view-settings gear** (floating, top-right) injected by the runtime — currently a "Wrap long lines" toggle for code/diff blocks, persisted per reader via `localStorage`. This is automatic; you don't author it, and you shouldn't hand-roll your own settings UI.

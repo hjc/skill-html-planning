@@ -329,16 +329,20 @@ class PlanFile extends HTMLElement {
 
     // Detect language from extension or explicit attr
     const ext = path.split('.').pop();
-    const langClass = lang || _extLangMap[ext] || ext;
+    const langId = lang || _extLangMap[ext] || ext;
+    const canHighlight = typeof hljs !== 'undefined' && langId && hljs.getLanguage(langId);
 
-    // Build gutter: "+N" markers for additions (numbered within the chunk),
-    // else plain line numbers.
-    const codeLines = raw.split('\n');
-    const gutterHtml = codeLines
-      .map((_, i) => isAdd
-        ? `<span class="line-num line-add">+${startLine + i}</span>`
-        : `<span class="line-num">${startLine + i}</span>`)
-      .join('');
+    // Render each source line as its own [gutter][code] row (like plan-diff)
+    // so the line number stays aligned with its code even when the line
+    // soft-wraps. Gutter shows "+N" for additions, else the line number.
+    const bodyLines = raw.split('\n').map((line, i) => {
+      const numCls = isAdd ? 'line-num line-add' : 'line-num';
+      const label = isAdd ? `+${startLine + i}` : `${startLine + i}`;
+      const highlighted = canHighlight
+        ? hljs.highlight(line, { language: langId, ignoreIllegals: true }).value
+        : _escapeHtml(line);
+      return `<div class="file-line"><span class="${numCls}">${label}</span><span class="file-line-text">${highlighted}</span></div>`;
+    }).join('');
 
     // Header badge: NEW > ADD > a valid line range.
     let badge = '';
@@ -355,10 +359,7 @@ class PlanFile extends HTMLElement {
         <span class="file-path">${_escapeHtml(path)}</span>
         ${badge}
       </div>
-      <div class="file-body">
-        <div class="file-gutter"><pre>${gutterHtml}</pre></div>
-        <div class="file-code"><pre><code class="language-${langClass}">${_escapeHtml(raw)}</code></pre></div>
-      </div>
+      <div class="file-body"><div class="file-inner">${bodyLines}</div></div>
     `;
   }
 }
@@ -415,6 +416,90 @@ class PlanDiff extends HTMLElement {
   }
 }
 
+/* ── plan-diagram (Mermaid) ──────────────────────────── */
+// Mermaid is heavy (~1MB), so it is lazy-loaded from cdnjs the first time a
+// <plan-diagram> appears — plans without diagrams pull nothing, and existing
+// skeletons gain the feature with no generator change. _ensureMermaid()
+// injects + initialises the library once and caches the promise.
+const MERMAID_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.12.0/mermaid.min.js';
+let _mermaidPromise = null;
+let _diagramSeq = 0;
+
+function _ensureMermaid() {
+  if (_mermaidPromise) return _mermaidPromise;
+  _mermaidPromise = new Promise((resolve, reject) => {
+    const init = () => {
+      if (!window.mermaid) { reject(new Error('mermaid unavailable')); return; }
+      // Theme the diagrams from the plan's own CSS custom properties so they
+      // match the design system instead of mermaid's stock palette.
+      const css = getComputedStyle(document.documentElement);
+      const v = (name, fallback) => (css.getPropertyValue(name).trim() || fallback);
+      window.mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'base',
+        themeVariables: {
+          darkMode: true,
+          // Canvas matches the panel; nodes use a distinctly *elevated* gray
+          // with a bright border so boxes clearly stand off the dark surface
+          // (the design-system surfaces are all near-black and don't separate).
+          background: v('--surface', '#161b22'),
+          mainBkg: '#2d333b',
+          primaryColor: '#2d333b',
+          primaryBorderColor: '#6e7681',
+          primaryTextColor: v('--text', '#e6edf3'),
+          secondaryColor: '#3a414b',
+          secondaryBorderColor: '#6e7681',
+          tertiaryColor: '#262c34',
+          tertiaryBorderColor: '#6e7681',
+          lineColor: v('--text-muted', '#8b949e'),
+          fontFamily: v('--font', 'sans-serif'),
+          fontSize: '14px',
+        },
+      });
+      resolve(window.mermaid);
+    };
+    if (window.mermaid) { init(); return; }
+    const s = document.createElement('script');
+    s.src = MERMAID_SRC;
+    s.onload = init;
+    s.onerror = () => reject(new Error('mermaid failed to load'));
+    document.head.appendChild(s);
+  });
+  return _mermaidPromise;
+}
+
+class PlanDiagram extends HTMLElement {
+  connectedCallback() {
+    const caption = this.getAttribute('caption') || '';
+    // Mermaid source is whitespace-sensitive; strip only the authoring blank
+    // edge lines (like the code components) and hand the raw text to mermaid.
+    const src = _trimEdgeBlankLines(this.textContent);
+
+    this.innerHTML = `
+      <div class="diagram-body"><div class="diagram-render" aria-busy="true"></div></div>
+      ${caption ? `<div class="diagram-caption">${caption}</div>` : ''}
+    `;
+    const target = this.querySelector('.diagram-render');
+
+    const fail = (msg) => {
+      target.removeAttribute('aria-busy');
+      target.innerHTML =
+        `<div class="diagram-error">${_escapeHtml(msg)}</div>` +
+        `<pre class="diagram-source">${_escapeHtml(src)}</pre>`;
+    };
+
+    _ensureMermaid().then((mermaid) => {
+      mermaid.render('plan-mmd-' + (_diagramSeq++), src)
+        .then(({ svg }) => {
+          target.removeAttribute('aria-busy');
+          target.innerHTML = svg;
+        })
+        .catch((err) => fail('Diagram failed to render: ' + (err && err.message || err)));
+    }).catch(() => fail('Could not load the diagram library (offline?).'));
+  }
+}
+
 /* ── Register all components ──────────────────────────── */
 const components = {
   'plan-header':     PlanHeader,
@@ -435,6 +520,7 @@ const components = {
   'plan-table':      PlanTable,
   'plan-file':       PlanFile,
   'plan-diff':       PlanDiff,
+  'plan-diagram':    PlanDiagram,
 };
 
 Object.entries(components).forEach(([tag, cls]) => {
@@ -451,3 +537,99 @@ requestAnimationFrame(() => {
     hljs.highlightAll();
   }
 });
+
+/* ── View settings (floating gear) ───────────────────── */
+// A small, extensible control panel for runtime view preferences. The first
+// setting is line wrapping; toggling it flips the `.plan-wrap` class on
+// <html> (CSS does the rest) and persists the choice to localStorage so it
+// sticks across reloads and other plans on the same origin.
+const PLAN_SETTINGS_KEY = 'plan-view-settings';
+const PLAN_SETTINGS = [
+  {
+    key: 'wrap',
+    label: 'Wrap long lines',
+    apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on),
+  },
+];
+
+function _initPlanSettings() {
+  if (document.querySelector('.plan-settings')) return; // guard double-init
+
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(PLAN_SETTINGS_KEY)) || {}; } catch (e) {}
+  const persist = () => {
+    try { localStorage.setItem(PLAN_SETTINGS_KEY, JSON.stringify(saved)); } catch (e) {}
+  };
+
+  // Apply persisted values up front (before any UI) so there's no flash.
+  PLAN_SETTINGS.forEach(s => s.apply(saved[s.key]));
+
+  const GEAR_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+
+  const rows = PLAN_SETTINGS.map(s =>
+    `<label class="plan-settings-row">
+       <input type="checkbox" data-setting="${s.key}"${saved[s.key] ? ' checked' : ''}>
+       <span>${s.label}</span>
+     </label>`
+  ).join('');
+
+  const root = document.createElement('div');
+  root.className = 'plan-settings';
+  root.innerHTML = `
+    <button class="plan-settings-gear" aria-label="View settings" aria-expanded="false" title="View settings">${GEAR_SVG}</button>
+    <div class="plan-settings-panel" role="menu" hidden>
+      <div class="plan-settings-title">View</div>
+      ${rows}
+    </div>`;
+  document.body.appendChild(root);
+
+  const gear = root.querySelector('.plan-settings-gear');
+  const panel = root.querySelector('.plan-settings-panel');
+
+  const setOpen = (open) => {
+    panel.hidden = !open;
+    root.dataset.open = String(open);
+    gear.setAttribute('aria-expanded', String(open));
+  };
+  setOpen(false);
+
+  gear.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(panel.hidden);
+  });
+  root.querySelectorAll('input[data-setting]').forEach(input => {
+    input.addEventListener('change', () => {
+      const key = input.dataset.setting;
+      const setting = PLAN_SETTINGS.find(s => s.key === key);
+      saved[key] = input.checked;
+      if (setting) setting.apply(input.checked);
+      persist();
+    });
+  });
+  document.addEventListener('click', (e) => {
+    if (!root.contains(e.target)) setOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setOpen(false);
+  });
+
+  // Vertically center the gear within the sticky nav (when present). The nav
+  // has no fixed height and populates its links a frame later, so we measure
+  // its real height with a ResizeObserver rather than guessing. Falls back to
+  // the CSS `top` when there's no nav.
+  const nav = document.querySelector('plan-nav');
+  if (nav) {
+    const centerInNav = () => {
+      const navH = nav.getBoundingClientRect().height;
+      const gearH = gear.offsetHeight || 36;
+      if (navH > gearH) root.style.top = ((navH - gearH) / 2) + 'px';
+    };
+    centerInNav();
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(centerInNav).observe(nav);
+    }
+    window.addEventListener('resize', centerInNav);
+  }
+}
+
+_initPlanSettings();

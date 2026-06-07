@@ -584,49 +584,42 @@ plan-file .file-add {
   padding: 2px 8px;
   border-radius: 10px;
 }
+plan-file .file-body {
+  overflow-x: auto;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+}
+/* Sized to the widest line (max-content) with a 100% floor — mirrors
+   plan-diff so horizontal scrolling behaves identically. */
+plan-file .file-inner {
+  min-width: 100%;
+  width: max-content;
+}
+plan-file .file-line {
+  display: flex;
+  min-height: 1.55em;
+}
+plan-file .line-num {
+  flex-shrink: 0;
+  min-width: 52px;
+  text-align: right;
+  padding: 0 12px 0 14px;
+  color: var(--text-muted);
+  opacity: 0.5;
+  user-select: none;
+  border-right: 1px solid var(--border);
+}
 plan-file .line-add {
   color: var(--green);
   opacity: 0.9;
   font-weight: 700;
 }
-plan-file .file-body {
-  display: flex;
-  overflow-x: auto;
-}
-plan-file .file-gutter {
-  flex-shrink: 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-}
-plan-file .file-gutter pre {
-  margin: 0;
-  border: none;
-  border-radius: 0;
-  padding: 16px 0;
-  background: transparent;
-}
-plan-file .file-gutter .line-num {
-  display: block;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--text-muted);
-  text-align: right;
-  padding: 0 12px 0 14px;
-  user-select: none;
-  opacity: 0.5;
-}
-plan-file .file-code {
+plan-file .file-line-text {
   flex: 1;
-  min-width: 0;
-}
-plan-file .file-code pre {
-  margin: 0;
-  border: none;
-  border-radius: 0;
-}
-plan-file .file-code pre code {
-  border-radius: 0;
+  padding: 0 14px;
+  white-space: pre;
 }
 
 /* ── plan-diff (GitHub-style diff view) ──────────────── */
@@ -697,6 +690,56 @@ plan-diff .diff-del {
 plan-diff .diff-del .diff-text::before { content: '- '; color: var(--red); opacity: 0.6; }
 plan-diff .diff-ctx .diff-text::before { content: '  '; }
 
+/* ── plan-diagram (Mermaid) ──────────────────────────── */
+plan-diagram {
+  display: block;
+  margin: 16px 0;
+}
+plan-diagram .diagram-body {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  overflow-x: auto;
+  text-align: center;
+}
+plan-diagram .diagram-render[aria-busy="true"] {
+  min-height: 60px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+plan-diagram .diagram-render[aria-busy="true"]::before {
+  content: 'Rendering diagram…';
+}
+plan-diagram .diagram-render svg {
+  max-width: 100%;
+  height: auto;
+}
+plan-diagram .diagram-caption {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 8px;
+}
+plan-diagram .diagram-error {
+  color: var(--red);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+plan-diagram .diagram-source {
+  text-align: left;
+  white-space: pre;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin: 0;
+}
+
 /* ── Legacy plan-code (still supported, no hljs) ─────── */
 plan-code {
   display: block;
@@ -740,6 +783,85 @@ summary::before {
 details[open] summary::before { transform: rotate(90deg); }
 summary::-webkit-details-marker { display: none; }
 details > :not(summary) { padding: 0 16px 16px; }
+
+/* ── View settings (floating gear + panel) ───────────── */
+.plan-settings {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 1000;
+  font-family: var(--font);
+}
+.plan-settings-gear {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, border-color 0.15s, transform 0.3s ease;
+}
+.plan-settings-gear:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+.plan-settings[data-open="true"] .plan-settings-gear {
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: rotate(60deg);
+}
+.plan-settings-panel {
+  position: absolute;
+  top: 44px;
+  right: 0;
+  min-width: 210px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.plan-settings-panel[hidden] { display: none; }
+.plan-settings-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.plan-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.plan-settings-row input {
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* ── Wrap mode (toggled by the gear's "Wrap long lines") ──
+   Off by default: code-bearing components scroll horizontally. When on,
+   they soft-wrap instead. The diff/file inners drop their max-content width
+   so rows are constrained to the visible width and the text can wrap. */
+html.plan-wrap plan-diff .diff-inner,
+html.plan-wrap plan-file .file-inner {
+  width: 100%;
+}
+html.plan-wrap plan-diff .diff-text,
+html.plan-wrap plan-file .file-line-text,
+html.plan-wrap pre code,
+html.plan-wrap plan-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* ── Responsive ───────────────────────────────────────── */
 @media (max-width: 700px) {

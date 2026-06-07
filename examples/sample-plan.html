@@ -334,6 +334,34 @@ class TestOrderAuditLogModel(TestCase):
   </plan-timeline>
 </plan-section>
 
+<!-- ═══════════════════════════════════════════════════════ -->
+<plan-section id="diagrams" num="10" title="Diagrams">
+  <p>Mermaid diagrams render from plain text — the runtime lazy-loads the library from cdnjs only when a <code>&lt;plan-diagram&gt;</code> is present, and themes it to match the design system.</p>
+
+  <h3>Flowchart</h3>
+  <plan-diagram caption="Audit log write path on checkout">
+flowchart LR
+    A[Checkout request] --> B{Order valid?}
+    B -- No --> C[Return 400]
+    B -- Yes --> D[Persist Order]
+    D --> E[Create OrderAuditLog]
+    E --> F[Return 201]
+  </plan-diagram>
+
+  <h3>Sequence diagram</h3>
+  <plan-diagram>
+sequenceDiagram
+    participant C as Client
+    participant V as CheckoutView
+    participant DB as Database
+    C->>V: POST /checkout
+    V->>DB: INSERT Order
+    V->>DB: INSERT OrderAuditLog
+    DB-->>V: ok
+    V-->>C: 201 Created
+  </plan-diagram>
+</plan-section>
+
 </main>
 
 </body>
