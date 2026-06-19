@@ -318,12 +318,16 @@ plan-card .card-label {
   letter-spacing: 0.5px;
   margin-bottom: 8px;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 plan-card .card-value {
   font-size: 28px;
   font-weight: 700;
   font-family: var(--mono);
   margin-bottom: 4px;
+  /* Long unbroken tokens (e.g. snake_case identifiers) have no natural break
+     points and would otherwise overflow the card — allow breaking anywhere. */
+  overflow-wrap: anywhere;
 }
 plan-card .card-subtitle {
   font-size: 12px;
