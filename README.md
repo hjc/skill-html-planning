@@ -5,11 +5,11 @@
 1. An LLM skill describing how to build rich, interactive plans (business development plans, product requirements documents, software implementation plans, etc.) in HTML using Web Components.
 2. An associated runtime for these plans implemented in JavaScript and CSS using the Web Components technology.
 
-The skill is unconcerned with **what to plan** and more focuses on **how to format** those plans.
+The skill is unconcerned with **what to plan** and focuses more on **how to format** those plans.
 
 ## Why?
 
-Recent research and industry tailwinds are showing that, while Markdown was initially the lingua franca for LLM planning workflows, [HTML is more effective](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html), primarily because it lowers cognitive overhead for the human operator or reviewer.
+Recent research is showing that, while Markdown was initially the lingua franca for LLM planning workflows, [HTML is more effective](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html), primarily because it lowers cognitive overhead for the human operator or reviewer.
 
 However, without guardrails and guidance, this format change has a non-trivial cost for the producing LLM agent.
 
@@ -40,7 +40,7 @@ Before this skill, when asked to produce an HTML plan, Claude Code is likely to 
 
 This poses a few obvious problems:
 
-1. Each produced plan is subtly, but materially, different than the last. You never know what you'll get until you open it up.
+1. Each produced plan is subtly, but materially, different from the last. You never know what you'll get until you open it up.
 2. Emitting all of this boilerplate CSS and HTML DEVOURS tokens each time a plan is produced or iterated on. This sends your costs soaring.
 
 After the skill, when asked to produce an HTML plan, Claude uses the skill to generate a boilerplate template and only outputs:
@@ -81,7 +81,7 @@ This enables the production of plans that are:
 2. Succinct and concise.
 3. Consistent and easily consumed.
 
-For some numbers, if we assume an original Markdown plan consisting of 12253 output tokens, a corresponding HTML plan looks like:
+For some numbers, if we assume an original Markdown plan consisting of 12,253 output tokens, a corresponding HTML plan looks like:
 
 | Method | Length in Tokens |
 |--------|------------------|
@@ -90,48 +90,50 @@ For some numbers, if we assume an original Markdown plan consisting of 12253 out
 
 ## Plan Features
 
-For a negligible size increase over plaintext Markdown plans, plans generated with `html-planning` support:
+For a minor size increase over plaintext Markdown plans, plans generated with `html-planning` support:
 
 1. Syntax highlighting for code snippets.
-2. GitHub style diff markers for lines added and removed.
-3. Sections and sub-sections, with a sticky nav to jump between them.
-4. Support for embedding Mermaid diagrams.
+2. GitHub-style diff markers for lines added and removed, presenting changes in a friendly and efficient manner.
+3. Sections and sub-sections, with a sticky nav to jump between them and clear identifiers.
+4. Support for embedding Mermaid diagrams (lazy-loaded when diagrams are present).
+5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
+6. Toggleable line wrapping support for code snippets.
+7. Interactive tabs, collapsible components, and callout components.
+8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, formulas, and principles.
 
-## What's in here
+All in all, `html-planning` enables your agent to write semantically expressive plans that are considerably more pleasurable to read than those in raw Markdown.
+
+## Contents
 
 | File | Purpose |
 |------|---------|
-| `SKILL.md` | The skill definition (agent instructions + component reference). |
-| `generate.js` | Node script that emits a plan skeleton with the inline loader. **Run this first** for every plan. |
-| `plan-runtime.js` | Web Component definitions (`plan-section`, `plan-diff`, `plan-file`, `plan-nav`, etc.), loaded at runtime. |
-| `plan-styles.css` | The dark, GitHub-inspired design system, loaded at runtime. |
-| `examples/sample-plan.html` | A showcase of every component — open in a browser to preview. |
+| `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
+| `generate.js` | Simple node script that emits a plan skeleton with the inline loader. |
+| `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
+| `plan-styles.css` | Plan design system, also injected via the inline loader. |
+| `examples/sample-plan.html` | Sample file with every component listed. |
 
-## Installing into a project
+## Installation
 
-Install it anywhere under `.claude/skills/` — **any folder name works**. `generate.js` detects its own install path and bakes it into each plan's loader, so the folder name is no longer fixed. From a target repo:
+The easiest way to install `html-planning` is using [Vercel's skills package](https://github.com/vercel-labs/skills) (`npx skills`):
 
-```bash
-# Symlink (recommended — edits here propagate everywhere)
-ln -s /d/Code/personal/skill-html-planning .claude/skills/html-planning
+```sh
+# add locally for this project for Claude Code:
+npx skills add hjc/skill-html-planning -a claude-code
 
-# …or copy
-cp -r /d/Code/personal/skill-html-planning .claude/skills/html-planning
+# add globally for your user for Codex:
+npx skills add hjc/skill-html-planning -g -a codex
 
-# …or any name you like
-ln -s /d/Code/personal/skill-html-planning .claude/skills/planning
+# copy the skill files so you can edit them to fit your project:
+npx skills add hjc/skill-html-planning --copy -a claude-code
 ```
 
-## Generating a plan
+Happy planning!
+
+## Using the Generator
 
 ```bash
-node .claude/skills/html-planning/generate.js <output-path>.html --title "My Plan"
+node .claude/skills/html-planning/generate.js <plan-output-path>.html --title "New Plan"
 ```
 
-Then add `<plan-*>` components to the generated skeleton (see `SKILL.md` for the full vocabulary). Open the result in any browser.
-
-> **Note:** opened via `file://`, plans are fully interactive but cannot read source files (the browser blocks `fetch()` of local files). Live source reads, exact git diffs, and expandable code context are the job of **Mimir**, a companion desktop app that renders these plans against a real repo.
-
-## Components
-
-Layout & nav (`plan-header`, `plan-nav`, `plan-section`, `plan-subsection`), data display (`plan-cards`/`plan-card`, `plan-table`), interactive (`plan-tabs`/`plan-tab`), callouts/badges (`plan-callout`, `plan-badge`), formulas/principles (`plan-formula`, `plan-principles`/`plan-principle`), timeline (`plan-timeline`/`plan-phase`), and code references (`plan-file`, `plan-diff`) with highlight.js syntax highlighting. Full attributes and examples in `SKILL.md`.
+Then start adding any relevant components, open in your browser and enjoy!
