@@ -57,6 +57,7 @@
     <plan-card label="Revenue" value="$2,400" color="green" subtitle="100 customers"></plan-card>
     <plan-card label="Margin" value="68%" color="blue"></plan-card>
     <plan-card label="Requests/s" value="~22" color="purple" subtitle="peak per instance"></plan-card>
+    <plan-card label="New Package" value="semantic_labeling" color="amber" subtitle="long value wraps instead of overflowing"></plan-card>
   </plan-cards>
 </plan-section>
 
@@ -250,6 +251,21 @@ class OrderAuditLogSerializer(serializers.ModelSerializer):
 +        help_text="Preserved copy of the customer FK — survives nullification so audit logs stay attributable after the customer record is deleted",
 +    )
      placed_at = models.DateTimeField()
+  </plan-diff>
+
+  <h3>Escaped content (literal <code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code> written as entities)</h3>
+  <p class="muted">Code with generics, JSX, and <code>&amp;&amp;</code> must be entity-escaped in the source — the runtime renders it back to literal characters.</p>
+  <plan-file path="client/src/components/OrderList.tsx" new lang="typescript">
+function OrderList&lt;T extends Order&gt;({ items }: { items: T[] }) {
+  const visible = items.filter((o) =&gt; o.active &amp;&amp; o.total &gt; 0);
+  return &lt;ul&gt;{visible.map((o) =&gt; &lt;li key={o.id}&gt;{o.label}&lt;/li&gt;)}&lt;/ul&gt;;
+}
+  </plan-file>
+
+  <plan-diff path="client/src/components/OrderList.tsx" old-start="3" new-start="3">
+   const visible = items.filter((o) =&gt; o.active);
+-  return &lt;ul&gt;{visible.map((o) =&gt; &lt;li&gt;{o.label}&lt;/li&gt;)}&lt;/ul&gt;;
++  return &lt;ul&gt;{visible.map((o) =&gt; &lt;li key={o.id}&gt;{o.label}&lt;/li&gt;)}&lt;/ul&gt;;
   </plan-diff>
 </plan-section>
 

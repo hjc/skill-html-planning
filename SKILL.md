@@ -1,3 +1,8 @@
+---
+name: html-planning
+description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
+---
+
 # html-planning
 
 Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL. This skill handles **how to format** — domain skills handle **what to plan**.
@@ -150,6 +155,14 @@ Grid of design principles or key decisions.
 
 ### Code References
 
+> **CRITICAL — escape `<`, `>`, and `&` in `<plan-file>` and `<plan-diff>` content.**
+> These components read the element's text from the DOM, which means the browser's HTML parser sees your code *first*. Any literal `<` (e.g. `Vector<int>`, `</div>`, JSX, `a -> b<c>`) is misread as an HTML tag, and a literal `&` (e.g. `a && b`, `&str`) can be decoded as an entity — both corrupt the rendered code before the runtime ever runs. Write the entities in the source:
+> - `<` → `&lt;`
+> - `>` → `&gt;`
+> - `&` → `&amp;`
+>
+> The runtime then displays them correctly (it re-escapes on output, but it cannot recover what the parser already mangled). This applies **only inside the element's text content** — attribute values like `path=` and the `+`/`-` diff prefixes are unaffected.
+
 #### `<plan-file>`
 GitHub-style file code view with filename header, optional line range badge, line number gutter, and syntax highlighting.
 ```html
@@ -202,7 +215,7 @@ flowchart LR
 ```
 **Attributes:** `caption` (optional muted caption shown below the diagram).
 
-The Mermaid library is **lazy-loaded from cdnjs at runtime** the first time a `<plan-diagram>` appears — nothing is added to the plan skeleton, and plans without diagrams load nothing extra. A diagram needs network access on first render; opened fully offline, it falls back to showing its source text. Write standard Mermaid syntax (don't escape `<`/`>`/`&` — the runtime handles the raw text).
+The Mermaid library is **lazy-loaded from cdnjs at runtime** the first time a `<plan-diagram>` appears — nothing is added to the plan skeleton, and plans without diagrams load nothing extra. A diagram needs network access on first render; opened fully offline, it falls back to showing its source text. Write standard Mermaid syntax — arrows like `-->` are safe (a lone `>` is read as text), but if a node/edge label contains a literal `<` or `&`, escape it as `&lt;`/`&amp;` for the same HTML-parser reason as `<plan-file>`/`<plan-diff>` above.
 
 ### Timeline
 
