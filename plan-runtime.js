@@ -380,12 +380,23 @@ class PlanDiff extends HTMLElement {
     let oldNum = parseInt(this.getAttribute('old-start') || '1', 10);
     let newNum = parseInt(this.getAttribute('new-start') || '1', 10);
 
+    // Strict gutter: column 0 is always the marker and is always stripped —
+    // ' ' = context, '+' = added, '-' = removed. This is what lets a code line
+    // that genuinely begins with '-'/'+' survive (author it as ` -x`). A line
+    // with no gutter char is rendered as context WITHOUT stripping and flagged,
+    // so the authoring slip is loud instead of silently mis-colored/truncated.
+    let lintCount = 0;
     const bodyLines = diffLines.map(line => {
       let cls = 'diff-ctx';
       let oldCol = '';
       let newCol = '';
+      let unguttered = false;
 
-      if (line.startsWith('+')) {
+      if (line === '') {
+        // Blank context line — advance both gutters; no marker to strip.
+        oldCol = oldNum++;
+        newCol = newNum++;
+      } else if (line.startsWith('+')) {
         cls = 'diff-add';
         newCol = newNum++;
         line = line.substring(1);
@@ -393,19 +404,34 @@ class PlanDiff extends HTMLElement {
         cls = 'diff-del';
         oldCol = oldNum++;
         line = line.substring(1);
-      } else {
-        // Context line — strip leading space if present
+      } else if (line.startsWith(' ')) {
+        // Context line — strip the gutter space.
         oldCol = oldNum++;
         newCol = newNum++;
-        if (line.startsWith(' ')) line = line.substring(1);
+        line = line.substring(1);
+      } else {
+        // Missing gutter — render as context, keep the full line intact, flag it.
+        cls = 'diff-ctx diff-ungutter';
+        oldCol = oldNum++;
+        newCol = newNum++;
+        unguttered = true;
+        lintCount++;
       }
 
       const highlighted = canHighlight
         ? hljs.highlight(line, { language: langId, ignoreIllegals: true }).value
         : _escapeHtml(line);
 
-      return `<div class="${cls}"><span class="diff-num">${oldCol}</span><span class="diff-num">${newCol}</span><span class="diff-text">${highlighted}</span></div>`;
+      const title = unguttered
+        ? ' title="No diff gutter on this line. Prefix every line with a space (context), \'+\' (added), or \'-\' (removed); the first character is always consumed as the marker."'
+        : '';
+
+      return `<div class="${cls}"${title}><span class="diff-num">${oldCol}</span><span class="diff-num">${newCol}</span><span class="diff-text">${highlighted}</span></div>`;
     }).join('');
+
+    if (lintCount > 0 && typeof console !== 'undefined') {
+      console.warn(`<plan-diff${path ? ` path="${path}"` : ''}>: ${lintCount} line(s) have no diff gutter and were rendered as context. Prefix every line with ' ', '+', or '-'.`);
+    }
 
     this.innerHTML = `
       <div class="file-header">

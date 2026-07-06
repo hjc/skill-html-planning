@@ -267,6 +267,24 @@ function OrderList&lt;T extends Order&gt;({ items }: { items: T[] }) {
 -  return &lt;ul&gt;{visible.map((o) =&gt; &lt;li&gt;{o.label}&lt;/li&gt;)}&lt;/ul&gt;;
 +  return &lt;ul&gt;{visible.map((o) =&gt; &lt;li key={o.id}&gt;{o.label}&lt;/li&gt;)}&lt;/ul&gt;;
   </plan-diff>
+
+  <h3>Code that begins with <code>-</code> / <code>+</code> (strict gutter)</h3>
+  <p class="muted">Every line carries a leading gutter character (space / <code>+</code> / <code>-</code>) that is always stripped — so a code line that genuinely starts with <code>-</code> keeps it. The context and changed lines below all preserve their <code>-x</code>.</p>
+  <plan-diff path="util/sign.py" old-start="10" new-start="10">
+ def normalize(x):
+-    return -x if x else 0
++    return -x if x else 0.0
+ def double(x):
+     return x + x
+  </plan-diff>
+
+  <h3>Lint: a line missing its gutter</h3>
+  <p class="muted">The <code>debug = True</code> line has no leading gutter character. It renders as context but is flagged amber with a ⚠ (and logged to the console) instead of silently mis-coloring or truncating.</p>
+  <plan-diff path="app/config.py" old-start="10" new-start="10">
+ class Config:
+debug = True
++    verbose = True
+  </plan-diff>
 </plan-section>
 
 <!-- ═══════════════════════════════════════════════════════ -->

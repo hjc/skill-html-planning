@@ -198,6 +198,16 @@ GitHub-style unified diff view with add/delete line coloring and dual line numbe
 ```
 **Attributes:** `path` (file path shown in header), `old-start` (starting line number for removed lines, default 1), `new-start` (starting line number for added lines, default 1).
 
+> **Every line needs a gutter character.** Column 0 of each line is the marker and is **always consumed**: a leading space = context, `+` = added, `-` = removed. This is the only thing that distinguishes a gutter `-`/`+` from a code line that *genuinely begins* with `-` or `+` (a negative literal, a leading unary operator, a CLI flag). To show such a line **unchanged**, give it the space gutter so the real character survives:
+> ```html
+> <plan-diff path="util/sign.py" old-start="10" new-start="10">
+>  def normalize(x):
+> -    return -x if x else 0
+> +    return -x if x else 0.0
+> </plan-diff>
+> ```
+> Here the context line `     return ...` and both changed lines keep their leading-space/`+`/`-` gutter; the `-x` in the code is preserved because the marker is a *separate* leading character. A line authored with **no** gutter character renders as context but is flagged amber with a ⚠ (and logged to the console) so the omission is visible rather than silently mis-colored or truncated.
+
 **Line prefix convention:** Lines starting with `+` are additions (green), `-` are deletions (red), space or no prefix are context lines.
 
 ### Diagrams

@@ -693,6 +693,18 @@ plan-diff .diff-del {
 }
 plan-diff .diff-del .diff-text::before { content: '- '; color: var(--red); opacity: 0.6; }
 plan-diff .diff-ctx .diff-text::before { content: '  '; }
+/* Lint: a line with no diff gutter (space/+/-). Rendered as context with its
+   content intact, but flagged amber with a ⚠ marker so the authoring mistake
+   is visible rather than silently mis-colored. The ⚠ occupies the same 2-char
+   slot the context spacer would, so gutter alignment is unchanged. */
+plan-diff .diff-ungutter {
+  background: var(--amber-dim);
+}
+plan-diff .diff-ungutter .diff-text::before {
+  content: '⚠ ';
+  color: var(--amber);
+  opacity: 0.9;
+}
 
 /* ── plan-diagram (Mermaid) ──────────────────────────── */
 plan-diagram {
