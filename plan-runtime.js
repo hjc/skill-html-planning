@@ -133,8 +133,11 @@ class PlanSection extends HTMLElement {
     const title = this.getAttribute('title');
     if (!title) return;
 
+    const status = this.getAttribute('status');
+    const pill = status ? ` <span class="plan-status status-${status}">${_statusLabel(status)}</span>` : '';
+
     const h2 = document.createElement('h2');
-    h2.innerHTML = `${num != null ? `<span class="section-num">${num}</span> ` : ''}${title}`;
+    h2.innerHTML = `${num != null ? `<span class="section-num">${num}</span> ` : ''}${title}${pill}`;
     this.prepend(h2);
   }
 }
@@ -151,9 +154,12 @@ class PlanSubsection extends HTMLElement {
     const parentNum = parent ? parent.getAttribute('num') : null;
     const displayNum = (num != null && parentNum != null) ? `${parentNum}.${num}` : num;
 
+    const status = this.getAttribute('status');
+    const pill = status ? ` <span class="plan-status status-${status}">${_statusLabel(status)}</span>` : '';
+
     const h3 = document.createElement('h3');
     h3.className = 'subsection-title';
-    h3.innerHTML = `${displayNum != null ? `<span class="subsection-num">${displayNum}</span> ` : ''}${title}`;
+    h3.innerHTML = `${displayNum != null ? `<span class="subsection-num">${displayNum}</span> ` : ''}${title}${pill}`;
     this.prepend(h3);
   }
 }
@@ -287,6 +293,13 @@ class PlanBadge extends HTMLElement {
 class PlanTable extends HTMLElement {} // Pure CSS wrapper
 
 /* ── Helpers ──────────────────────────────────────────── */
+// Human labels for the section/subsection `status` attribute. Unknown values
+// pass through verbatim so a new status shows *something* rather than nothing.
+function _statusLabel(status) {
+  const labels = { 'todo': 'To Do', 'in-progress': 'In Progress', 'done': 'Done', 'blocked': 'Blocked' };
+  return labels[status] || status;
+}
+
 function _escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

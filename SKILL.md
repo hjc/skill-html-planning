@@ -56,7 +56,7 @@ Top-level content section. Each becomes a nav target.
   <p>Content here.</p>
 </plan-section>
 ```
-**Attributes:** `id` (required for nav linking), `num` (badge number), `title`.
+**Attributes:** `id` (required for nav linking), `num` (badge number), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — renders a colored pill in the heading; flip it cheaply with `plan-cli.js` instead of re-editing the file).
 
 #### `<plan-subsection>`
 Lighter-weight section nested inside a `<plan-section>`. Subsections appear in the parent section's nav dropdown on hover. Use for TDD steps, sub-phases, or any second-level grouping.
@@ -70,7 +70,7 @@ Lighter-weight section nested inside a `<plan-section>`. Subsections appear in t
   </plan-subsection>
 </plan-section>
 ```
-**Attributes:** `id` (required for nav dropdown linking), `num` (badge number), `title`.
+**Attributes:** `id` (required for nav dropdown linking), `num` (badge number), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a per-step status pill, ideal for tracking TDD steps; flip it with `plan-cli.js`).
 
 ### Data Display
 
@@ -298,11 +298,44 @@ Apply these to any element:
 8. **Keep plan files semantic.** The CSS and JS live in the skill folder and are loaded at runtime. Don't inline styles or scripts in plan files.
 9. **Encode code changes as `<plan-diff>` and `<plan-file>`, not prose.** Never write "Around line 45, remove the `CASCADE` argument and replace with `SET_NULL`" — instead, use a `<plan-diff>` that shows the exact change with line numbers, add/delete markers, and syntax highlighting. The markup is the instruction. Prose should describe *why* the change is made, not *what* lines to edit. Similarly, when referencing existing code to read or understand, use `<plan-file>` with the path and line range instead of describing it in a sentence.
 
+## Editing an existing plan — `plan-cli.js`
+
+Once a plan exists, prefer `plan-cli.js` over reading the whole file and hand-editing markup. It mutates a plan by **address**, so the token cost is proportional to the change, not the size of the plan — flipping a status no longer means loading the entire document into context. Reach for it to flip a status, reorder sections, or splice in a new section; use `Edit` only when changing the *content inside* a component.
+
+```bash
+node .claude/skills/html-planning/plan-cli.js <command> <file> [...]
+```
+
+| Command | What it does |
+|---------|--------------|
+| `list <file>` | Print every section/subsection with its id, num, title, and status — orient without loading the file. |
+| `tasks <file> [--all \| --status <s>]` | List **open** tasks — sections/subsections carrying a `status`, excluding `done` by default. Each row is `<address>  [status]  title`, so the address feeds straight into `set`/`read`. `--all` includes `done`; `--status` filters (comma-separated). |
+| `read <file> <address> [--body]` | Print a section/subsection's markup — the outer element, or with `--body` just the inner content (byte-exact with `set-body`, for hunk edits). |
+| `set <file> <path>=<value>` | Set an attribute by address. |
+| `set-body <file> <address> [--file <f>] [--append]` | Replace (or `--append` to) a node's inner content with a verbatim splice. Body comes from `--file` or stdin. |
+| `add-section <file> --id <id> [--num N] [--title T] [--status S] [--after <ref> \| --before <ref>] [--body-file <f>]` | Insert a new section — empty, or filled from `--body-file`. Appended before `</main>` when no position is given. |
+| `rm-section <file> <id>` | Remove a section. |
+| `move-section <file> <id> (--after <ref> \| --before <ref>)` | Relocate a section. |
+
+**Addressing (dot-paths):** `header` · `<sectionId>` (e.g. `steps`) · `<sectionId>.<n>` (Nth subsection, 1-based) · `<sectionId>.<subId>` (subsection by id). In `set`, the **last** path segment is the attribute name:
+
+```bash
+node .../plan-cli.js set plan.html steps.status=in-progress      # section attr
+node .../plan-cli.js set plan.html steps.3.status=done           # 3rd subsection
+node .../plan-cli.js set plan.html header.status=approved        # the header
+node .../plan-cli.js read plan.html steps                        # chunked read
+```
+
+**Rich content.** Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the content — but you can pay for the content *without* also paying to load the plan. Author the body as normal plan markup in a scratch file, then inject it by address with `add-section --body-file` or `set-body --file`; the plan is mutated in place and never read into context. To fix content in an existing section, pull just that hunk with `read --body`, edit it, and push it back with `set-body` — that costs ~2× the hunk, still far less than materializing the whole plan. Bodies are spliced **verbatim** (they own their own whitespace), and escaping is your responsibility exactly as when authoring markup directly. Round-trip guarantee: `set-body` of `read --body` is a byte-for-byte no-op.
+
+`rm-section`/`move-section` act on the `<plan-section>` element only — any decorative divider comment around it is left in place. Structural ops assume the canonical serialization the generator and components produce (one element per line block); they are not a general HTML editor.
+
 ## Architecture
 
 ```
 .claude/skills/html-planning/
 ├── generate.js       ← Skeleton generator (run once per plan)
+├── plan-cli.js       ← Address-based plan mutator (cheap edits after creation)
 ├── plan-styles.css   ← Design system (loaded at runtime)
 ├── plan-runtime.js   ← Web Component definitions (loaded at runtime)
 └── SKILL.md          ← This file (agent instructions)

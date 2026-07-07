@@ -231,6 +231,24 @@ plan-subsection .subsection-title {
   border-radius: 10px;
 }
 
+/* ── section / subsection status pill (`status` attribute) ──
+   Rendered inline in the heading by plan-section / plan-subsection. Driven by
+   the `status` attr, which plan-cli.js can flip cheaply (todo|in-progress|
+   done|blocked). Absent attribute → no pill (backwards compatible). */
+.plan-status {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+.plan-status.status-todo        { background: var(--surface-2); color: var(--text-muted); }
+.plan-status.status-in-progress { background: var(--accent-dim); color: var(--accent); }
+.plan-status.status-done        { background: var(--green-dim);  color: var(--green); }
+.plan-status.status-blocked     { background: var(--red-dim);    color: var(--red); }
+
 /* ── plan-table ───────────────────────────────────────── */
 plan-table {
   display: block;
