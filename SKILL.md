@@ -23,8 +23,33 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    ```bash
    node .claude/skills/html-planning/generate.js <output-path> --title "My Plan"
    ```
+   For a **TDD implementation plan**, add `--template tdd` to scaffold the canonical spine (see [Plan Templates & Canonical Sections](#plan-templates--canonical-sections)):
+   ```bash
+   node .claude/skills/html-planning/generate.js <output-path> --title "My Plan" --template tdd
+   ```
 2. **Read the generated file.**
-3. **Use `Edit`** to add sections, cards, tables, and other components using the Web Component tags below.
+3. **Use `Edit`** (or `plan-cli.js`) to add sections, cards, tables, and other components using the Web Component tags below.
+
+## Plan Templates & Canonical Sections
+
+`generate.js --template tdd` scaffolds the **canonical TDD-plan spine** — a fixed set of section **ids** and titles that the pipefile corpus converged on over dozens of successful plans. Using the canonical ids matters for two reasons: plans become **reliably addressable** (`plan-cli.js read plan.html anti-patterns` works because the id is always `anti-patterns`, never `antipatterns`/`risks`), and consistent across a corpus so cross-plan tooling is possible. Prefer this template for any test-driven implementation plan; fill in the pre-seeded scaffolding rather than inventing new section names.
+
+| # | id | Title | Purpose | Content convention |
+|---|----|-------|---------|--------------------|
+| 1 | `overview` | Overview | Goal, background, the problem solved | prose |
+| 2 | `scope` | Scope & Prerequisites | What's in / out of scope + prerequisites | prose + an info `plan-callout` |
+| 3 | `recon` | Reconnaissance Summary | Load-bearing facts the executor may need | `plan-table` **File / Lines / What** (+ `plan-file` excerpts, `plan-callout` for key facts) |
+| 4 | `decisions` | Design Decisions | The chosen approach and why | `plan-table` **# / Decision / Rationale** |
+| — | `dataflow` | Data Flow *(optional)* | before→after / sequence of a refactor | prose + `plan-diagram` |
+| 5 | `steps` | Implementation Steps | The TDD steps | one `plan-subsection` per step (with `status`), `<h4>Red Phase</h4>` / `<h4>Green Phase</h4>` rhythm, `plan-file`/`plan-diff` |
+| 6 | `callsites` | Callsite Audit | Every reference to the changed thing + its disposition | `plan-table` **# / Callsite / Change** |
+| 7 | `verification` | Verification | Commands that prove it works | `<pre><code class="language-bash">` command + an "Expected: …" line |
+| 8 | `anti-patterns` | Anti-Patterns | Tempting wrong approaches to forbid | `plan-table` **# / Don't / Why** |
+| — | `open-questions` | Open Questions *(optional)* | Unresolved items needing a decision | list or `plan-table` |
+
+**These table shapes are conventions, not components** — a decision row is just a `<tr>`, so it stays a `plan-table`. Match the column headers above so the corpus stays uniform; don't invent a `<plan-decision>` tag.
+
+**This spine is a TDD *profile*, not a universal schema.** PRDs, BSDs, architecture docs, and issue write-ups have their own structures — for those, use the default `--template basic` (a single starter section) and structure the plan however the document type demands. Do **not** force the TDD spine onto a non-TDD plan.
 
 ## Component Reference
 

@@ -46,6 +46,117 @@ function resolveSkillSubpath() {
 }
 const skillSubpath = resolveSkillSubpath();
 
+/* ── Template selection ──
+   `--template tdd` scaffolds the canonical TDD-plan spine. The section ids are
+   fixed vocabulary (overview/scope/recon/decisions/steps/callsites/verification/
+   anti-patterns) so every TDD plan is addressable the same way by plan-cli and
+   consistent across a corpus. It also pre-seeds the documented table conventions
+   (Decision→Rationale, Don't→Why, File/Lines/What, Callsite→Change) and the
+   Red/Green step rhythm so the executor fills blanks instead of inventing shape.
+   Default `basic` emits a single starter section — use it for PRDs, BSDs,
+   architecture docs, and anything that doesn't follow the TDD spine. */
+let template = 'basic';
+const tplIdx = args.indexOf('--template');
+if (tplIdx !== -1 && args[tplIdx + 1]) template = args[tplIdx + 1];
+if (template !== 'basic' && template !== 'tdd') {
+  console.error(`Unknown --template "${template}". Valid: basic, tdd.`);
+  process.exit(1);
+}
+
+const BASIC_BODY = `  <!-- ════════════════════════════════════════════════════════
+       Section Template — copy & adapt as needed:
+
+       <plan-section id="section-id" num="1" title="Section Title">
+         <p>Section content here.</p>
+       </plan-section>
+       ════════════════════════════════════════════════════════ -->
+
+  <plan-section id="overview" num="1" title="Overview">
+    <p>Replace with plan content.</p>
+  </plan-section>`;
+
+const TDD_BODY = `  <plan-section id="overview" num="1" title="Overview">
+    <p>Goal, background, and the problem this plan solves.</p>
+  </plan-section>
+
+  <plan-section id="scope" num="2" title="Scope &amp; Prerequisites">
+    <p>What this plan covers — and explicitly what it does not.</p>
+    <plan-callout type="info">Prerequisites and assumptions the executor can rely on.</plan-callout>
+  </plan-section>
+
+  <plan-section id="recon" num="3" title="Reconnaissance Summary">
+    <p>Load-bearing facts the executor may need to reference. Convention: a table of the relevant files.</p>
+    <plan-table>
+      <table>
+        <thead><tr><th>File</th><th>Lines</th><th>What</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">path/to/file.py</td><td>42-58</td><td>What lives here and why it matters</td></tr>
+        </tbody>
+      </table>
+    </plan-table>
+  </plan-section>
+
+  <plan-section id="decisions" num="4" title="Design Decisions">
+    <p>Convention: a numbered table of decision → rationale.</p>
+    <plan-table>
+      <table>
+        <thead><tr><th>#</th><th>Decision</th><th>Rationale</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><strong>Decision.</strong> What was chosen.</td><td>Why — including any alternative it supersedes.</td></tr>
+        </tbody>
+      </table>
+    </plan-table>
+  </plan-section>
+
+  <plan-section id="steps" num="5" title="Implementation Steps">
+    <plan-subsection id="step-1" num="1" title="First step" status="todo">
+      <p><strong>Files touched:</strong> <code>path/to/file.py</code></p>
+      <h4>Red Phase</h4>
+      <p>Write the failing test first.</p>
+      <plan-file path="path/to/tests.py" add lang="python">
+# failing test goes here
+      </plan-file>
+      <h4>Green Phase</h4>
+      <p>Make it pass with the smallest change.</p>
+      <plan-diff path="path/to/file.py" old-start="1" new-start="1">
+ context line
++added line
+      </plan-diff>
+    </plan-subsection>
+  </plan-section>
+
+  <plan-section id="callsites" num="6" title="Callsite Audit">
+    <p>Every place that references the changed symbol or behavior, and its disposition. Convention: a table.</p>
+    <plan-table>
+      <table>
+        <thead><tr><th>#</th><th>Callsite</th><th>Change</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td class="mono">path/to/caller.py:120</td><td>What must change here (or "no change — why")</td></tr>
+        </tbody>
+      </table>
+    </plan-table>
+  </plan-section>
+
+  <plan-section id="verification" num="7" title="Verification">
+    <p>The commands that prove the change works, each with its expected result.</p>
+    <pre><code class="language-bash">command to run</code></pre>
+    <p>Expected: what a passing run looks like.</p>
+  </plan-section>
+
+  <plan-section id="anti-patterns" num="8" title="Anti-Patterns">
+    <p>Convention: a numbered table of Don't → Why.</p>
+    <plan-table>
+      <table>
+        <thead><tr><th>#</th><th>Don't</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>The tempting wrong approach.</td><td>What it would break or which invariant it violates.</td></tr>
+        </tbody>
+      </table>
+    </plan-table>
+  </plan-section>`;
+
+const body = template === 'tdd' ? TDD_BODY : BASIC_BODY;
+
 const skeleton = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -91,17 +202,7 @@ const skeleton = `<!DOCTYPE html>
 
 <main>
 
-  <!-- ════════════════════════════════════════════════════════
-       Section Template — copy & adapt as needed:
-
-       <plan-section id="section-id" num="1" title="Section Title">
-         <p>Section content here.</p>
-       </plan-section>
-       ════════════════════════════════════════════════════════ -->
-
-  <plan-section id="overview" num="1" title="Overview">
-    <p>Replace with plan content.</p>
-  </plan-section>
+${body}
 
 </main>
 

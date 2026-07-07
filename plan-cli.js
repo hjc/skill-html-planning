@@ -60,6 +60,37 @@ function lineEndAfterNewline(s, idx) {
   return nl === -1 ? s.length : nl + 1;
 }
 
+/* ── comment awareness ────────────────────────────────────
+   The scanner matches literal <plan-*> tag names, so a raw plan tag written
+   inside an HTML comment (an illustrative example, a commented-out section)
+   would otherwise be found as a real element. We compute comment ranges once
+   per source string and skip any tag match that falls inside one. */
+function findCommentRanges(html) {
+  const ranges = [];
+  let i = 0;
+  while (true) {
+    const open = html.indexOf('<!--', i);
+    if (open === -1) break;
+    const close = html.indexOf('-->', open + 4);
+    const end = close === -1 ? html.length : close + 3; // unterminated → to EOF
+    ranges.push([open, end]);
+    i = end;
+  }
+  return ranges;
+}
+let _lastHtml = null, _lastRanges = null;
+function commentRanges(html) {
+  if (html !== _lastHtml) { _lastHtml = html; _lastRanges = findCommentRanges(html); }
+  return _lastRanges;
+}
+function inRanges(idx, ranges) {
+  for (const [s, e] of ranges) {
+    if (idx < s) break;    // ranges ascending — no later range can contain idx
+    if (idx < e) return true;
+  }
+  return false;
+}
+
 /* ── tag scanner ──────────────────────────────────────────
    readOpenTag: given the index of a '<' beginning `<name …>`, walk to the
    closing '>' while skipping quoted attribute values (so a '>' inside an
@@ -93,13 +124,20 @@ function isBoundary(ch) { return ch === undefined || /[\s>/]/.test(ch); }
 // Find the matching `</tag>` for an open tag, depth-counting nested same-name
 // elements. Returns {start, end} of the close tag, or null.
 function findClose(html, tag, from) {
+  const comments = commentRanges(html);
   const openTok = '<' + tag;
   const closeTok = '</' + tag + '>';
+  // Next occurrence of `tok` at/after `i` that is NOT inside a comment.
+  const nextTok = (tok, i) => {
+    let idx = html.indexOf(tok, i);
+    while (idx !== -1 && inRanges(idx, comments)) idx = html.indexOf(tok, idx + tok.length);
+    return idx;
+  };
   let depth = 1;
   let i = from;
   while (i < html.length) {
-    const nextOpen = html.indexOf(openTok, i);
-    const nextClose = html.indexOf(closeTok, i);
+    const nextOpen = nextTok(openTok, i);
+    const nextClose = nextTok(closeTok, i);
     if (nextClose === -1) return null;
     if (nextOpen !== -1 && nextOpen < nextClose && isBoundary(html[nextOpen + openTok.length])) {
       const open = readOpenTag(html, nextOpen);
@@ -117,12 +155,13 @@ function findClose(html, tag, from) {
 // Locate the first <tag> element at/after `from` and before `limit`.
 function findElement(html, tag, from = 0, limit = null) {
   const cap = limit == null ? html.length : limit;
+  const comments = commentRanges(html);
   let searchFrom = from;
   const tok = '<' + tag;
   while (true) {
     const idx = html.indexOf(tok, searchFrom);
     if (idx === -1 || idx >= cap) return null;
-    if (!isBoundary(html[idx + tok.length])) { searchFrom = idx + tok.length; continue; }
+    if (inRanges(idx, comments) || !isBoundary(html[idx + tok.length])) { searchFrom = idx + tok.length; continue; }
     const open = readOpenTag(html, idx);
     if (!open) return null;
     if (open.selfClose) {
@@ -245,7 +284,9 @@ function resolveNode(html, segs) {
 
 /* ── block builders / splicers (structural ops) ───────── */
 function sectionIndent(html) {
-  const idx = html.indexOf('<plan-section');
+  const comments = commentRanges(html);
+  let idx = html.indexOf('<plan-section');
+  while (idx !== -1 && inRanges(idx, comments)) idx = html.indexOf('<plan-section', idx + 1);
   if (idx === -1) return '';
   return html.slice(lineStart(html, idx), idx);
 }
