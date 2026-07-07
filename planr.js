@@ -1,40 +1,45 @@
 #!/usr/bin/env node
 /* ═══════════════════════════════════════════════════════════
-   Plan CLI — cheap, structured manipulation of plan files
-   Lets an agent read and mutate a plan by ADDRESS instead of
-   loading the whole file into context and hand-editing markup.
-   The token cost of an operation is O(change), not O(document).
+   planr — generate and manipulate plan files
+   Generates a plan from a template, and reads/mutates an existing plan by
+   ADDRESS so an edit costs tokens proportional to the change, not the whole
+   document.
 
    Usage:
-     node plan-cli.js list        <file>
-     node plan-cli.js read        <file> <address>
-     node plan-cli.js set         <file> <path>=<value>
-     node plan-cli.js add-section <file> --id <id> [--num N] [--title T]
-                                         [--status S] [--after ref | --before ref]
-     node plan-cli.js rm-section  <file> <id>
-     node plan-cli.js move-section <file> <id> (--after ref | --before ref)
+     node planr.js new         <file> [--title T] [--template <name>] [--set k=v ...]
+     node planr.js templates    (list available templates)
+     node planr.js list        <file>
+     node planr.js tasks       <file> [--all | --status <s>]
+     node planr.js read        <file> <address> [--body]
+     node planr.js set         <file> <path>=<value>
+     node planr.js set-body    <file> <address> [--file <f>] [--append]
+     node planr.js add-section <file> --id <id> [--num N] [--title T]
+                               [--status S] [--after ref | --before ref] [--body-file <f>]
+     node planr.js rm-section  <file> <id>
+     node planr.js move-section <file> <id> (--after ref | --before ref)
 
    Addressing (dot-paths):
      header               → the <plan-header>
      <sectionId>          → <plan-section id="…">
      <sectionId>.<n>      → the Nth <plan-subsection> (1-based)
      <sectionId>.<subId>  → <plan-subsection id="…">
-   In `set`, the LAST path segment is the attribute:
-     steps.status=done          → section 'steps', attr status
-     steps.3.status=in-progress → 3rd subsection of 'steps', attr status
-     header.status=approved     → the header, attr status
+   In `set`, the LAST path segment is the attribute (e.g. steps.3.status=done).
 
-   Zero dependencies. Rather than parse arbitrary HTML, this walks the small,
-   known set of <plan-*> tags with a quote-aware scanner — that is all a
-   canonical plan file needs, and it keeps the tool install-free.
+   Templates live in ./templates/ — `_shell.html` is the shared document +
+   runtime loader (with a `{{body}}` slot); every other `<name>.html` is a body
+   selectable via `--template <name>`. Values are filled with a zero-dep
+   `{{var}}` substitution: {{title}}, {{date}}, {{skillSubpath}}, plus any
+   `--set key=value`. Zero dependencies throughout — the <plan-*> scanner and
+   the templater keep the tool install-free.
    ═══════════════════════════════════════════════════════════ */
 
 'use strict';
 const fs = require('fs');
+const path = require('path');
 
 /* ── tiny IO + error helpers ──────────────────────────── */
 function die(msg) {
-  process.stderr.write(`plan-cli: ${msg}\n`);
+  process.stderr.write(`planr: ${msg}\n`);
   process.exit(1);
 }
 function read(file) {
@@ -49,6 +54,55 @@ function readStdin() {
   if (process.stdin.isTTY) die('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
   try { return fs.readFileSync(0, 'utf8'); }
   catch (e) { die(`cannot read stdin: ${e.message}`); }
+}
+
+/* ── templating (generate) ────────────────────────────────
+   Zero-dep {{var}} substitution — a function replacer, so `$` in values is
+   never reinterpreted. Unknown placeholders are left intact. */
+function render(tpl, vars) {
+  return tpl.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? vars[k] : m));
+}
+// The skill's install subpath under .claude, from how planr was invoked:
+// argv[1] preserves the symlinked .claude/skills/<name> path that __dirname
+// would resolve through. Baked into the generated plan's loader.
+function resolveSkillSubpath() {
+  const invoked = (process.argv[1] || __filename).replace(/\\/g, '/');
+  const segs = invoked.split('/');
+  const idx = segs.indexOf('.claude');
+  if (idx !== -1) return segs.slice(idx + 1, segs.length - 1).join('/');
+  return 'skills/' + path.basename(path.dirname(invoked));
+}
+const TEMPLATE_DIR = path.join(__dirname, 'templates');
+
+function cmdTemplates() {
+  let files;
+  try { files = fs.readdirSync(TEMPLATE_DIR); }
+  catch (e) { die(`cannot read templates dir: ${e.message}`); }
+  const names = files.filter(f => f.endsWith('.html') && !f.startsWith('_'))
+                     .map(f => f.replace(/\.html$/, '')).sort();
+  process.stdout.write((names.length ? names.join('\n') : 'no templates found') + '\n');
+}
+function cmdNew(outPath, flags) {
+  if (!outPath) die('new requires an output path, e.g. `new plan.html --template tdd`');
+  const template = (flags.template && flags.template !== true) ? String(flags.template) : 'basic';
+  if (template.startsWith('_')) die(`'${template}' is not a selectable template`);
+  const bodyPath = path.join(TEMPLATE_DIR, `${template}.html`);
+  if (!fs.existsSync(bodyPath)) die(`unknown template '${template}' — run \`planr templates\` to list`);
+  const composed = read(path.join(TEMPLATE_DIR, '_shell.html')).split('{{body}}').join(read(bodyPath));
+  const vars = {
+    title: (flags.title && flags.title !== true) ? flags.title : 'Untitled Plan',
+    date: new Date().toISOString().slice(0, 10),
+    skillSubpath: resolveSkillSubpath(),
+  };
+  for (const pair of (flags.set == null ? [] : [].concat(flags.set))) {
+    const eq = String(pair).indexOf('=');
+    if (eq === -1) die(`--set expects key=value, got "${pair}"`);
+    vars[String(pair).slice(0, eq)] = String(pair).slice(eq + 1);
+  }
+  const parent = path.dirname(outPath);
+  if (parent && !fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
+  write(outPath, render(composed, vars));
+  process.stdout.write(`Created ${outPath} (template: ${template})\n`);
 }
 
 /* ── line helpers ─────────────────────────────────────── */
@@ -282,6 +336,32 @@ function resolveNode(html, segs) {
   die('addresses deeper than <section>.<subsection> are not supported');
 }
 
+/* ── validation + structural safety ───────────────────────
+   `set` guards against typo'd attribute names and non-canonical status values
+   (both otherwise fail silently — a junk attribute, or a task that vanishes
+   from `tasks`). Body-injecting commands re-verify the plan still parses after
+   the splice, so an unbalanced/unescaped <plan-*> tag in content can't silently
+   collapse the document (it would derail findClose's depth count). */
+const NODE_ATTRS = {
+  'plan-header': ['title', 'subtitle', 'status', 'date', 'chips'],
+  'plan-section': ['id', 'num', 'title', 'status'],
+  'plan-subsection': ['id', 'num', 'title', 'status'],
+};
+const SECTION_STATUS = ['todo', 'in-progress', 'done', 'blocked'];
+
+function sectionIds(html) {
+  return findElements(html, 'plan-section').map(s => getAttr(s.attrsRaw, 'id')).filter(Boolean);
+}
+function assertIntact(before, after, action) {
+  const present = new Set(sectionIds(after));
+  const lost = sectionIds(before).filter(id => !present.has(id));
+  if (lost.length) {
+    die(`${action} would break the plan — section(s) no longer resolve: ${lost.join(', ')}. ` +
+        `Likely an unbalanced or unescaped <plan-*> tag in the content (escape < > & in code). ` +
+        `Aborted; no changes written.`);
+  }
+}
+
 /* ── block builders / splicers (structural ops) ───────── */
 function sectionIndent(html) {
   const comments = commentRanges(html);
@@ -358,13 +438,12 @@ function cmdList(file) {
 // default. Each row leads with the ADDRESS so it feeds straight into set/read.
 function cmdTasks(file, flags) {
   const html = read(file);
-  const OPEN = ['todo', 'in-progress', 'blocked'];
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
   const include = (st) => {
     if (!st) return false;
     if (want) return want.includes(st);
     if (flags.all) return true;
-    return OPEN.includes(st);
+    return st !== 'done';   // "open" = carries a status other than done
   };
   const rows = [];
   for (const s of findElements(html, 'plan-section')) {
@@ -409,6 +488,10 @@ function cmdSet(file, spec) {
   const attr = segs.pop();
   const html = read(file);
   const node = resolveNode(html, segs);
+  const allowed = NODE_ATTRS[node.tag];
+  if (allowed && !allowed.includes(attr)) die(`unknown attribute '${attr}' for <${node.tag}> — valid: ${allowed.join(', ')}`);
+  if (attr === 'status' && (node.tag === 'plan-section' || node.tag === 'plan-subsection') && !SECTION_STATUS.includes(value))
+    die(`invalid status '${value}' — valid: ${SECTION_STATUS.join(', ')}`);
   const newRaw = setAttrRaw(node.attrsRaw, attr, value);
   write(file, html.slice(0, node.attrStart) + newRaw + html.slice(node.attrEnd));
   process.stdout.write(`set ${pathPart} = "${value}"\n`);
@@ -423,13 +506,15 @@ function cmdSetBody(file, address, flags) {
   const out = flags.append
     ? html.slice(0, el.innerEnd) + body + html.slice(el.innerEnd)
     : html.slice(0, el.innerStart) + body + html.slice(el.innerEnd);
+  assertIntact(html, out, 'set-body');
   write(file, out);
   process.stdout.write(`set body of ${address}${flags.append ? ' (appended)' : ''} — ${body.length} chars\n`);
 }
 function cmdAddSection(file, flags) {
   if (!flags.id) die('add-section requires --id');
   if (flags.after && flags.before) die('use only one of --after / --before');
-  let html = read(file);
+  const before = read(file);
+  let html = before;
   if (findSectionById(html, flags.id)) die(`section '${flags.id}' already exists`);
   const body = flags['body-file'] && flags['body-file'] !== true ? read(flags['body-file']) : null;
   const block = buildSection(flags, sectionIndent(html), body);
@@ -444,6 +529,7 @@ function cmdAddSection(file, flags) {
   } else {
     html = appendSection(html, block);
   }
+  assertIntact(before, html, 'add-section');
   write(file, html);
   process.stdout.write(`added section '${flags.id}'\n`);
 }
@@ -485,8 +571,12 @@ function parseFlags(argv) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) { flags[key] = next; i++; }
-      else flags[key] = true;
+      if (next !== undefined && !next.startsWith('--')) {
+        flags[key] = key in flags ? [].concat(flags[key], next) : next; // repeats accumulate
+        i++;
+      } else {
+        flags[key] = true;
+      }
     } else {
       positional.push(a);
     }
@@ -494,8 +584,11 @@ function parseFlags(argv) {
   return { flags, positional };
 }
 
-const USAGE = `plan-cli — structured plan manipulation
+const USAGE = `planr — generate and manipulate plan files
+Usage: node planr.js <command> [args]   (no args or --help prints this)
 
+  new          <file> [--title T] [--template <name>] [--set k=v ...]
+  templates    (list available templates)
   list         <file>
   tasks        <file> [--all | --status <s>]
   read         <file> <address> [--body]
@@ -511,11 +604,17 @@ round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`
 
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
-  if (!cmd || cmd === '--help' || cmd === '-h') { process.stdout.write(USAGE + '\n'); return; }
+  if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { process.stdout.write(USAGE + '\n'); return; }
   const { flags, positional } = parseFlags(rest);
   const file = positional[0];
-  if (!file && cmd !== 'help') die(`'${cmd}' requires a <file> argument`);
+  // Validate the command first (so an unknown command reports as such), then
+  // enforce the <file> arg only for commands that take one.
+  const NEEDS_FILE = ['new', 'list', 'tasks', 'read', 'set', 'set-body', 'add-section', 'rm-section', 'move-section'];
+  if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) die(`unknown command '${cmd}'\n\n${USAGE}`);
+  if (NEEDS_FILE.includes(cmd) && !file) die(`'${cmd}' requires a <file> argument`);
   switch (cmd) {
+    case 'new':          return cmdNew(file, flags);
+    case 'templates':    return cmdTemplates();
     case 'list':         return cmdList(file);
     case 'tasks':        return cmdTasks(file, flags);
     case 'read':         return cmdRead(file, positional[1], flags);
