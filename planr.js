@@ -313,10 +313,20 @@ function setAttrRaw(raw, name, value) {
 function findSectionById(html, id) {
   return findElements(html, 'plan-section').find(s => getAttr(s.attrsRaw, 'id') === id) || null;
 }
-function findSubsection(html, section, selector) {
-  const subs = findElements(html, 'plan-subsection', section.innerStart, section.innerEnd);
-  if (/^\d+$/.test(selector)) return subs[parseInt(selector, 10) - 1] || null;
-  return subs.find(s => getAttr(s.attrsRaw, 'id') === selector) || null;
+// Immediate child sections (either tag) of `node`, by ordinal or id. findElements
+// returns the outermost matches in the range; the containment filter drops any
+// grandchild that slipped in via the second tag's scan.
+function childSections(html, from, to) {
+  const all = [
+    ...findElements(html, 'plan-section', from, to),
+    ...findElements(html, 'plan-subsection', from, to),
+  ].sort((a, b) => a.outerStart - b.outerStart);
+  return all.filter(x => !all.some(y => y !== x && y.innerStart <= x.outerStart && x.outerEnd <= y.innerEnd));
+}
+function findChildSection(html, node, selector) {
+  const kids = childSections(html, node.innerStart, node.innerEnd);
+  if (/^\d+$/.test(selector)) return kids[parseInt(selector, 10) - 1] || null;
+  return kids.find(k => getAttr(k.attrsRaw, 'id') === selector) || null;
 }
 function resolveNode(html, segs) {
   if (segs[0] === 'header') {
@@ -325,15 +335,15 @@ function resolveNode(html, segs) {
     if (!el) die('no <plan-header> found');
     return el;
   }
-  const sec = findSectionById(html, segs[0]);
-  if (!sec) die(`section '${segs[0]}' not found`);
-  if (segs.length === 1) return sec;
-  if (segs.length === 2) {
-    const sub = findSubsection(html, sec, segs[1]);
-    if (!sub) die(`subsection '${segs[1]}' not found in section '${segs[0]}'`);
-    return sub;
+  // Walk the dot-path to any depth: each segment selects a child of the previous.
+  let node = findSectionById(html, segs[0]);
+  if (!node) die(`section '${segs[0]}' not found`);
+  for (let i = 1; i < segs.length; i++) {
+    const child = findChildSection(html, node, segs[i]);
+    if (!child) die(`'${segs[i]}' not found in '${segs.slice(0, i).join('.')}'`);
+    node = child;
   }
-  die('addresses deeper than <section>.<subsection> are not supported');
+  return node;
 }
 
 /* ── validation + structural safety ───────────────────────
@@ -382,6 +392,14 @@ function buildSection(fields, indent, body) {
   const inner = body != null ? body : `\n${indent}  <p></p>\n${indent}`;
   return `${indent}<plan-section ${attrs}>${inner}</plan-section>`;
 }
+function elementIndent(html, el) {
+  return html.slice(lineStart(html, el.outerStart), el.outerStart);
+}
+// Insert a block as the last child inside a parent (before its closing tag line).
+function insertInside(html, parent, block) {
+  const pos = lineStart(html, parent.innerEnd);
+  return html.slice(0, pos) + block + '\n\n' + html.slice(pos);
+}
 function insertBlock(html, ref, block, position) {
   if (position === 'before') {
     const pos = lineStart(html, ref.outerStart);
@@ -423,16 +441,15 @@ function cmdList(file) {
     const status = getAttr(header.attrsRaw, 'status');
     process.stdout.write(`# ${title}${status ? `  [${status}]` : ''}\n`);
   }
-  for (const s of findElements(html, 'plan-section')) {
-    const a = k => getAttr(s.attrsRaw, k);
-    const st = a('status') ? `  [${a('status')}]` : '';
-    process.stdout.write(`${a('num') != null ? a('num') + '. ' : ''}${a('id') || '(no id)'}${a('title') ? ' — ' + a('title') : ''}${st}\n`);
-    for (const sub of findElements(html, 'plan-subsection', s.innerStart, s.innerEnd)) {
-      const sa = k => getAttr(sub.attrsRaw, k);
-      const sst = sa('status') ? `  [${sa('status')}]` : '';
-      process.stdout.write(`    ${sa('num') != null ? sa('num') + '. ' : ''}${sa('id') || '(no id)'}${sa('title') ? ' — ' + sa('title') : ''}${sst}\n`);
+  const walk = (from, to, depth) => {
+    for (const s of childSections(html, from, to)) {
+      const a = k => getAttr(s.attrsRaw, k);
+      const st = a('status') ? `  [${a('status')}]` : '';
+      process.stdout.write(`${'    '.repeat(depth)}${a('num') != null ? a('num') + '. ' : ''}${a('id') || '(no id)'}${a('title') ? ' — ' + a('title') : ''}${st}\n`);
+      walk(s.innerStart, s.innerEnd, depth + 1);
     }
-  }
+  };
+  walk(0, html.length, 0);
 }
 // Open tasks: sections/subsections carrying a `status`, excluding `done` by
 // default. Each row leads with the ADDRESS so it feeds straight into set/read.
@@ -446,19 +463,18 @@ function cmdTasks(file, flags) {
     return st !== 'done';   // "open" = carries a status other than done
   };
   const rows = [];
-  for (const s of findElements(html, 'plan-section')) {
-    const sid = getAttr(s.attrsRaw, 'id') || '(no id)';
-    const sst = getAttr(s.attrsRaw, 'status');
-    if (include(sst)) rows.push({ addr: sid, status: sst, title: getAttr(s.attrsRaw, 'title') || '' });
+  const walk = (from, to, prefix) => {
     let n = 0;
-    for (const sub of findElements(html, 'plan-subsection', s.innerStart, s.innerEnd)) {
+    for (const s of childSections(html, from, to)) {
       n++;
-      const st = getAttr(sub.attrsRaw, 'status');
-      if (!include(st)) continue;
-      const subId = getAttr(sub.attrsRaw, 'id');
-      rows.push({ addr: `${sid}.${subId || n}`, status: st, title: getAttr(sub.attrsRaw, 'title') || '' });
+      const id = getAttr(s.attrsRaw, 'id');
+      const addr = prefix ? `${prefix}.${id || n}` : (id || String(n));
+      const st = getAttr(s.attrsRaw, 'status');
+      if (include(st)) rows.push({ addr, status: st, title: getAttr(s.attrsRaw, 'title') || '' });
+      walk(s.innerStart, s.innerEnd, addr);
     }
-  }
+  };
+  walk(0, html.length, '');
   if (!rows.length) { process.stdout.write('no open tasks\n'); return; }
   const aw = Math.max(...rows.map(r => r.addr.length));
   const sw = Math.max(...rows.map(r => r.status.length));
@@ -517,49 +533,63 @@ function cmdAddSection(file, flags) {
   let html = before;
   if (findSectionById(html, flags.id)) die(`section '${flags.id}' already exists`);
   const body = flags['body-file'] && flags['body-file'] !== true ? read(flags['body-file']) : null;
-  const block = buildSection(flags, sectionIndent(html), body);
-  if (flags.after) {
-    const ref = findSectionById(html, flags.after);
-    if (!ref) die(`--after section '${flags.after}' not found`);
-    html = insertBlock(html, ref, block, 'after');
-  } else if (flags.before) {
-    const ref = findSectionById(html, flags.before);
-    if (!ref) die(`--before section '${flags.before}' not found`);
-    html = insertBlock(html, ref, block, 'before');
+
+  if (flags.parent && flags.parent !== true) {
+    // Nested insert — a child of the addressed parent.
+    const parent = resolveNode(html, String(flags.parent).split('.'));
+    const block = buildSection(flags, elementIndent(html, parent) + '  ', body);
+    const childSel = flags.after || flags.before;
+    if (childSel) {
+      const ref = findChildSection(html, parent, String(childSel));
+      if (!ref) die(`child '${childSel}' not found in '${flags.parent}'`);
+      html = insertBlock(html, ref, block, flags.after ? 'after' : 'before');
+    } else {
+      html = insertInside(html, parent, block);
+    }
   } else {
-    html = appendSection(html, block);
+    const block = buildSection(flags, sectionIndent(html), body);
+    if (flags.after) {
+      const ref = findSectionById(html, flags.after);
+      if (!ref) die(`--after section '${flags.after}' not found`);
+      html = insertBlock(html, ref, block, 'after');
+    } else if (flags.before) {
+      const ref = findSectionById(html, flags.before);
+      if (!ref) die(`--before section '${flags.before}' not found`);
+      html = insertBlock(html, ref, block, 'before');
+    } else {
+      html = appendSection(html, block);
+    }
   }
   assertIntact(before, html, 'add-section');
   write(file, html);
-  process.stdout.write(`added section '${flags.id}'\n`);
+  process.stdout.write(`added section '${flags.id}'${flags.parent ? ` under '${flags.parent}'` : ''}\n`);
 }
-function cmdRmSection(file, id) {
-  if (!id) die('rm-section requires a section id');
+function cmdRmSection(file, address) {
+  if (!address) die('rm-section requires a section address');
   const html = read(file);
-  const el = findSectionById(html, id);
-  if (!el) die(`section '${id}' not found`);
+  const el = resolveNode(html, address.split('.'));
+  if (el.tag === 'plan-header') die('cannot remove the header');
   write(file, removeBlock(html, el.outerStart, el.outerEnd));
-  process.stdout.write(`removed section '${id}'\n`);
+  process.stdout.write(`removed '${address}'\n`);
 }
-function cmdMoveSection(file, id, flags) {
-  if (!id) die('move-section requires a section id');
+function cmdMoveSection(file, address, flags) {
+  if (!address) die('move-section requires a section address');
   const position = flags.after ? 'after' : flags.before ? 'before' : null;
-  const refId = flags.after || flags.before;
+  const refAddr = flags.after || flags.before;
   if (!position) die('move-section requires --after <ref> or --before <ref>');
   if (flags.after && flags.before) die('use only one of --after / --before');
+  if (address === refAddr) die('cannot move a section relative to itself');
   let html = read(file);
-  const el = findSectionById(html, id);
-  if (!el) die(`section '${id}' not found`);
+  const el = resolveNode(html, address.split('.'));
+  if (el.tag === 'plan-header') die('cannot move the header');
   const from = lineStart(html, el.outerStart);
   const to = lineEndAfterNewline(html, el.outerEnd);
   const block = html.slice(from, to).replace(/\n$/, '');
   html = removeBlock(html, el.outerStart, el.outerEnd);
-  const ref = findSectionById(html, refId);
-  if (!ref) die(`reference section '${refId}' not found`);
-  if (ref.outerStart === el.outerStart) die('cannot move a section relative to itself');
+  const ref = resolveNode(html, String(refAddr).split('.'));
   html = insertBlock(html, ref, block, position);
   write(file, html);
-  process.stdout.write(`moved section '${id}' ${position} '${refId}'\n`);
+  process.stdout.write(`moved '${address}' ${position} '${refAddr}'\n`);
 }
 
 /* ── flag parsing + dispatch ──────────────────────────── */
@@ -595,11 +625,13 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   set          <file> <path>=<value>
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   add-section  <file> --id <id> [--num N] [--title T] [--status S]
-                      [--after <ref> | --before <ref>] [--body-file <f>]
-  rm-section   <file> <id>
-  move-section <file> <id> (--after <ref> | --before <ref>)
+                      [--parent <addr>] [--after <ref> | --before <ref>] [--body-file <f>]
+  rm-section   <file> <address>
+  move-section <file> <address> (--after <ref> | --before <ref>)
 
-address: header | <sectionId> | <sectionId>.<n|subId>
+address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth;
+         a child is an id or 1-based ordinal). --after/--before take a sibling
+         address; --parent takes the container address.
 round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`;
 
 function main() {

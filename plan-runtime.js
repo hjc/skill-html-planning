@@ -38,11 +38,13 @@ class PlanNav extends HTMLElement {
   }
 
   _init() {
-    const sections = document.querySelectorAll('plan-section[id]');
+    // Top-level sections only, so nested sections don't flatten into the nav.
+    const sections = document.querySelectorAll('main > plan-section[id]');
     if (!sections.length) return;
 
     sections.forEach((sec, i) => {
-      const subs = sec.querySelectorAll('plan-subsection[id]');
+      // Immediate children only — the nav shows two levels, no deeper.
+      const subs = sec.querySelectorAll(':scope > plan-section[id], :scope > plan-subsection[id]');
 
       if (subs.length === 0) {
         // Simple link — no dropdown
@@ -89,16 +91,15 @@ class PlanNav extends HTMLElement {
 
     const setActive = (target) => {
       const id = target.id;
-      const tag = target.tagName.toLowerCase();
       this.querySelectorAll('a').forEach(a => a.classList.remove('active'));
 
-      if (tag === 'plan-subsection') {
-        const subLink = this.querySelector(`a[data-subsection="${id}"]`);
-        if (subLink) {
-          subLink.classList.add('active');
-          const parentLink = this.querySelector(`a[data-section="${subLink.dataset.parent}"]`);
-          if (parentLink) parentLink.classList.add('active');
-        }
+      // Tag-agnostic: a nested target may be registered as a dropdown item
+      // (data-subsection) or a top-level link (data-section).
+      const subLink = this.querySelector(`a[data-subsection="${id}"]`);
+      if (subLink) {
+        subLink.classList.add('active');
+        const parentLink = this.querySelector(`a[data-section="${subLink.dataset.parent}"]`);
+        if (parentLink) parentLink.classList.add('active');
       } else {
         const link = this.querySelector(`a[data-section="${id}"]`);
         if (link) link.classList.add('active');
@@ -129,40 +130,29 @@ class PlanNav extends HTMLElement {
 /* ── plan-section ─────────────────────────────────────── */
 class PlanSection extends HTMLElement {
   connectedCallback() {
-    const num = this.getAttribute('num');
     const title = this.getAttribute('title');
     if (!title) return;
 
     const status = this.getAttribute('status');
     const pill = status ? ` <span class="plan-status status-${status}">${_statusLabel(status)}</span>` : '';
 
-    const h2 = document.createElement('h2');
-    h2.innerHTML = `${num != null ? `<span class="section-num">${num}</span> ` : ''}${title}${pill}`;
-    this.prepend(h2);
+    // Heading level follows nesting depth (h2 at top level → h6, capped);
+    // the number derives from document position (`num` overrides its level).
+    let depth = 0;
+    for (let p = this.parentElement; p; p = p.parentElement)
+      if (_isSectionTag(p)) depth++;
+
+    const h = document.createElement('h' + Math.min(2 + depth, 6));
+    h.className = 'plan-heading';   // marks the generated heading (vs authored content headings)
+    h.innerHTML = `<span class="section-num">${_sectionNumber(this)}</span> ${title}${pill}`;
+    this.prepend(h);
   }
 }
 
 /* ── plan-subsection ─────────────────────────────────── */
-class PlanSubsection extends HTMLElement {
-  connectedCallback() {
-    const num = this.getAttribute('num');
-    const title = this.getAttribute('title');
-    if (!title) return;
-
-    // Prefix the badge with the parent section's number (e.g. "5.1")
-    const parent = this.closest('plan-section');
-    const parentNum = parent ? parent.getAttribute('num') : null;
-    const displayNum = (num != null && parentNum != null) ? `${parentNum}.${num}` : num;
-
-    const status = this.getAttribute('status');
-    const pill = status ? ` <span class="plan-status status-${status}">${_statusLabel(status)}</span>` : '';
-
-    const h3 = document.createElement('h3');
-    h3.className = 'subsection-title';
-    h3.innerHTML = `${displayNum != null ? `<span class="subsection-num">${displayNum}</span> ` : ''}${title}${pill}`;
-    this.prepend(h3);
-  }
-}
+// Backward-compat alias: a subsection IS a nested section — same depth-derived
+// heading + auto-numbering. Retained as a tag so existing plans keep working.
+class PlanSubsection extends PlanSection {}
 
 /* ── plan-tabs / plan-tab ─────────────────────────────── */
 class PlanTabs extends HTMLElement {
@@ -298,6 +288,23 @@ class PlanTable extends HTMLElement {} // Pure CSS wrapper
 function _statusLabel(status) {
   const labels = { 'todo': 'To Do', 'in-progress': 'In Progress', 'done': 'Done', 'blocked': 'Blocked' };
   return labels[status] || status;
+}
+
+// Section-like = a <plan-section> or its <plan-subsection> alias.
+function _isSectionTag(n) {
+  return !!n && (n.tagName === 'PLAN-SECTION' || n.tagName === 'PLAN-SUBSECTION');
+}
+// Dotted number from document position: index among section-like siblings,
+// joined down the ancestor chain. A present `num` attribute overrides its level.
+function _sectionNumber(el) {
+  const parts = [];
+  for (let n = el; _isSectionTag(n); n = n.parentElement && n.parentElement.closest('plan-section, plan-subsection')) {
+    const override = n.getAttribute('num');
+    if (override != null) parts.unshift(override);
+    else parts.unshift(Array.from(n.parentElement.children).filter(_isSectionTag).indexOf(n) + 1);
+    if (!n.parentElement) break;
+  }
+  return parts.join('.');
 }
 
 function _escapeHtml(s) {

@@ -69,33 +69,36 @@ Page header with title, status badge, and metadata chips.
 **Attributes:** `title`, `subtitle`, `status` (draft/approved/implemented/rejected), `date`, `chips` (pipe-delimited).
 
 #### `<plan-nav>`
-Auto-generated sticky nav bar. Discovers all `<plan-section>` elements and renders top-level links. Sections that contain `<plan-subsection>` children get a hover dropdown with links to each subsection. No attributes needed — just place it before `<main>`.
+Auto-generated sticky nav bar. Renders top-level sections as links; a section with nested sections gets a hover dropdown of its **immediate** children. The nav shows **two levels** — deeper nesting is still addressable and rendered, just not shown in the nav. No attributes needed — place it before `<main>`.
 ```html
 <plan-nav></plan-nav>
 ```
 
 #### `<plan-section>`
-Top-level content section. Each becomes a nav target.
+A content section. **Sections nest** — a `<plan-section>` may contain child `<plan-section>`s to any depth. The heading level (`h2` at the top → `h3` → `h4` …) and the number (`1`, `1.1`, `1.1.2`) are **derived from nesting depth and document position** — you don't manage them. Each section with an `id` is a nav/addressing target.
 ```html
-<plan-section id="overview" num="1" title="Overview">
+<plan-section id="overview" title="Overview">
   <p>Content here.</p>
+  <plan-section id="overview-detail" title="A nested section">
+    <p>Renders as h3, auto-numbered 1.1.</p>
+  </plan-section>
 </plan-section>
 ```
-**Attributes:** `id` (required for nav linking), `num` (badge number), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — renders a colored pill in the heading; flip it cheaply with `planr` instead of re-editing the file).
+**Attributes:** `id` (required for nav linking + CLI addressing), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a colored pill in the heading; flip it cheaply with `planr`), `num` (optional — **overrides** the auto-number for that one section, e.g. `"Part 1"`).
 
 #### `<plan-subsection>`
-Lighter-weight section nested inside a `<plan-section>`. Subsections appear in the parent section's nav dropdown on hover. Use for TDD steps, sub-phases, or any second-level grouping.
+Backward-compat **alias for a nested `<plan-section>`** — it renders identically (one level deeper: `h3`, auto-numbered `N.M`). New plans can simply nest `<plan-section>`; the `<plan-subsection>` tag remains so existing plans keep working. Use either for TDD steps, sub-phases, or any sub-grouping.
 ```html
-<plan-section id="steps" num="5" title="Implementation Steps">
-  <plan-subsection id="step-1" num="1" title="Add OrderAuditLog model">
+<plan-section id="steps" title="Implementation Steps">
+  <plan-subsection id="step-1" title="Add OrderAuditLog model" status="todo">
     <p>Red/green/refactor details here.</p>
   </plan-subsection>
-  <plan-subsection id="step-2" num="2" title="Wire up signal handler">
-    <p>Red/green/refactor details here.</p>
-  </plan-subsection>
+  <plan-section id="step-2" title="Wire up signal handler" status="todo">
+    <p>Equivalent, written with the nesting model directly.</p>
+  </plan-section>
 </plan-section>
 ```
-**Attributes:** `id` (required for nav dropdown linking), `num` (badge number), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a per-step status pill, ideal for tracking TDD steps; flip it with `planr`).
+**Attributes:** same as `<plan-section>` — `id`, `title`, `status`, optional `num` override.
 
 ### Data Display
 
@@ -348,23 +351,23 @@ Every top-level command. **Positional args are order-sensitive; flags may appear
 | `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content (byte-exact with `set-body`). |
 | `set` | `<file> <path>=<value>` | *(none)* | Set one attribute by address — the **last** `.`-segment of `<path>` is the attribute name. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
-| `add-section` | `<file>` | `--id <id>` **(required)** · `--num <N>` · `--title <T>` · `--status <S>` · `--after <ref>` \| `--before <ref>` · `--body-file <f>` | Insert a new section — empty, or filled from `--body-file`. Placed via `--after`/`--before`; else appended before `</main>`. |
-| `rm-section` | `<file> <id>` | *(none)* | Remove the section with that id. |
-| `move-section` | `<file> <id>` | `--after <ref>` \| `--before <ref>` **(one required)** | Move the section relative to another section. |
+| `add-section` | `<file>` | `--id <id>` **(required)** · `--num <N>` · `--title <T>` · `--status <S>` · `--parent <addr>` · `--after <ref>` \| `--before <ref>` · `--body-file <f>` | Insert a new section — empty, or filled from `--body-file`. `--parent` nests it inside that node (else top-level); `--after`/`--before` position it among siblings, else appended. |
+| `rm-section` | `<file> <address>` | *(none)* | Remove the section/subsection at that address (any depth). |
+| `move-section` | `<file> <address>` | `--after <ref>` \| `--before <ref>` **(one required)** | Move the addressed section before/after a sibling (refs are full addresses). |
 
 **Rules & gotchas (read these to avoid mistakes):**
 
 - **Help:** run `planr` with no args, or `planr --help` / `-h`, to print usage.
-- **Addressing (dot-paths):** `header` · `<sectionId>` (e.g. `steps`) · `<sectionId>.<n>` (Nth subsection, 1-based) · `<sectionId>.<subId>` (subsection by id). A `<ref>` in `--after`/`--before` is a **section id**.
+- **Addressing (dot-paths, any depth):** `header` · `<sectionId>` · `<sectionId>.<child>` · `<sectionId>.<child>.<grandchild>` … Each segment is a child's `id` or its 1-based ordinal among siblings. `--after`/`--before` refs are **full addresses**; `--parent` takes the container's address.
 - **`set` path grammar:** `<node>.<attr>=<value>` — e.g. `steps.status=done`, `steps.3.status=in-progress`, `header.status=approved`.
 - **`status` values:** sections & subsections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `approved` / `implemented` / `rejected`. `set` **rejects** an out-of-set status or an unknown attribute name (e.g. a typo like `staus`) with an error — it never silently no-ops.
-- **`num` is a manual badge:** `add-section` / `move-section` / `rm-section` do **not** renumber siblings, so after reordering the `num` badges drift out of document order — fix them by hand with `set <id>.num=N`.
+- **Numbers are automatic:** section numbers (`1`, `1.1`, `1.1.2`) derive from document position and update themselves after add/move/remove — no drift, nothing to maintain. Set a `num` attribute only to **override** a specific label (e.g. `"Part 1"`).
 - **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render (e.g. `set plan.html 'header.subtitle=the &quot;remember me&quot; box'`).
 - **Mutually exclusive:** `--after` and `--before` (passing both is an error). `move-section` requires exactly one.
 - **Body input:** `set-body` reads `--file <f>` if given, otherwise **stdin** (`… | planr set-body plan.html steps`). `add-section` takes `--body-file <f>` (no stdin).
 - **Round-trip:** `read --body <addr>` → edit the hunk → `set-body <addr>` is byte-for-byte lossless.
 - **Structural ops** (`add-section`/`rm-section`/`move-section`) act on the `<plan-section>` element only, assume canonical one-element-per-line serialization, and leave decorative comments in place — they are **not** a general HTML editor. `set-body` and `add-section` **abort without writing** if the spliced content would break the plan's structure.
-- **No subsection structural commands yet:** `add`/`rm`/`move-section` operate on top-level sections only. To add or reorder a `<plan-subsection>` (e.g. a new TDD step), edit its parent section's body via `read --body` → edit → `set-body`.
+- **Nested edits:** `add-section --parent <addr>` inserts a nested section (e.g. a new TDD step); `rm-section`/`move-section` take a full address, so they reorder or remove at any depth — no separate subsection commands needed.
 
 ```bash
 node .../planr.js new plan.html --title "My Plan" --template tdd     # generate
