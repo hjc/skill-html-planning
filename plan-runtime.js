@@ -92,6 +92,9 @@ class PlanNav extends HTMLElement {
     const setActive = (target) => {
       const id = target.id;
       this.querySelectorAll('a').forEach(a => a.classList.remove('active'));
+      document.querySelectorAll('.plan-tree a.active').forEach(a => a.classList.remove('active'));
+      const treeLink = document.querySelector(`.plan-tree a[data-tree="${id}"]`);
+      if (treeLink) treeLink.classList.add('active');
 
       // Tag-agnostic: a nested target may be registered as a dropdown item
       // (data-subsection) or a top-level link (data-section).
@@ -583,6 +586,97 @@ requestAnimationFrame(() => {
     hljs.highlightAll();
   }
 });
+requestAnimationFrame(() => _initPlanTree());
+
+/* ── View: side-panel navigation tree ────────────────── */
+// Runtime-injected full-depth section tree (like the settings gear). Hidden by
+// default; the `.plan-sidebar` gear toggle reveals it and swaps out the top nav.
+function _initPlanTree() {
+  const build = (container) => {
+    const kids = container.querySelectorAll(':scope > plan-section[id], :scope > plan-subsection[id]');
+    if (!kids.length) return null;
+    const ul = document.createElement('ul');
+    kids.forEach(sec => {
+      const li = document.createElement('li');
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+      const sub = build(sec);
+      const a = document.createElement('a');
+      a.href = '#' + sec.id; a.dataset.tree = sec.id;
+      a.innerHTML = `<span class="tree-num">${_sectionNumber(sec)}</span> ${sec.getAttribute('title') || sec.id}`;
+      row.appendChild(a);
+      li.appendChild(row);
+      if (sub) li.appendChild(sub);
+      ul.appendChild(li);
+    });
+    return ul;
+  };
+  const tree = build(document.querySelector('main'));
+  if (!tree) return;
+  const aside = document.createElement('aside');
+  aside.className = 'plan-tree';
+  aside.appendChild(tree);
+  document.body.appendChild(aside);
+  _initTreePanel(aside);   // collapse/expand + resize (steps 3-4)
+}
+
+function _readView() {
+  try { return JSON.parse(localStorage.getItem(PLAN_SETTINGS_KEY)) || {}; } catch (e) { return {}; }
+}
+function _writeView(patch) {
+  const s = Object.assign(_readView(), patch);
+  try { localStorage.setItem(PLAN_SETTINGS_KEY, JSON.stringify(s)); } catch (e) {}
+}
+
+function _initTreePanel(aside) {
+  const doc = document.documentElement;
+  if (_readView().treeCollapsed) doc.classList.add('tree-collapsed');
+
+  // Icons mirror the gear's stroke style so the panel chrome feels of a piece.
+  const COLLAPSE_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"></polyline><polyline points="18 17 13 12 18 7"></polyline></svg>';
+  const PANEL_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>';
+
+  const head = document.createElement('div');
+  head.className = 'tree-head';
+  head.innerHTML = `<span class="tree-head-title">Contents</span><button class="tree-toggle" aria-label="Collapse panel" title="Collapse panel">${COLLAPSE_SVG}</button>`;
+  aside.prepend(head);
+  head.querySelector('.tree-toggle').addEventListener('click', () => {
+    _writeView({ treeCollapsed: doc.classList.toggle('tree-collapsed') });
+  });
+
+  const opener = document.createElement('button');   // shows while collapsed
+  opener.className = 'tree-opener';
+  opener.setAttribute('aria-label', 'Open panel');
+  opener.setAttribute('title', 'Open panel');
+  opener.innerHTML = PANEL_SVG;
+  opener.addEventListener('click', () => {
+    doc.classList.remove('tree-collapsed'); _writeView({ treeCollapsed: false });
+  });
+  document.body.appendChild(opener);
+
+  _initTreeResize(aside);   // step 4
+}
+
+function _initTreeResize(aside) {
+  const doc = document.documentElement;
+  const w = _readView().treeWidth;
+  if (w) doc.style.setProperty('--tree-width', w + 'px');
+
+  const handle = document.createElement('div');
+  handle.className = 'tree-resize';
+  aside.appendChild(handle);
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const move = (ev) => doc.style.setProperty('--tree-width', Math.min(480, Math.max(200, ev.clientX)) + 'px');
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      _writeView({ treeWidth: parseInt(getComputedStyle(doc).getPropertyValue('--tree-width'), 10) });
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+}
 
 /* ── View settings (floating gear) ───────────────────── */
 // A small, extensible control panel for runtime view preferences. The first
@@ -596,16 +690,23 @@ const PLAN_SETTINGS = [
     label: 'Wrap long lines',
     apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on),
   },
+  {
+    key: 'sidebar',
+    label: 'Side-panel navigation',
+    apply: (on) => document.documentElement.classList.toggle('plan-sidebar', !!on),
+  },
+  {
+    key: 'fullWidth',
+    label: 'Full-width content',
+    apply: (on) => document.documentElement.classList.toggle('plan-full-width', !!on),
+  },
 ];
 
 function _initPlanSettings() {
   if (document.querySelector('.plan-settings')) return; // guard double-init
 
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(PLAN_SETTINGS_KEY)) || {}; } catch (e) {}
-  const persist = () => {
-    try { localStorage.setItem(PLAN_SETTINGS_KEY, JSON.stringify(saved)); } catch (e) {}
-  };
+  const saved = _readView();
+  const persist = () => _writeView(saved);
 
   // Apply persisted values up front (before any UI) so there's no flash.
   PLAN_SETTINGS.forEach(s => s.apply(saved[s.key]));
@@ -669,6 +770,7 @@ function _initPlanSettings() {
       const navH = nav.getBoundingClientRect().height;
       const gearH = gear.offsetHeight || 36;
       if (navH > gearH) root.style.top = ((navH - gearH) / 2) + 'px';
+      else root.style.top = '';   // nav hidden (sidebar mode) → CSS top
     };
     centerInNav();
     if (typeof ResizeObserver !== 'undefined') {

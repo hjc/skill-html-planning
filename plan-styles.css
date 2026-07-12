@@ -176,11 +176,15 @@ plan-header .meta-row {
 .dot.implemented { background: var(--purple); }
 
 /* ── main (container) ─────────────────────────────────── */
+/* Centered, capped column by default (comfortable reading measure). The gear's
+   "Full-width content" toggle drops the cap so the column fills its space —
+   works both on its own and beside the sidebar panel. */
 main {
   max-width: 1100px;
   margin: 0 auto;
   padding: 32px 24px;
 }
+html.plan-full-width main { max-width: none; }
 
 /* ── plan-section ─────────────────────────────────────── */
 plan-section {
@@ -908,4 +912,84 @@ html.plan-wrap plan-code {
 @media (max-width: 700px) {
   plan-cards { grid-template-columns: 1fr; }
   plan-principles { grid-template-columns: 1fr; }
+}
+
+/* ── Side-panel navigation tree ───────────────────────── */
+:root { --tree-width: 260px; }
+.plan-tree {
+  display: none; position: fixed; top: 0; left: 0;
+  width: var(--tree-width); height: 100vh; overflow: auto;
+  background: var(--surface); border-right: 1px solid var(--border); z-index: 90;
+}
+.plan-tree ul { list-style: none; margin: 0; padding: 0; }
+.plan-tree > ul { margin: 8px 10px 40px; padding: 2px 0 2px 8px; border-left: 1px solid var(--border); }  /* outline the whole tree */
+
+/* Header bar: a title + collapse control, sticky so it stays put while the tree scrolls. */
+.plan-tree .tree-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 12px; gap: 8px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.plan-tree .tree-head-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+  font-weight: 600; color: var(--text-muted);
+}
+/* Shared icon-button look, matching the gear's subtle-until-hover feel. */
+.tree-toggle, .tree-opener {
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.tree-toggle:hover, .tree-opener:hover {
+  color: var(--text); background: var(--surface-2); border-color: var(--border);
+}
+
+/* Row = fixed caret slot + label, so labels line up whether or not a row has a caret. */
+.plan-tree .tree-row { display: flex; align-items: center; }
+.plan-tree a { flex: 1; padding: 3px 6px; border-radius: 6px; color: var(--text-muted); font-size: 13px; text-decoration: none; }
+.plan-tree a:hover { color: var(--text); background: var(--surface-2); }
+.plan-tree a.active { color: var(--accent); }
+.plan-tree .tree-num { color: var(--text-muted); font-size: 11px; margin-right: 5px; }
+
+/* Nested items hang off an indented connector — a vertical line with a ├ tick,
+   and a └ at the last child so the line stops and flows into any nested group.
+   (The expand/collapse marker is intentionally dropped for now.) */
+.plan-tree li > ul { padding-left: 14px; }
+.plan-tree li li { position: relative; }
+.plan-tree li li::before {
+  content: ''; position: absolute; left: -7px; top: 0; bottom: 0;
+  border-left: 1px solid var(--border);
+}
+.plan-tree li li:last-child::before { bottom: auto; height: 14px; }   /* └ : line stops at the tick */
+.plan-tree li li::after {
+  content: ''; position: absolute; left: -7px; top: 14px; width: 7px;
+  border-top: 1px solid var(--border);
+}
+.plan-tree li.collapsed > ul { display: none; }
+.plan-tree .tree-resize { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; }
+.tree-opener {
+  display: none; position: fixed; top: 12px; left: 12px; z-index: 95;
+  width: 34px; height: 34px; border-radius: 8px;
+  background: var(--surface-2); border-color: var(--border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Sidebar mode: hide the top nav, then reserve the panel's column by padding the
+   whole body. Padding (not per-element margin) means main's `margin: 0 auto` still
+   centers within the *remaining* space, so the full-width vs centered choice below
+   behaves the same with or without the panel. */
+html.plan-sidebar plan-nav { display: none; }
+html.plan-sidebar .plan-tree { display: block; }
+html.plan-sidebar body { padding-left: var(--tree-width); }
+/* Panel collapsed: hide it, reclaim the column, reveal the opener. */
+html.plan-sidebar.tree-collapsed .plan-tree { display: none; }
+html.plan-sidebar.tree-collapsed body { padding-left: 0; }
+html.plan-sidebar.tree-collapsed .tree-opener { display: block; }
+/* Narrow: the panel overlays full-screen instead of reserving a column. */
+@media (max-width: 700px) {
+  html.plan-sidebar .plan-tree { width: 100vw; }
+  html.plan-sidebar body { padding-left: 0; }
 }
