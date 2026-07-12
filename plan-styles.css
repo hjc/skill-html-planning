@@ -922,7 +922,10 @@ html.plan-wrap plan-code {
   background: var(--surface); border-right: 1px solid var(--border); z-index: 90;
 }
 .plan-tree ul { list-style: none; margin: 0; padding: 0; }
-.plan-tree > ul { margin: 8px 10px 40px; padding: 2px 0 2px 8px; border-left: 1px solid var(--border); }  /* outline the whole tree */
+.plan-tree li { margin: 0; }   /* reset the base 4px li margin — gaps would break the guide lines */
+/* Outline the whole tree. margin-top:0 so the border-left meets the header's
+   bottom border (they form a ┬), i.e. the outline connects at the very top. */
+.plan-tree > ul { margin: 0 10px 40px; padding: 8px 0 2px 8px; border-left: 1px solid var(--border); }
 
 /* Header bar: a title + collapse control, sticky so it stays put while the tree scrolls. */
 .plan-tree .tree-head {
