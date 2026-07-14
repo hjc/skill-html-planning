@@ -65,8 +65,8 @@ function render(tpl, vars) {
 // The skill's install subpath under .claude, from how planr was invoked:
 // argv[1] preserves the symlinked .claude/skills/<name> path that __dirname
 // would resolve through. Baked into the generated plan's loader.
-function resolveSkillSubpath() {
-  const invoked = (process.argv[1] || __filename).replace(/\\/g, '/');
+function resolveSkillSubpath(invoked = process.argv[1] || __filename) {
+  invoked = invoked.replace(/\\/g, '/');
   const segs = invoked.split('/');
   const idx = segs.indexOf('.claude');
   if (idx !== -1) return segs.slice(idx + 1, segs.length - 1).join('/');
@@ -659,4 +659,10 @@ function main() {
     default:             return die(`unknown command '${cmd}'\n\n${USAGE}`);
   }
 }
-main();
+if (require.main === module) main();   // run the CLI only when invoked directly
+
+module.exports = {
+  render, resolveSkillSubpath, scanAttrs, getAttr, setAttrRaw,
+  findElement, findElements, findSectionById, childSections, resolveNode,
+  buildSection, sectionIds,
+};

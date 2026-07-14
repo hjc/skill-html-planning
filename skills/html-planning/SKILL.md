@@ -1,6 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
+version: 1.0.0
 ---
 
 # html-planning

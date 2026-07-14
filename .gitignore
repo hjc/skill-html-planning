@@ -1,2 +1,5 @@
-# Run /init from within Claude Code to generate this file
-CLAUDE.md
+# Node dev tooling (never part of the shipped skill)
+node_modules/
+
+# Scratch / planning artifacts
+.tmp/
