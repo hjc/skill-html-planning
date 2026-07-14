@@ -38,22 +38,25 @@ const fs = require('fs');
 const path = require('path');
 
 /* ── tiny IO + error helpers ──────────────────────────── */
+// A user-facing, expected failure. Shells map it to die(); tests assert it.
+// Anything that is NOT a PlanError is a bug and propagates as a raw stack.
+class PlanError extends Error {}
 function die(msg) {
   process.stderr.write(`planr: ${msg}\n`);
   process.exit(1);
 }
 function read(file) {
   try { return fs.readFileSync(file, 'utf8'); }
-  catch (e) { die(`cannot read '${file}': ${e.message}`); }
+  catch (e) { throw new PlanError(`cannot read '${file}': ${e.message}`); }
 }
 function write(file, html) {
   try { fs.writeFileSync(file, html, 'utf8'); }
-  catch (e) { die(`cannot write '${file}': ${e.message}`); }
+  catch (e) { throw new PlanError(`cannot write '${file}': ${e.message}`); }
 }
 function readStdin() {
-  if (process.stdin.isTTY) die('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
+  if (process.stdin.isTTY) throw new PlanError('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
   try { return fs.readFileSync(0, 'utf8'); }
-  catch (e) { die(`cannot read stdin: ${e.message}`); }
+  catch (e) { throw new PlanError(`cannot read stdin: ${e.message}`); }
 }
 
 /* ── templating (generate) ────────────────────────────────
@@ -74,20 +77,12 @@ function resolveSkillSubpath(invoked = process.argv[1] || __filename) {
 }
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
 
-function cmdTemplates() {
-  let files;
-  try { files = fs.readdirSync(TEMPLATE_DIR); }
-  catch (e) { die(`cannot read templates dir: ${e.message}`); }
-  const names = files.filter(f => f.endsWith('.html') && !f.startsWith('_'))
-                     .map(f => f.replace(/\.html$/, '')).sort();
-  process.stdout.write((names.length ? names.join('\n') : 'no templates found') + '\n');
-}
 function cmdNew(outPath, flags) {
-  if (!outPath) die('new requires an output path, e.g. `new plan.html --template tdd`');
+  if (!outPath) throw new PlanError('new requires an output path, e.g. `new plan.html --template tdd`');
   const template = (flags.template && flags.template !== true) ? String(flags.template) : 'basic';
-  if (template.startsWith('_')) die(`'${template}' is not a selectable template`);
+  if (template.startsWith('_')) throw new PlanError(`'${template}' is not a selectable template`);
   const bodyPath = path.join(TEMPLATE_DIR, `${template}.html`);
-  if (!fs.existsSync(bodyPath)) die(`unknown template '${template}' — run \`planr templates\` to list`);
+  if (!fs.existsSync(bodyPath)) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
   const composed = read(path.join(TEMPLATE_DIR, '_shell.html')).split('{{body}}').join(read(bodyPath));
   const vars = {
     title: (flags.title && flags.title !== true) ? flags.title : 'Untitled Plan',
@@ -96,7 +91,7 @@ function cmdNew(outPath, flags) {
   };
   for (const pair of (flags.set == null ? [] : [].concat(flags.set))) {
     const eq = String(pair).indexOf('=');
-    if (eq === -1) die(`--set expects key=value, got "${pair}"`);
+    if (eq === -1) throw new PlanError(`--set expects key=value, got "${pair}"`);
     vars[String(pair).slice(0, eq)] = String(pair).slice(eq + 1);
   }
   const parent = path.dirname(outPath);
@@ -297,7 +292,7 @@ function getAttr(attrsRaw, name) {
 // Return a new attribute span with `name` set to `value`, preserving the
 // existing formatting of all other attributes.
 function setAttrRaw(raw, name, value) {
-  if (value.indexOf('"') !== -1) die(`value for '${name}' may not contain a double-quote`);
+  if (value.indexOf('"') !== -1) throw new PlanError(`value for '${name}' may not contain a double-quote`);
   const found = scanAttrs(raw).find(a => a.name === name);
   if (found && found.hasValue) {
     return raw.slice(0, found.valueStart) + value + raw.slice(found.valueEnd);
@@ -330,17 +325,17 @@ function findChildSection(html, node, selector) {
 }
 function resolveNode(html, segs) {
   if (segs[0] === 'header') {
-    if (segs.length > 1) die('the header has no children');
+    if (segs.length > 1) throw new PlanError('the header has no children');
     const el = findElement(html, 'plan-header');
-    if (!el) die('no <plan-header> found');
+    if (!el) throw new PlanError('no <plan-header> found');
     return el;
   }
   // Walk the dot-path to any depth: each segment selects a child of the previous.
   let node = findSectionById(html, segs[0]);
-  if (!node) die(`section '${segs[0]}' not found`);
+  if (!node) throw new PlanError(`section '${segs[0]}' not found`);
   for (let i = 1; i < segs.length; i++) {
     const child = findChildSection(html, node, segs[i]);
-    if (!child) die(`'${segs[i]}' not found in '${segs.slice(0, i).join('.')}'`);
+    if (!child) throw new PlanError(`'${segs[i]}' not found in '${segs.slice(0, i).join('.')}'`);
     node = child;
   }
   return node;
@@ -366,7 +361,7 @@ function assertIntact(before, after, action) {
   const present = new Set(sectionIds(after));
   const lost = sectionIds(before).filter(id => !present.has(id));
   if (lost.length) {
-    die(`${action} would break the plan — section(s) no longer resolve: ${lost.join(', ')}. ` +
+    throw new PlanError(`${action} would break the plan — section(s) no longer resolve: ${lost.join(', ')}. ` +
         `Likely an unbalanced or unescaped <plan-*> tag in the content (escape < > & in code). ` +
         `Aborted; no changes written.`);
   }
@@ -432,35 +427,43 @@ function removeBlock(html, outerStart, outerEnd) {
   return before + after;
 }
 
-/* ── commands ─────────────────────────────────────────── */
-function cmdList(file) {
-  const html = read(file);
+/* ── pure cores (strings in → strings / structured result out) ──
+   Each core is pure: it takes plan text (and args) and RETURNS a value —
+   a string for read-only commands, or { html, message } for mutators —
+   throwing PlanError on bad input. Cores never touch fs or process; the
+   cmd* shells below own all IO. This makes command logic (and its error
+   paths) directly unit-testable in-process. */
+
+// Pure: html -> the `list` report text (trailing newline included).
+function planList(html) {
+  const out = [];
   const header = findElement(html, 'plan-header');
   if (header) {
     const title = getAttr(header.attrsRaw, 'title') || '(untitled)';
     const status = getAttr(header.attrsRaw, 'status');
-    process.stdout.write(`# ${title}${status ? `  [${status}]` : ''}\n`);
+    out.push(`# ${title}${status ? `  [${status}]` : ''}`);
   }
   const walk = (from, to, depth) => {
     for (const s of childSections(html, from, to)) {
       const a = k => getAttr(s.attrsRaw, k);
       const st = a('status') ? `  [${a('status')}]` : '';
-      process.stdout.write(`${'    '.repeat(depth)}${a('num') != null ? a('num') + '. ' : ''}${a('id') || '(no id)'}${a('title') ? ' — ' + a('title') : ''}${st}\n`);
+      out.push(`${'    '.repeat(depth)}${a('num') != null ? a('num') + '. ' : ''}` +
+               `${a('id') || '(no id)'}${a('title') ? ' — ' + a('title') : ''}${st}`);
       walk(s.innerStart, s.innerEnd, depth + 1);
     }
   };
   walk(0, html.length, 0);
+  return out.join('\n') + '\n';
 }
-// Open tasks: sections/subsections carrying a `status`, excluding `done` by
-// default. Each row leads with the ADDRESS so it feeds straight into set/read.
-function cmdTasks(file, flags) {
-  const html = read(file);
+
+// Pure: (html, flags) -> the `tasks` report text.
+function planTasks(html, flags) {
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
   const include = (st) => {
     if (!st) return false;
     if (want) return want.includes(st);
     if (flags.all) return true;
-    return st !== 'done';   // "open" = carries a status other than done
+    return st !== 'done';
   };
   const rows = [];
   const walk = (from, to, prefix) => {
@@ -475,121 +478,163 @@ function cmdTasks(file, flags) {
     }
   };
   walk(0, html.length, '');
-  if (!rows.length) { process.stdout.write('no open tasks\n'); return; }
+  if (!rows.length) return 'no open tasks\n';
   const aw = Math.max(...rows.map(r => r.addr.length));
   const sw = Math.max(...rows.map(r => r.status.length));
-  for (const r of rows) {
-    process.stdout.write(`${r.addr.padEnd(aw)}  [${r.status.padEnd(sw)}]  ${r.title}\n`);
-  }
+  return rows.map(r => `${r.addr.padEnd(aw)}  [${r.status.padEnd(sw)}]  ${r.title}`).join('\n') + '\n';
 }
-function cmdRead(file, address, flags) {
-  if (!address) die('read requires an address, e.g. `read plan.html steps`');
-  const html = read(file);
+
+// Pure: (html, address, flags) -> element outerHTML (+\n) or inner body.
+// Throws via resolveNode on an unknown address.
+function planRead(html, address, flags) {
+  if (!address) throw new PlanError('read requires an address, e.g. `read plan.html steps`');
   const el = resolveNode(html, address.split('.'));
-  if (flags && flags.body) {
-    // Inner content only, byte-exact with the range set-body replaces — so
-    // `read --body` → edit the hunk → `set-body` round-trips losslessly.
-    process.stdout.write(html.slice(el.innerStart, el.innerEnd));
-  } else {
-    process.stdout.write(html.slice(el.outerStart, el.outerEnd) + '\n');
-  }
+  return (flags && flags.body)
+    ? html.slice(el.innerStart, el.innerEnd)
+    : html.slice(el.outerStart, el.outerEnd) + '\n';
 }
-function cmdSet(file, spec) {
-  if (!spec || spec.indexOf('=') === -1) die('set expects <path>=<value>, e.g. `set plan.html steps.status=done`');
+
+// Pure: dir entries -> sorted selectable template names.
+function planTemplates(files) {
+  return files.filter(f => f.endsWith('.html') && !f.startsWith('_'))
+              .map(f => f.replace(/\.html$/, '')).sort();
+}
+
+// Pure: (html, "path=value") -> { html, message }; throws PlanError on bad input.
+function planSet(html, spec) {
+  if (!spec || spec.indexOf('=') === -1)
+    throw new PlanError('set expects <path>=<value>, e.g. `set plan.html steps.status=done`');
   const eq = spec.indexOf('=');
-  const pathPart = spec.slice(0, eq);
-  const value = spec.slice(eq + 1);
+  const pathPart = spec.slice(0, eq), value = spec.slice(eq + 1);
   const segs = pathPart.split('.');
-  if (segs.length < 2) die('path must be <node>.<attr>, e.g. steps.status or steps.3.status');
+  if (segs.length < 2) throw new PlanError('path must be <node>.<attr>, e.g. steps.status or steps.3.status');
   const attr = segs.pop();
-  const html = read(file);
   const node = resolveNode(html, segs);
   const allowed = NODE_ATTRS[node.tag];
-  if (allowed && !allowed.includes(attr)) die(`unknown attribute '${attr}' for <${node.tag}> — valid: ${allowed.join(', ')}`);
-  if (attr === 'status' && (node.tag === 'plan-section' || node.tag === 'plan-subsection') && !SECTION_STATUS.includes(value))
-    die(`invalid status '${value}' — valid: ${SECTION_STATUS.join(', ')}`);
+  if (allowed && !allowed.includes(attr))
+    throw new PlanError(`unknown attribute '${attr}' for <${node.tag}> — valid: ${allowed.join(', ')}`);
+  if (attr === 'status' && (node.tag === 'plan-section' || node.tag === 'plan-subsection') &&
+      !SECTION_STATUS.includes(value))
+    throw new PlanError(`invalid status '${value}' — valid: ${SECTION_STATUS.join(', ')}`);
   const newRaw = setAttrRaw(node.attrsRaw, attr, value);
-  write(file, html.slice(0, node.attrStart) + newRaw + html.slice(node.attrEnd));
-  process.stdout.write(`set ${pathPart} = "${value}"\n`);
+  return {
+    html: html.slice(0, node.attrStart) + newRaw + html.slice(node.attrEnd),
+    message: `set ${pathPart} = "${value}"`,
+  };
 }
-// Replace (or --append to) a node's inner content with a verbatim splice.
-// Body comes from --file or stdin. Pairs with `read --body`.
-function cmdSetBody(file, address, flags) {
-  if (!address) die('set-body requires an address, e.g. `set-body plan.html caching`');
-  const html = read(file);
+
+// Pure: (html, address, body, {append}) -> { html, message }.
+// Throws via resolveNode (bad address) or assertIntact (splice would break the plan).
+function planSetBody(html, address, body, { append = false } = {}) {
+  if (!address) throw new PlanError('set-body requires an address, e.g. `set-body plan.html caching`');
   const el = resolveNode(html, address.split('.'));
-  const body = flags.file && flags.file !== true ? read(flags.file) : readStdin();
-  const out = flags.append
+  const out = append
     ? html.slice(0, el.innerEnd) + body + html.slice(el.innerEnd)
     : html.slice(0, el.innerStart) + body + html.slice(el.innerEnd);
   assertIntact(html, out, 'set-body');
-  write(file, out);
-  process.stdout.write(`set body of ${address}${flags.append ? ' (appended)' : ''} — ${body.length} chars\n`);
+  return { html: out, message: `set body of ${address}${append ? ' (appended)' : ''} — ${body.length} chars` };
 }
-function cmdAddSection(file, flags) {
-  if (!flags.id) die('add-section requires --id');
-  if (flags.after && flags.before) die('use only one of --after / --before');
-  const before = read(file);
-  let html = before;
-  if (findSectionById(html, flags.id)) die(`section '${flags.id}' already exists`);
-  const body = flags['body-file'] && flags['body-file'] !== true ? read(flags['body-file']) : null;
 
+// Pure: (html, flags, body) -> { html, message }; throws on dup / missing id / bad ref.
+// Body is passed in (the shell reads --body-file); the core never touches fs.
+function planAddSection(html, flags, body /* string | null */) {
+  if (!flags.id) throw new PlanError('add-section requires --id');
+  if (flags.after && flags.before) throw new PlanError('use only one of --after / --before');
+  if (findSectionById(html, flags.id)) throw new PlanError(`section '${flags.id}' already exists`);
+  let out;
   if (flags.parent && flags.parent !== true) {
-    // Nested insert — a child of the addressed parent.
     const parent = resolveNode(html, String(flags.parent).split('.'));
     const block = buildSection(flags, elementIndent(html, parent) + '  ', body);
     const childSel = flags.after || flags.before;
     if (childSel) {
       const ref = findChildSection(html, parent, String(childSel));
-      if (!ref) die(`child '${childSel}' not found in '${flags.parent}'`);
-      html = insertBlock(html, ref, block, flags.after ? 'after' : 'before');
+      if (!ref) throw new PlanError(`child '${childSel}' not found in '${flags.parent}'`);
+      out = insertBlock(html, ref, block, flags.after ? 'after' : 'before');
     } else {
-      html = insertInside(html, parent, block);
+      out = insertInside(html, parent, block);
     }
   } else {
     const block = buildSection(flags, sectionIndent(html), body);
     if (flags.after) {
       const ref = findSectionById(html, flags.after);
-      if (!ref) die(`--after section '${flags.after}' not found`);
-      html = insertBlock(html, ref, block, 'after');
+      if (!ref) throw new PlanError(`--after section '${flags.after}' not found`);
+      out = insertBlock(html, ref, block, 'after');
     } else if (flags.before) {
       const ref = findSectionById(html, flags.before);
-      if (!ref) die(`--before section '${flags.before}' not found`);
-      html = insertBlock(html, ref, block, 'before');
+      if (!ref) throw new PlanError(`--before section '${flags.before}' not found`);
+      out = insertBlock(html, ref, block, 'before');
     } else {
-      html = appendSection(html, block);
+      out = appendSection(html, block);
     }
   }
-  assertIntact(before, html, 'add-section');
-  write(file, html);
-  process.stdout.write(`added section '${flags.id}'${flags.parent ? ` under '${flags.parent}'` : ''}\n`);
+  assertIntact(html, out, 'add-section');   // now throws PlanError (§5.2)
+  return { html: out, message: `added section '${flags.id}'${flags.parent ? ` under '${flags.parent}'` : ''}` };
 }
-function cmdRmSection(file, address) {
-  if (!address) die('rm-section requires a section address');
-  const html = read(file);
+
+// Pure: (html, address) -> { html, message }; throws on unknown address or the header.
+function planRmSection(html, address) {
+  if (!address) throw new PlanError('rm-section requires a section address');
   const el = resolveNode(html, address.split('.'));
-  if (el.tag === 'plan-header') die('cannot remove the header');
-  write(file, removeBlock(html, el.outerStart, el.outerEnd));
-  process.stdout.write(`removed '${address}'\n`);
+  if (el.tag === 'plan-header') throw new PlanError('cannot remove the header');
+  return { html: removeBlock(html, el.outerStart, el.outerEnd), message: `removed '${address}'` };
 }
-function cmdMoveSection(file, address, flags) {
-  if (!address) die('move-section requires a section address');
+
+// Pure: (html, address, flags) -> { html, message }; throws on missing/self ref or the header.
+function planMoveSection(html, address, flags) {
+  if (!address) throw new PlanError('move-section requires a section address');
   const position = flags.after ? 'after' : flags.before ? 'before' : null;
   const refAddr = flags.after || flags.before;
-  if (!position) die('move-section requires --after <ref> or --before <ref>');
-  if (flags.after && flags.before) die('use only one of --after / --before');
-  if (address === refAddr) die('cannot move a section relative to itself');
-  let html = read(file);
+  if (!position) throw new PlanError('move-section requires --after <ref> or --before <ref>');
+  if (flags.after && flags.before) throw new PlanError('use only one of --after / --before');
+  if (address === refAddr) throw new PlanError('cannot move a section relative to itself');
   const el = resolveNode(html, address.split('.'));
-  if (el.tag === 'plan-header') die('cannot move the header');
+  if (el.tag === 'plan-header') throw new PlanError('cannot move the header');
   const from = lineStart(html, el.outerStart);
   const to = lineEndAfterNewline(html, el.outerEnd);
   const block = html.slice(from, to).replace(/\n$/, '');
-  html = removeBlock(html, el.outerStart, el.outerEnd);
-  const ref = resolveNode(html, String(refAddr).split('.'));
-  html = insertBlock(html, ref, block, position);
-  write(file, html);
-  process.stdout.write(`moved '${address}' ${position} '${refAddr}'\n`);
+  let out = removeBlock(html, el.outerStart, el.outerEnd);
+  const ref = resolveNode(out, String(refAddr).split('.'));   // resolve in the post-removal html
+  return { html: insertBlock(out, ref, block, position), message: `moved '${address}' ${position} '${refAddr}'` };
+}
+
+/* ── commands (thin IO shells) ─────────────────────────
+   Each shell: read the file, run the pure core, write / print. Validation and
+   error text live in the cores (they throw PlanError); main() is the sole site
+   that maps a PlanError to die(). */
+
+// Read-only shell: read, run core, print.
+function cmdList(file)               { process.stdout.write(planList(read(file))); }
+function cmdTasks(file, flags)       { process.stdout.write(planTasks(read(file), flags)); }
+function cmdRead(file, addr, flags)  { process.stdout.write(planRead(read(file), addr, flags)); }
+function cmdTemplates() {
+  let files;
+  try { files = fs.readdirSync(TEMPLATE_DIR); }
+  catch (e) { throw new PlanError(`cannot read templates dir: ${e.message}`); }
+  process.stdout.write(planTemplates(files).join('\n') + '\n');
+}
+
+// Mutating shell: read, run core, write, print message.
+function cmdSet(file, spec) {
+  const { html, message } = planSet(read(file), spec);
+  write(file, html); process.stdout.write(message + '\n');
+}
+function cmdSetBody(file, address, flags) {
+  const body = flags.file && flags.file !== true ? read(flags.file) : readStdin();
+  const { html, message } = planSetBody(read(file), address, body, { append: !!flags.append });
+  write(file, html); process.stdout.write(message + '\n');
+}
+function cmdAddSection(file, flags) {
+  const body = flags['body-file'] && flags['body-file'] !== true ? read(flags['body-file']) : null;
+  const { html, message } = planAddSection(read(file), flags, body);
+  write(file, html); process.stdout.write(message + '\n');
+}
+function cmdRmSection(file, address) {
+  const { html, message } = planRmSection(read(file), address);
+  write(file, html); process.stdout.write(message + '\n');
+}
+function cmdMoveSection(file, address, flags) {
+  const { html, message } = planMoveSection(read(file), address, flags);
+  write(file, html); process.stdout.write(message + '\n');
 }
 
 /* ── flag parsing + dispatch ──────────────────────────── */
@@ -642,21 +687,26 @@ function main() {
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
   const NEEDS_FILE = ['new', 'list', 'tasks', 'read', 'set', 'set-body', 'add-section', 'rm-section', 'move-section'];
-  if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) die(`unknown command '${cmd}'\n\n${USAGE}`);
-  if (NEEDS_FILE.includes(cmd) && !file) die(`'${cmd}' requires a <file> argument`);
-  switch (cmd) {
-    case 'new':          return cmdNew(file, flags);
-    case 'templates':    return cmdTemplates();
-    case 'list':         return cmdList(file);
-    case 'tasks':        return cmdTasks(file, flags);
-    case 'read':         return cmdRead(file, positional[1], flags);
-    case 'set':          return cmdSet(file, positional[1]);
-    case 'set-body':     return cmdSetBody(file, positional[1], flags);
-    case 'add-section':  return cmdAddSection(file, flags);
-    case 'rm-section':   return cmdRmSection(file, positional[1]);
-    case 'move-section': return cmdMoveSection(file, positional[1], flags);
-    case 'help':         return process.stdout.write(USAGE + '\n');
-    default:             return die(`unknown command '${cmd}'\n\n${USAGE}`);
+  try {
+    if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
+    if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
+    switch (cmd) {
+      case 'new':          return cmdNew(file, flags);
+      case 'templates':    return cmdTemplates();
+      case 'list':         return cmdList(file);
+      case 'tasks':        return cmdTasks(file, flags);
+      case 'read':         return cmdRead(file, positional[1], flags);
+      case 'set':          return cmdSet(file, positional[1]);
+      case 'set-body':     return cmdSetBody(file, positional[1], flags);
+      case 'add-section':  return cmdAddSection(file, flags);
+      case 'rm-section':   return cmdRmSection(file, positional[1]);
+      case 'move-section': return cmdMoveSection(file, positional[1], flags);
+      case 'help':         return process.stdout.write(USAGE + '\n');
+      default:             throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
+    }
+  } catch (e) {
+    if (e instanceof PlanError) die(e.message);   // the ONLY die() call site
+    throw e;                                       // real bug → raw stack
   }
 }
 if (require.main === module) main();   // run the CLI only when invoked directly
@@ -665,4 +715,7 @@ module.exports = {
   render, resolveSkillSubpath, scanAttrs, getAttr, setAttrRaw,
   findElement, findElements, findSectionById, childSections, resolveNode,
   buildSection, sectionIds,
+  PlanError,
+  planTemplates, planList, planTasks, planRead,
+  planSet, planSetBody, planAddSection, planRmSection, planMoveSection,
 };

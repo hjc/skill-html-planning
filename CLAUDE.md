@@ -36,6 +36,16 @@ A generated plan file contains **only semantic `<plan-*>` markup** — no inline
 
 `file://`-opened plans are fully interactive but **cannot read source files** (browsers block `fetch()` of local files). Live source reads and exact git diffs are the job of **Mimir**, a separate companion desktop app — not this skill.
 
+## The planr command layering (core / shell / die)
+
+`planr.js` is split into three layers, and new commands must follow the same shape:
+
+1. **Pure `plan*` cores** — one per command (`planList`, `planTasks`, `planRead`, `planTemplates`, `planSet`, `planSetBody`, `planAddSection`, `planRmSection`, `planMoveSection`). A core takes plan text (and args) and **returns** a value — a string for read-only commands, `{ html, message }` for mutators — and **throws `PlanError`** on any expected, user-facing failure. Cores never touch `fs` or `process`, so their logic *and every error path* are unit-testable in-process (`tests/planr.cores.test.js`, via `toThrow` / return values). A body is always **passed in** as a string; the core never reads it from disk.
+2. **Thin `cmd*` IO shells** — read the file (and stdin/`--body-file`), call the core, then `write`/print. The shell is the only IO boundary; it holds no validation text.
+3. **`main()` is the sole `die()` site.** It wraps dispatch in `try { … } catch (e) { if (e instanceof PlanError) die(e.message); throw e; }`, so a `PlanError` becomes `planr: <msg>\n` on stderr + exit 1, and any non-`PlanError` surfaces as a raw stack (a real bug, not a tidy user error). **Never** call `die()` / `process.exit()` anywhere else — a core that exits re-breaks unit-testability.
+
+When adding a command: write the pure `plan*` core (throwing `PlanError`), add a thin `cmd*` shell, wire it into `main()`'s dispatch + `NEEDS_FILE`, export the core from `module.exports`, and cover it in `tests/planr.cores.test.js` (happy + error). Keep the integration suite (`tests/planr.cli.test.js`) to wiring only — dispatch, exit codes, stdin, round-trips, the `.claude` subpath bake, and at least one error→exit-1 case that proves `main()`'s catch fires.
+
 ## Adding or changing a component
 
 A component spans **four** places that must stay aligned:
