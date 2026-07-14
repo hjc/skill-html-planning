@@ -298,13 +298,19 @@ function _isSectionTag(n) {
   return !!n && (n.tagName === 'PLAN-SECTION' || n.tagName === 'PLAN-SUBSECTION');
 }
 // Dotted number from document position: index among section-like siblings,
-// joined down the ancestor chain. A present `num` attribute overrides its level.
+// joined down the ancestor chain. A `num` attribute overrides its level; a
+// DOTTED override (e.g. "5.1") is taken as the complete number for that node so
+// it isn't re-prefixed by its ancestors — otherwise "5" + "5.1" renders "5.5.1".
 function _sectionNumber(el) {
   const parts = [];
   for (let n = el; _isSectionTag(n); n = n.parentElement && n.parentElement.closest('plan-section, plan-subsection')) {
     const override = n.getAttribute('num');
-    if (override != null) parts.unshift(override);
-    else parts.unshift(Array.from(n.parentElement.children).filter(_isSectionTag).indexOf(n) + 1);
+    if (override != null) {
+      parts.unshift(override);
+      if (override.includes('.')) break;   // complete dotted number — stop climbing
+    } else {
+      parts.unshift(Array.from(n.parentElement.children).filter(_isSectionTag).indexOf(n) + 1);
+    }
     if (!n.parentElement) break;
   }
   return parts.join('.');

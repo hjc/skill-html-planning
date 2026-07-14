@@ -85,7 +85,7 @@ A content section. **Sections nest** — a `<plan-section>` may contain child `<
   </plan-section>
 </plan-section>
 ```
-**Attributes:** `id` (required for nav linking + CLI addressing), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a colored pill in the heading; flip it cheaply with `planr`), `num` (optional — **overrides** the auto-number for that one section, e.g. `"Part 1"`).
+**Attributes:** `id` (required for nav linking + CLI addressing), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a colored pill in the heading; flip it cheaply with `planr`), `num` (optional — **overrides** the auto-number for that one section, e.g. `"Part 1"`; on a nested section a bare value like `1` joins onto the parent → `5.1`, while a dotted value like `5.1` is used as-is).
 
 #### `<plan-subsection>`
 Backward-compat **alias for a nested `<plan-section>`** — it renders identically (one level deeper: `h3`, auto-numbered `N.M`). New plans can simply nest `<plan-section>`; the `<plan-subsection>` tag remains so existing plans keep working. Use either for TDD steps, sub-phases, or any sub-grouping.
@@ -362,7 +362,7 @@ Every top-level command. **Positional args are order-sensitive; flags may appear
 - **Addressing (dot-paths, any depth):** `header` · `<sectionId>` · `<sectionId>.<child>` · `<sectionId>.<child>.<grandchild>` … Each segment is a child's `id` or its 1-based ordinal among siblings. `--after`/`--before` refs are **full addresses**; `--parent` takes the container's address.
 - **`set` path grammar:** `<node>.<attr>=<value>` — e.g. `steps.status=done`, `steps.3.status=in-progress`, `header.status=approved`.
 - **`status` values:** sections & subsections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `approved` / `implemented` / `rejected`. `set` **rejects** an out-of-set status or an unknown attribute name (e.g. a typo like `staus`) with an error — it never silently no-ops.
-- **Numbers are automatic:** section numbers (`1`, `1.1`, `1.1.2`) derive from document position and update themselves after add/move/remove — no drift, nothing to maintain. Set a `num` attribute only to **override** a specific label (e.g. `"Part 1"`).
+- **Numbers are automatic:** section numbers (`1`, `1.1`, `1.1.2`) derive from document position and update themselves after add/move/remove — no drift, nothing to maintain. Set `num` only to **override** a label: a bare value (`1`, `"Part 1"`) replaces that level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is taken as the complete number as-is (so it isn't re-prefixed into `5.5.1`).
 - **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render (e.g. `set plan.html 'header.subtitle=the &quot;remember me&quot; box'`).
 - **Mutually exclusive:** `--after` and `--before` (passing both is an error). `move-section` requires exactly one.
 - **Body input:** `set-body` reads `--file <f>` if given, otherwise **stdin** (`… | planr set-body plan.html steps`). `add-section` takes `--body-file <f>` (no stdin).
