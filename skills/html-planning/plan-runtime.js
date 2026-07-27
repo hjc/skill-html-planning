@@ -598,6 +598,11 @@ requestAnimationFrame(() => _initPlanTree());
 // Runtime-injected full-depth section tree (like the settings gear). Hidden by
 // default; the `.plan-sidebar` gear toggle reveals it and swaps out the top nav.
 function _initPlanTree() {
+  // Per-item collapse: a right-aligned caret on every row that has children
+  // toggles `.collapsed` on its <li> (CSS hides the child <ul>). The initial
+  // state honors the "Start sections collapsed" view setting.
+  const startCollapsed = !!_readView().navCollapsed;
+  const CARET_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
   const build = (container) => {
     const kids = container.querySelectorAll(':scope > plan-section[id], :scope > plan-subsection[id]');
     if (!kids.length) return null;
@@ -611,6 +616,20 @@ function _initPlanTree() {
       a.href = '#' + sec.id; a.dataset.tree = sec.id;
       a.innerHTML = `<span class="tree-num">${_sectionNumber(sec)}</span> ${sec.getAttribute('title') || sec.id}`;
       row.appendChild(a);
+      if (sub) {
+        li.classList.add('has-children');
+        if (startCollapsed) li.classList.add('collapsed');
+        const caret = document.createElement('button');
+        caret.className = 'tree-caret';
+        caret.setAttribute('aria-label', 'Toggle children');
+        caret.setAttribute('title', 'Expand / collapse');
+        caret.innerHTML = CARET_SVG;
+        caret.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          li.classList.toggle('collapsed');
+        });
+        row.appendChild(caret);
+      }
       li.appendChild(row);
       if (sub) li.appendChild(sub);
       ul.appendChild(li);
@@ -685,26 +704,31 @@ function _initTreeResize(aside) {
 }
 
 /* ── View settings (floating gear) ───────────────────── */
-// A small, extensible control panel for runtime view preferences. The first
-// setting is line wrapping; toggling it flips the `.plan-wrap` class on
-// <html> (CSS does the rest) and persists the choice to localStorage so it
-// sticks across reloads and other plans on the same origin.
+// A small, extensible control panel for runtime view preferences, bucketed by
+// area. `PLAN_SETTINGS` is an array of groups ({title, settings}); each setting
+// `apply`s by flipping a class on <html> (CSS does the rest) or, for the nav
+// toggles, by acting on the tree. Choices persist to localStorage so they stick
+// across reloads and other plans on the same origin.
 const PLAN_SETTINGS_KEY = 'plan-view-settings';
 const PLAN_SETTINGS = [
   {
-    key: 'wrap',
-    label: 'Wrap long lines',
-    apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on),
+    title: 'View',
+    settings: [
+      { key: 'wrap', label: 'Wrap long lines',
+        apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on) },
+      { key: 'fullWidth', label: 'Full-width content',
+        apply: (on) => document.documentElement.classList.toggle('plan-full-width', !!on) },
+    ],
   },
   {
-    key: 'sidebar',
-    label: 'Side-panel navigation',
-    apply: (on) => document.documentElement.classList.toggle('plan-sidebar', !!on),
-  },
-  {
-    key: 'fullWidth',
-    label: 'Full-width content',
-    apply: (on) => document.documentElement.classList.toggle('plan-full-width', !!on),
+    title: 'Navigation',
+    settings: [
+      { key: 'sidebar', label: 'Side-panel navigation',
+        apply: (on) => document.documentElement.classList.toggle('plan-sidebar', !!on) },
+      { key: 'navCollapsed', label: 'Start sections collapsed',
+        apply: (on) => document.querySelectorAll('.plan-tree li.has-children')
+                         .forEach(li => li.classList.toggle('collapsed', !!on)) },
+    ],
   },
 ];
 
@@ -713,17 +737,23 @@ function _initPlanSettings() {
 
   const saved = _readView();
   const persist = () => _writeView(saved);
+  const allSettings = PLAN_SETTINGS.flatMap(g => g.settings);
 
   // Apply persisted values up front (before any UI) so there's no flash.
-  PLAN_SETTINGS.forEach(s => s.apply(saved[s.key]));
+  allSettings.forEach(s => s.apply(saved[s.key]));
 
   const GEAR_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
 
-  const rows = PLAN_SETTINGS.map(s =>
-    `<label class="plan-settings-row">
-       <input type="checkbox" data-setting="${s.key}"${saved[s.key] ? ' checked' : ''}>
-       <span>${s.label}</span>
-     </label>`
+  // One titled group per bucket; each row is a labeled checkbox.
+  const groups = PLAN_SETTINGS.map(g =>
+    `<div class="plan-settings-group">
+       <div class="plan-settings-title">${g.title}</div>
+       ${g.settings.map(s =>
+         `<label class="plan-settings-row">
+            <input type="checkbox" data-setting="${s.key}"${saved[s.key] ? ' checked' : ''}>
+            <span>${s.label}</span>
+          </label>`).join('')}
+     </div>`
   ).join('');
 
   const root = document.createElement('div');
@@ -731,8 +761,7 @@ function _initPlanSettings() {
   root.innerHTML = `
     <button class="plan-settings-gear" aria-label="View settings" aria-expanded="false" title="View settings">${GEAR_SVG}</button>
     <div class="plan-settings-panel" role="menu" hidden>
-      <div class="plan-settings-title">View</div>
-      ${rows}
+      ${groups}
     </div>`;
   document.body.appendChild(root);
 
@@ -753,7 +782,7 @@ function _initPlanSettings() {
   root.querySelectorAll('input[data-setting]').forEach(input => {
     input.addEventListener('change', () => {
       const key = input.dataset.setting;
-      const setting = PLAN_SETTINGS.find(s => s.key === key);
+      const setting = allSettings.find(s => s.key === key);
       saved[key] = input.checked;
       if (setting) setting.apply(input.checked);
       persist();

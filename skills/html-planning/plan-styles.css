@@ -891,6 +891,8 @@ details > :not(summary) { padding: 0 16px 16px; }
   cursor: pointer;
   accent-color: var(--accent);
 }
+/* Space between setting buckets (each group keeps its own title). */
+.plan-settings-group + .plan-settings-group { margin-top: 12px; }
 
 /* ── Wrap mode (toggled by the gear's "Wrap long lines") ──
    Off by default: code-bearing components scroll horizontally. When on,
@@ -957,9 +959,20 @@ html.plan-wrap plan-code {
 .plan-tree a.active { color: var(--accent); }
 .plan-tree .tree-num { color: var(--text-muted); font-size: 11px; margin-right: 5px; }
 
+/* Right-aligned caret: expand/collapse a row's children (has-children rows only).
+   The chevron points down when open, rotates to point right when collapsed. */
+.plan-tree .tree-caret {
+  flex: none; width: 20px; height: 20px; margin-left: 2px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 4px; background: transparent;
+  color: var(--text-muted); cursor: pointer;
+  transition: transform 0.15s, color 0.15s, background 0.15s;
+}
+.plan-tree .tree-caret:hover { color: var(--text); background: var(--surface-2); }
+.plan-tree li.collapsed > .tree-row .tree-caret { transform: rotate(-90deg); }
+
 /* Nested items hang off an indented connector — a vertical line with a ├ tick,
-   and a └ at the last child so the line stops and flows into any nested group.
-   (The expand/collapse marker is intentionally dropped for now.) */
+   and a └ at the last child so the line stops and flows into any nested group. */
 .plan-tree li > ul { padding-left: 14px; }
 .plan-tree li li { position: relative; }
 .plan-tree li li::before {
