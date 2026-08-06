@@ -3,13 +3,13 @@
 `html-planning` is two things:
 
 1. An LLM skill describing how to build rich, interactive plans (business development plans, product requirements documents, software implementation plans, etc.) in HTML using Web Components.
-2. An associated runtime for these plans implemented in JavaScript and CSS using the Web Components technology, named planr, and an accompanying CLI.
+2. An associated runtime for these plans (implemented in JavaScript and CSS via Web Components), plus planr, an accompanying CLI.
 
 The skill is unconcerned with **what to plan** and focuses more on **how to format** those plans.
 
 ## Why?
 
-Recent research is showing that, while Markdown was initially the lingua franca for LLM planning workflows, [HTML is more effective](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html), primarily because it lowers cognitive overhead for the human operator or reviewer.
+Recent research shows that, while Markdown was initially the lingua franca for LLM planning workflows, [HTML is more effective](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html), primarily because it lowers cognitive overhead for the human operator or reviewer.
 
 However, without guardrails and guidance, this format change has a non-trivial cost for the producing LLM agent.
 
@@ -94,15 +94,15 @@ For a minor size increase over plaintext Markdown plans, plans generated with `h
 
 1. Syntax highlighting for code snippets.
 2. GitHub-style diff markers for lines added and removed, presenting changes in a friendly and efficient manner.
-3. Sections and sub-sections, with a sidebar nav for quick navigation.
+3. Sections and sub-sections, with top-bar and optional sidebar navigation.
 4. Support for embedding Mermaid diagrams (lazy-loaded when diagrams are present).
 5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
-6. Configurable line wrapping support for code snippets and view width.
+6. Configurable line wrapping support for code snippets, plus adjustable view width.
 7. Interactive tabs, collapsible components, and callout components.
 8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, formulas, and principles.
 9. Per-section and per-step status pills (`todo`/`in-progress`/`done`/`blocked`) for tracking implementation progress in-place.
 
-In addition to the user-facing features mentioned above, `html-planning` comes with a CLI, `planr.js`, that serves as a frontend an LLM can use to scaffold, manipulate, and write plans.
+In addition to the user-facing features mentioned above, `html-planning` comes with a CLI, `planr.js`, that serves as an interface an LLM can use to scaffold, edit, and manage plans.
 
 All in all, `html-planning` enables your agent to write semantically expressive plans that are considerably more pleasurable to read than those in raw Markdown.
 
@@ -135,7 +135,7 @@ Then start adding any relevant components, open in your browser and enjoy!
 
 ## Templates
 
-`planr new` composes a plan from a template and ships with two by default:
+`planr new` composes a plan from a template; two ship by default:
 
 | Template | Use it for |
 |----------|------------|
@@ -156,13 +156,13 @@ node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --te
 
 All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body. As such, templates should just express the body of the final HTML document.
 
-Templates can be optionally parameterized with variables as needed.
+Templates can be parameterized with variables as needed.
 
 ### Writing a custom template
 
-A template body is just the markup that goes inside `<main>`. Nominally, this is a collection of `<plan-section>` elements.
+A template body is just the markup that goes inside `<main>`. Typically, this is a collection of `<plan-section>` elements.
 
-Adding a new file into `templates/` immediately exposes it to the CLI for usage.
+Adding a new file into `templates/` immediately makes it available to the CLI.
 
 For example, a lightweight PRD template with a custom `{{owner}}` field:
 
@@ -188,7 +188,7 @@ node .claude/skills/html-planning/planr.js new checkout.html \
 
 The body is injected into `_shell.html`'s `{{body}}` slot, and every `{{var}}` is substituted.
 
-The list of default supported vars (injected into the `_shell.html`) are:
+The default supported vars (injected into `_shell.html`) are:
 
 | Placeholder | Filled with |
 |-------------|-------------|
@@ -200,8 +200,7 @@ Unknown placeholders are left untouched, so a `{{typo}}` with no matching value 
 
 ## Editing Plans Cheaply
 
-The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*.
-Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
+The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
 
 `planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document.
 
@@ -230,8 +229,7 @@ node .claude/skills/html-planning/planr.js read plan.html caching --body > hunk.
 node .claude/skills/html-planning/planr.js set-body plan.html caching --file hunk.html
 ```
 
-`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses.
-See `SKILL.md` for the full command and addressing reference.
+`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. See `SKILL.md` for the full command and addressing reference.
 
 ## Developing this skill
 
@@ -244,7 +242,7 @@ npm test        # vitest — unit (pure engine) + integration (CLI subprocess) s
 
 ### Contents
 
-Referenced from `skills/html-planning/`:
+Relative to `skills/html-planning/`:
 
 | File | Purpose |
 |------|---------|
