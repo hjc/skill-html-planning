@@ -3,13 +3,13 @@
 `html-planning` is two things:
 
 1. An LLM skill describing how to build rich, interactive plans (business development plans, product requirements documents, software implementation plans, etc.) in HTML using Web Components.
-2. An associated runtime for these plans implemented in JavaScript and CSS using the Web Components technology.
+2. An associated runtime for these plans (implemented in JavaScript and CSS via Web Components), plus planr, an accompanying CLI.
 
 The skill is unconcerned with **what to plan** and focuses more on **how to format** those plans.
 
 ## Why?
 
-Recent research is showing that, while Markdown was initially the lingua franca for LLM planning workflows, [HTML is more effective](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html), primarily because it lowers cognitive overhead for the human operator or reviewer.
+Recent research shows that, while Markdown was initially the lingua franca for LLM planning workflows, [HTML is more effective](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html), primarily because it lowers cognitive overhead for the human operator or reviewer.
 
 However, without guardrails and guidance, this format change has a non-trivial cost for the producing LLM agent.
 
@@ -55,7 +55,7 @@ After the skill, when asked to produce an HTML plan, Claude uses the skill to ge
 </plan-header>
 
 <main>
-<plan-section num="1" title="Model Updates">
+<plan-section id="models" num="1" title="Model Updates">
   <h3>Update the model definitions:</h3>
 
   <plan-diff path="server/app/orders/models.py" old-start="45" new-start="45">
@@ -94,24 +94,17 @@ For a minor size increase over plaintext Markdown plans, plans generated with `h
 
 1. Syntax highlighting for code snippets.
 2. GitHub-style diff markers for lines added and removed, presenting changes in a friendly and efficient manner.
-3. Sections and sub-sections, with a sticky nav to jump between them and clear identifiers.
+3. Sections and sub-sections, with top-bar and optional sidebar navigation.
 4. Support for embedding Mermaid diagrams (lazy-loaded when diagrams are present).
 5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
-6. Toggleable line wrapping support for code snippets.
+6. Configurable line wrapping support for code snippets, plus adjustable view width.
 7. Interactive tabs, collapsible components, and callout components.
 8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, formulas, and principles.
+9. Per-section and per-step status pills (`todo`/`in-progress`/`done`/`blocked`) for tracking implementation progress in-place.
+
+In addition to the user-facing features mentioned above, `html-planning` comes with a CLI, `planr.js`, that serves as an interface an LLM can use to scaffold, edit, and manage plans.
 
 All in all, `html-planning` enables your agent to write semantically expressive plans that are considerably more pleasurable to read than those in raw Markdown.
-
-## Contents
-
-| File | Purpose |
-|------|---------|
-| `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
-| `generate.js` | Simple node script that emits a plan skeleton with the inline loader. |
-| `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
-| `plan-styles.css` | Plan design system, also injected via the inline loader. |
-| `examples/sample-plan.html` | Sample file with every component listed. |
 
 ## Installation
 
@@ -133,7 +126,129 @@ Happy planning!
 ## Using the Generator
 
 ```bash
-node .claude/skills/html-planning/generate.js <plan-output-path>.html --title "New Plan"
+node .claude/skills/html-planning/planr.js new <plan-output-path>.html --title "New Plan"
+
+# use --template <name> to start from a spine (e.g. tdd); `planr templates` lists them
 ```
 
 Then start adding any relevant components, open in your browser and enjoy!
+
+## Templates
+
+`planr new` composes a plan from a template; two ship by default:
+
+| Template | Use it for |
+|----------|------------|
+| `basic` | A minimal starting point — a single section, ready to fill in. |
+| `tdd` | An opinionated software implementation plan with the canonical spine: Overview, Scope, Reconnaissance, Design Decisions, Implementation Steps, Callsite Audit, Verification, Anti-Patterns. |
+
+After installing, delete or add templates as you see fit.
+
+To interact with the template system:
+
+```bash
+# list available templates
+node .claude/skills/html-planning/planr.js templates
+
+# scaffold from the tdd template
+node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template tdd
+```
+
+All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body. As such, templates should just express the body of the final HTML document.
+
+Templates can be parameterized with variables as needed.
+
+### Writing a custom template
+
+A template body is just the markup that goes inside `<main>`. Typically, this is a collection of `<plan-section>` elements.
+
+Adding a new file into `templates/` immediately makes it available to the CLI.
+
+For example, a lightweight PRD template with a custom `{{owner}}` field:
+
+`templates/prd.html`:
+
+```html
+<plan-section id="summary" num="1" title="Summary">
+  <p><strong>Owner:</strong> {{owner}}</p>
+  <p>What we're building and why.</p>
+</plan-section>
+
+<plan-section id="requirements" num="2" title="Requirements">
+  <p>The must-haves.</p>
+</plan-section>
+```
+
+Then scaffold from it, filling the custom field with `--set`:
+
+```bash
+node .claude/skills/html-planning/planr.js new checkout.html \
+  --title "Checkout PRD" --template prd --set owner="Payments Team"
+```
+
+The body is injected into `_shell.html`'s `{{body}}` slot, and every `{{var}}` is substituted.
+
+The default supported vars (injected into `_shell.html`) are:
+
+| Placeholder | Filled with |
+|-------------|-------------|
+| `{{title}}` | `--title` (default `Untitled Plan`); shown in the browser tab and the header. |
+| `{{date}}` | Today's date (`YYYY-MM-DD`), automatically. |
+| `{{skillSubpath}}` | The skill's install path, baked into the loader in `_shell.html`, rarely needs changing. |
+
+Unknown placeholders are left untouched, so a `{{typo}}` with no matching value stays literally in the output.
+
+## Editing Plans Cheaply
+
+The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
+
+`planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document.
+
+```bash
+# orient without loading the file
+node .claude/skills/html-planning/planr.js list plan.html
+
+# just the open work (sections/steps that aren't done), with addresses to act on
+node .claude/skills/html-planning/planr.js tasks plan.html
+
+# flip a status (section, subsection, or header)
+node .claude/skills/html-planning/planr.js set plan.html steps.status=in-progress
+node .claude/skills/html-planning/planr.js set plan.html steps.3.status=done
+
+# read one section back, add/remove/reorder sections
+node .claude/skills/html-planning/planr.js read plan.html steps
+node .claude/skills/html-planning/planr.js add-section plan.html --id risks --title "Risks" --after overview
+node .claude/skills/html-planning/planr.js move-section plan.html risks --before timeline
+
+# rich content: author a body in isolation, inject it by address (plan never loaded)
+node .claude/skills/html-planning/planr.js add-section plan.html --id caching --title "Caching" --body-file body.html
+node .claude/skills/html-planning/planr.js set-body plan.html caching --file body.html
+
+# fix a section in place: pull just its hunk, edit, push it back (~2x the hunk, not the whole plan)
+node .claude/skills/html-planning/planr.js read plan.html caching --body > hunk.html
+node .claude/skills/html-planning/planr.js set-body plan.html caching --file hunk.html
+```
+
+`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. See `SKILL.md` for the full command and addressing reference.
+
+## Developing this skill
+
+The skill itself lives in `skills/html-planning/`; the repo root is a normal Node project (the CLI's manifest, with vitest as the only dev dependency). The **shipped skill carries zero runtime dependencies** — the dev tooling is a sibling of the skill folder and is never installed. To run the tests:
+
+```sh
+npm install
+npm test        # vitest — unit (pure engine) + integration (CLI subprocess) suites
+```
+
+### Contents
+
+Relative to `skills/html-planning/`:
+
+| File | Purpose |
+|------|---------|
+| `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
+| `planr.js` | The CLI — generates plan skeletons (`planr new`) and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps) without re-reading the whole file. |
+| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`). |
+| `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
+| `plan-styles.css` | Plan design system, also injected via the inline loader. |
+| `examples/sample-plan.html` | Sample file with every component listed. |

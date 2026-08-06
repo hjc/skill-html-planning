@@ -38,11 +38,13 @@ class PlanNav extends HTMLElement {
   }
 
   _init() {
-    const sections = document.querySelectorAll('plan-section[id]');
+    // Top-level sections only, so nested sections don't flatten into the nav.
+    const sections = document.querySelectorAll('main > plan-section[id]');
     if (!sections.length) return;
 
     sections.forEach((sec, i) => {
-      const subs = sec.querySelectorAll('plan-subsection[id]');
+      // Immediate children only — the nav shows two levels, no deeper.
+      const subs = sec.querySelectorAll(':scope > plan-section[id], :scope > plan-subsection[id]');
 
       if (subs.length === 0) {
         // Simple link — no dropdown
@@ -89,16 +91,18 @@ class PlanNav extends HTMLElement {
 
     const setActive = (target) => {
       const id = target.id;
-      const tag = target.tagName.toLowerCase();
       this.querySelectorAll('a').forEach(a => a.classList.remove('active'));
+      document.querySelectorAll('.plan-tree a.active').forEach(a => a.classList.remove('active'));
+      const treeLink = document.querySelector(`.plan-tree a[data-tree="${id}"]`);
+      if (treeLink) treeLink.classList.add('active');
 
-      if (tag === 'plan-subsection') {
-        const subLink = this.querySelector(`a[data-subsection="${id}"]`);
-        if (subLink) {
-          subLink.classList.add('active');
-          const parentLink = this.querySelector(`a[data-section="${subLink.dataset.parent}"]`);
-          if (parentLink) parentLink.classList.add('active');
-        }
+      // Tag-agnostic: a nested target may be registered as a dropdown item
+      // (data-subsection) or a top-level link (data-section).
+      const subLink = this.querySelector(`a[data-subsection="${id}"]`);
+      if (subLink) {
+        subLink.classList.add('active');
+        const parentLink = this.querySelector(`a[data-section="${subLink.dataset.parent}"]`);
+        if (parentLink) parentLink.classList.add('active');
       } else {
         const link = this.querySelector(`a[data-section="${id}"]`);
         if (link) link.classList.add('active');
@@ -129,34 +133,29 @@ class PlanNav extends HTMLElement {
 /* ── plan-section ─────────────────────────────────────── */
 class PlanSection extends HTMLElement {
   connectedCallback() {
-    const num = this.getAttribute('num');
     const title = this.getAttribute('title');
     if (!title) return;
 
-    const h2 = document.createElement('h2');
-    h2.innerHTML = `${num != null ? `<span class="section-num">${num}</span> ` : ''}${title}`;
-    this.prepend(h2);
+    const status = this.getAttribute('status');
+    const pill = status ? ` <span class="plan-status status-${status}">${_statusLabel(status)}</span>` : '';
+
+    // Heading level follows nesting depth (h2 at top level → h6, capped);
+    // the number derives from document position (`num` overrides its level).
+    let depth = 0;
+    for (let p = this.parentElement; p; p = p.parentElement)
+      if (_isSectionTag(p)) depth++;
+
+    const h = document.createElement('h' + Math.min(2 + depth, 6));
+    h.className = 'plan-heading';   // marks the generated heading (vs authored content headings)
+    h.innerHTML = `<span class="section-num">${_sectionNumber(this)}</span> ${title}${pill}`;
+    this.prepend(h);
   }
 }
 
 /* ── plan-subsection ─────────────────────────────────── */
-class PlanSubsection extends HTMLElement {
-  connectedCallback() {
-    const num = this.getAttribute('num');
-    const title = this.getAttribute('title');
-    if (!title) return;
-
-    // Prefix the badge with the parent section's number (e.g. "5.1")
-    const parent = this.closest('plan-section');
-    const parentNum = parent ? parent.getAttribute('num') : null;
-    const displayNum = (num != null && parentNum != null) ? `${parentNum}.${num}` : num;
-
-    const h3 = document.createElement('h3');
-    h3.className = 'subsection-title';
-    h3.innerHTML = `${displayNum != null ? `<span class="subsection-num">${displayNum}</span> ` : ''}${title}`;
-    this.prepend(h3);
-  }
-}
+// Backward-compat alias: a subsection IS a nested section — same depth-derived
+// heading + auto-numbering. Retained as a tag so existing plans keep working.
+class PlanSubsection extends PlanSection {}
 
 /* ── plan-tabs / plan-tab ─────────────────────────────── */
 class PlanTabs extends HTMLElement {
@@ -287,6 +286,36 @@ class PlanBadge extends HTMLElement {
 class PlanTable extends HTMLElement {} // Pure CSS wrapper
 
 /* ── Helpers ──────────────────────────────────────────── */
+// Human labels for the section/subsection `status` attribute. Unknown values
+// pass through verbatim so a new status shows *something* rather than nothing.
+function _statusLabel(status) {
+  const labels = { 'todo': 'To Do', 'in-progress': 'In Progress', 'done': 'Done', 'blocked': 'Blocked' };
+  return labels[status] || status;
+}
+
+// Section-like = a <plan-section> or its <plan-subsection> alias.
+function _isSectionTag(n) {
+  return !!n && (n.tagName === 'PLAN-SECTION' || n.tagName === 'PLAN-SUBSECTION');
+}
+// Dotted number from document position: index among section-like siblings,
+// joined down the ancestor chain. A `num` attribute overrides its level; a
+// DOTTED override (e.g. "5.1") is taken as the complete number for that node so
+// it isn't re-prefixed by its ancestors — otherwise "5" + "5.1" renders "5.5.1".
+function _sectionNumber(el) {
+  const parts = [];
+  for (let n = el; _isSectionTag(n); n = n.parentElement && n.parentElement.closest('plan-section, plan-subsection')) {
+    const override = n.getAttribute('num');
+    if (override != null) {
+      parts.unshift(override);
+      if (override.includes('.')) break;   // complete dotted number — stop climbing
+    } else {
+      parts.unshift(Array.from(n.parentElement.children).filter(_isSectionTag).indexOf(n) + 1);
+    }
+    if (!n.parentElement) break;
+  }
+  return parts.join('.');
+}
+
 function _escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -563,40 +592,168 @@ requestAnimationFrame(() => {
     hljs.highlightAll();
   }
 });
+requestAnimationFrame(() => _initPlanTree());
+
+/* ── View: side-panel navigation tree ────────────────── */
+// Runtime-injected full-depth section tree (like the settings gear). Hidden by
+// default; the `.plan-sidebar` gear toggle reveals it and swaps out the top nav.
+function _initPlanTree() {
+  // Per-item collapse: a right-aligned caret on every row that has children
+  // toggles `.collapsed` on its <li> (CSS hides the child <ul>). The initial
+  // state honors the "Start sections collapsed" view setting.
+  const startCollapsed = !!_readView().navCollapsed;
+  const CARET_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+  const build = (container) => {
+    const kids = container.querySelectorAll(':scope > plan-section[id], :scope > plan-subsection[id]');
+    if (!kids.length) return null;
+    const ul = document.createElement('ul');
+    kids.forEach(sec => {
+      const li = document.createElement('li');
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+      const sub = build(sec);
+      const a = document.createElement('a');
+      a.href = '#' + sec.id; a.dataset.tree = sec.id;
+      a.innerHTML = `<span class="tree-num">${_sectionNumber(sec)}</span> ${sec.getAttribute('title') || sec.id}`;
+      row.appendChild(a);
+      if (sub) {
+        li.classList.add('has-children');
+        if (startCollapsed) li.classList.add('collapsed');
+        const caret = document.createElement('button');
+        caret.className = 'tree-caret';
+        caret.setAttribute('aria-label', 'Toggle children');
+        caret.setAttribute('title', 'Expand / collapse');
+        caret.innerHTML = CARET_SVG;
+        caret.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          li.classList.toggle('collapsed');
+        });
+        row.appendChild(caret);
+      }
+      li.appendChild(row);
+      if (sub) li.appendChild(sub);
+      ul.appendChild(li);
+    });
+    return ul;
+  };
+  const tree = build(document.querySelector('main'));
+  if (!tree) return;
+  const aside = document.createElement('aside');
+  aside.className = 'plan-tree';
+  aside.appendChild(tree);
+  document.body.appendChild(aside);
+  _initTreePanel(aside);   // collapse/expand + resize (steps 3-4)
+}
+
+function _readView() {
+  try { return JSON.parse(localStorage.getItem(PLAN_SETTINGS_KEY)) || {}; } catch (e) { return {}; }
+}
+function _writeView(patch) {
+  const s = Object.assign(_readView(), patch);
+  try { localStorage.setItem(PLAN_SETTINGS_KEY, JSON.stringify(s)); } catch (e) {}
+}
+
+function _initTreePanel(aside) {
+  const doc = document.documentElement;
+  if (_readView().treeCollapsed) doc.classList.add('tree-collapsed');
+
+  // Icons mirror the gear's stroke style so the panel chrome feels of a piece.
+  const COLLAPSE_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"></polyline><polyline points="18 17 13 12 18 7"></polyline></svg>';
+  const PANEL_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>';
+
+  const head = document.createElement('div');
+  head.className = 'tree-head';
+  head.innerHTML = `<span class="tree-head-title">Contents</span><button class="tree-toggle" aria-label="Collapse panel" title="Collapse panel">${COLLAPSE_SVG}</button>`;
+  aside.prepend(head);
+  head.querySelector('.tree-toggle').addEventListener('click', () => {
+    _writeView({ treeCollapsed: doc.classList.toggle('tree-collapsed') });
+  });
+
+  const opener = document.createElement('button');   // shows while collapsed
+  opener.className = 'tree-opener';
+  opener.setAttribute('aria-label', 'Open panel');
+  opener.setAttribute('title', 'Open panel');
+  opener.innerHTML = PANEL_SVG;
+  opener.addEventListener('click', () => {
+    doc.classList.remove('tree-collapsed'); _writeView({ treeCollapsed: false });
+  });
+  document.body.appendChild(opener);
+
+  _initTreeResize(aside);   // step 4
+}
+
+function _initTreeResize(aside) {
+  const doc = document.documentElement;
+  const w = _readView().treeWidth;
+  if (w) doc.style.setProperty('--tree-width', w + 'px');
+
+  const handle = document.createElement('div');
+  handle.className = 'tree-resize';
+  aside.appendChild(handle);
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const move = (ev) => doc.style.setProperty('--tree-width', Math.min(480, Math.max(200, ev.clientX)) + 'px');
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      _writeView({ treeWidth: parseInt(getComputedStyle(doc).getPropertyValue('--tree-width'), 10) });
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+}
 
 /* ── View settings (floating gear) ───────────────────── */
-// A small, extensible control panel for runtime view preferences. The first
-// setting is line wrapping; toggling it flips the `.plan-wrap` class on
-// <html> (CSS does the rest) and persists the choice to localStorage so it
-// sticks across reloads and other plans on the same origin.
+// A small, extensible control panel for runtime view preferences, bucketed by
+// area. `PLAN_SETTINGS` is an array of groups ({title, settings}); each setting
+// `apply`s by flipping a class on <html> (CSS does the rest) or, for the nav
+// toggles, by acting on the tree. Choices persist to localStorage so they stick
+// across reloads and other plans on the same origin.
 const PLAN_SETTINGS_KEY = 'plan-view-settings';
 const PLAN_SETTINGS = [
   {
-    key: 'wrap',
-    label: 'Wrap long lines',
-    apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on),
+    title: 'View',
+    settings: [
+      { key: 'wrap', label: 'Wrap long lines',
+        apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on) },
+      { key: 'fullWidth', label: 'Full-width content',
+        apply: (on) => document.documentElement.classList.toggle('plan-full-width', !!on) },
+    ],
+  },
+  {
+    title: 'Navigation',
+    settings: [
+      { key: 'sidebar', label: 'Side-panel navigation',
+        apply: (on) => document.documentElement.classList.toggle('plan-sidebar', !!on) },
+      { key: 'navCollapsed', label: 'Start sections collapsed',
+        apply: (on) => document.querySelectorAll('.plan-tree li.has-children')
+                         .forEach(li => li.classList.toggle('collapsed', !!on)) },
+    ],
   },
 ];
 
 function _initPlanSettings() {
   if (document.querySelector('.plan-settings')) return; // guard double-init
 
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(PLAN_SETTINGS_KEY)) || {}; } catch (e) {}
-  const persist = () => {
-    try { localStorage.setItem(PLAN_SETTINGS_KEY, JSON.stringify(saved)); } catch (e) {}
-  };
+  const saved = _readView();
+  const persist = () => _writeView(saved);
+  const allSettings = PLAN_SETTINGS.flatMap(g => g.settings);
 
   // Apply persisted values up front (before any UI) so there's no flash.
-  PLAN_SETTINGS.forEach(s => s.apply(saved[s.key]));
+  allSettings.forEach(s => s.apply(saved[s.key]));
 
   const GEAR_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
 
-  const rows = PLAN_SETTINGS.map(s =>
-    `<label class="plan-settings-row">
-       <input type="checkbox" data-setting="${s.key}"${saved[s.key] ? ' checked' : ''}>
-       <span>${s.label}</span>
-     </label>`
+  // One titled group per bucket; each row is a labeled checkbox.
+  const groups = PLAN_SETTINGS.map(g =>
+    `<div class="plan-settings-group">
+       <div class="plan-settings-title">${g.title}</div>
+       ${g.settings.map(s =>
+         `<label class="plan-settings-row">
+            <input type="checkbox" data-setting="${s.key}"${saved[s.key] ? ' checked' : ''}>
+            <span>${s.label}</span>
+          </label>`).join('')}
+     </div>`
   ).join('');
 
   const root = document.createElement('div');
@@ -604,8 +761,7 @@ function _initPlanSettings() {
   root.innerHTML = `
     <button class="plan-settings-gear" aria-label="View settings" aria-expanded="false" title="View settings">${GEAR_SVG}</button>
     <div class="plan-settings-panel" role="menu" hidden>
-      <div class="plan-settings-title">View</div>
-      ${rows}
+      ${groups}
     </div>`;
   document.body.appendChild(root);
 
@@ -626,7 +782,7 @@ function _initPlanSettings() {
   root.querySelectorAll('input[data-setting]').forEach(input => {
     input.addEventListener('change', () => {
       const key = input.dataset.setting;
-      const setting = PLAN_SETTINGS.find(s => s.key === key);
+      const setting = allSettings.find(s => s.key === key);
       saved[key] = input.checked;
       if (setting) setting.apply(input.checked);
       persist();
@@ -649,6 +805,7 @@ function _initPlanSettings() {
       const navH = nav.getBoundingClientRect().height;
       const gearH = gear.offsetHeight || 36;
       if (navH > gearH) root.style.top = ((navH - gearH) / 2) + 'px';
+      else root.style.top = '';   // nav hidden (sidebar mode) → CSS top
     };
     centerInNav();
     if (typeof ResizeObserver !== 'undefined') {

@@ -288,10 +288,10 @@ debug = True
 </plan-section>
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<plan-section id="steps" num="7" title="Implementation Steps">
+<plan-section id="steps" num="7" title="Implementation Steps" status="in-progress">
   <p>This section demonstrates <code>&lt;plan-subsection&gt;</code> — each step gets its own nav dropdown entry.</p>
 
-  <plan-subsection id="step-1" num="1" title="Add OrderAuditLog model + migration">
+  <plan-subsection id="step-1" num="1" title="Add OrderAuditLog model + migration" status="done">
     <plan-callout type="info">Red phase — write failing test first.</plan-callout>
     <plan-file path="server/app/orders/tests.py" lines="1-12">
 class TestOrderAuditLogModel(TestCase):
@@ -309,7 +309,7 @@ class TestOrderAuditLogModel(TestCase):
     <p>Then implement the model (green phase) and run migrations.</p>
   </plan-subsection>
 
-  <plan-subsection id="step-2" num="2" title="Wire up signal handler">
+  <plan-subsection id="step-2" num="2" title="Wire up signal handler" status="in-progress">
     <p>Hook into <code>CheckoutView.post()</code> to create an audit log on each checkout event.</p>
     <plan-diff path="server/app/orders/views.py" old-start="189" new-start="189">
      def post(self, request, *args, **kwargs):
@@ -319,13 +319,16 @@ class TestOrderAuditLogModel(TestCase):
     </plan-diff>
   </plan-subsection>
 
-  <plan-subsection id="step-3" num="3" title="Add audit log retrieval API">
+  <plan-subsection id="step-3" num="3" title="Add audit log retrieval API" status="blocked">
     <p>New DRF viewset for listing audit logs filtered by order UUID.</p>
     <ul>
       <li>GET <code>/api/order-audit-logs/{uuid}/</code></li>
       <li>Permission: order owner or staff</li>
       <li>Pagination: cursor-based, 25 per page</li>
     </ul>
+    <plan-section id="step-3-detail" title="Nested plan-section (auto-numbered, no num attr)" status="todo">
+      <p>A <code>&lt;plan-section&gt;</code> nested inside a subsection — auto-numbered <strong>7.3.1</strong> and rendered as an <code>&lt;h4&gt;</code>. This is the recursive-nesting model; the <code>&lt;plan-subsection&gt;</code> above is the backward-compat alias for exactly the same thing.</p>
+    </plan-section>
   </plan-subsection>
 </plan-section>
 
@@ -369,7 +372,7 @@ class TestOrderAuditLogModel(TestCase):
 </plan-section>
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<plan-section id="diagrams" num="10" title="Diagrams">
+<plan-section id="diagrams" num="10" title="Diagrams" status="todo">
   <p>Mermaid diagrams render from plain text — the runtime lazy-loads the library from cdnjs only when a <code>&lt;plan-diagram&gt;</code> is present, and themes it to match the design system.</p>
 
   <h3>Flowchart</h3>

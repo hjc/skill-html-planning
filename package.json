@@ -1,0 +1,16 @@
+{
+  "name": "planr",
+  "version": "1.0.0",
+  "private": true,
+  "description": "planr - generate and manipulate <plan-*> HTML plan files; the CLI behind the html-planning Claude Code skill.",
+  "bin": {
+    "planr": "skills/html-planning/planr.js"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.0"
+  }
+}
