@@ -13,17 +13,19 @@
      node planr.js read        <file> <address> [--body]
      node planr.js set         <file> <path>=<value>
      node planr.js set-body    <file> <address> [--file <f>] [--append]
-     node planr.js add-section <file> --id <id> [--num N] [--title T]
-                               [--status S] [--after ref | --before ref] [--body-file <f>]
-     node planr.js rm-section  <file> <id>
-     node planr.js move-section <file> <id> (--after ref | --before ref)
+     node planr.js add-section <file> --id <id> [--num N] [--title T] [--status S]
+                               [--parent <addr>] [--after <addr> | --before <addr>] [--body-file <f>]
+     node planr.js rm-section  <file> <address>
+     node planr.js move-section <file> <address> (--after <addr> | --before <addr>)
 
-   Addressing (dot-paths):
-     header               → the <plan-header>
-     <sectionId>          → <plan-section id="…">
-     <sectionId>.<n>      → the Nth <plan-subsection> (1-based)
-     <sectionId>.<subId>  → <plan-subsection id="…">
-   In `set`, the LAST path segment is the attribute (e.g. steps.3.status=done).
+   Addressing (dot-paths, any depth):
+     header                     → the <plan-header>
+     <sectionId>                → a top-level <plan-section id="…">
+     <sectionId>.<child>[.…]    → a descendant, each segment an id or a 1-based
+                                  ordinal among its siblings
+   EVERY address argument uses this one grammar — the positional <address>,
+   --parent, and --after/--before alike. In `set`, the LAST path segment is the
+   attribute instead (e.g. steps.3.status=done).
 
    Templates live in ./templates/ — `_shell.html` is the shared document +
    runtime loader (with a `{{body}}` slot); every other `<name>.html` is a body
@@ -53,6 +55,13 @@ function write(file, html) {
   try { fs.writeFileSync(file, html, 'utf8'); }
   catch (e) { throw new PlanError(`cannot write '${file}': ${e.message}`); }
 }
+// A flag's string value, or null when the flag is absent or was passed with no
+// value (parseFlags stores that as `true`). Repeats: the last one wins.
+function flagValue(flags, key) {
+  const v = key ? flags[key] : undefined;
+  if (v == null || v === true) return null;
+  return String(Array.isArray(v) ? v[v.length - 1] : v);
+}
 function readStdin() {
   if (process.stdin.isTTY) throw new PlanError('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
   try { return fs.readFileSync(0, 'utf8'); }
@@ -79,13 +88,13 @@ const TEMPLATE_DIR = path.join(__dirname, 'templates');
 
 function cmdNew(outPath, flags) {
   if (!outPath) throw new PlanError('new requires an output path, e.g. `new plan.html --template tdd`');
-  const template = (flags.template && flags.template !== true) ? String(flags.template) : 'basic';
+  const template = flagValue(flags, 'template') || 'basic';
   if (template.startsWith('_')) throw new PlanError(`'${template}' is not a selectable template`);
   const bodyPath = path.join(TEMPLATE_DIR, `${template}.html`);
   if (!fs.existsSync(bodyPath)) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
   const composed = read(path.join(TEMPLATE_DIR, '_shell.html')).split('{{body}}').join(read(bodyPath));
   const vars = {
-    title: (flags.title && flags.title !== true) ? flags.title : 'Untitled Plan',
+    title: flagValue(flags, 'title') || 'Untitled Plan',
     date: new Date().toISOString().slice(0, 10),
     skillSubpath: resolveSkillSubpath(),
   };
@@ -323,6 +332,45 @@ function findChildSection(html, node, selector) {
   if (/^\d+$/.test(selector)) return kids[parseInt(selector, 10) - 1] || null;
   return kids.find(k => getAttr(k.attrsRaw, 'id') === selector) || null;
 }
+/* ── section walk, numbering, display ─────────────────── */
+// Attribute values live in the file HTML-escaped (that is what the browser
+// decodes on render), so terminal output must decode them or a title reads
+// `Scope &amp; Prerequisites`.
+const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+function decodeEntities(s) {
+  return String(s).replace(/&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);/g, (m, k) => {
+    if (k[0] !== '#') return NAMED_ENTITIES[k.toLowerCase()] ?? m;
+    const code = k[1] === 'x' || k[1] === 'X' ? parseInt(k.slice(2), 16) : parseInt(k.slice(1), 10);
+    return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+  });
+}
+
+// Mirrors `_sectionNumber` in plan-runtime.js — the rendered number is derived
+// from document position, NOT stored. A `num` attribute overrides this level; a
+// DOTTED override is the complete number, so ancestors do not re-prefix it
+// (else "5" + "5.1" would render "5.5.1"). Keep the two in step.
+function sectionNumber(override, parentNum, ordinal) {
+  const own = override != null && override !== true ? String(override) : String(ordinal);
+  if (override != null && own.includes('.')) return own;
+  return parentNum ? `${parentNum}.${own}` : own;
+}
+
+// Every section-like element in document order. `visit` receives the element
+// plus its dot-address, derived number, and depth. One walk backs list, tasks,
+// and the id scan, so those can never disagree about the tree.
+function walkSections(html, visit) {
+  const rec = (from, to, addrPrefix, parentNum, depth) => {
+    childSections(html, from, to).forEach((el, i) => {
+      const id = getAttr(el.attrsRaw, 'id');
+      const addr = addrPrefix ? `${addrPrefix}.${id || i + 1}` : String(id || i + 1);
+      const num = sectionNumber(getAttr(el.attrsRaw, 'num'), parentNum, i + 1);
+      visit({ el, id, addr, num, depth });
+      rec(el.innerStart, el.innerEnd, addr, num, depth + 1);
+    });
+  };
+  rec(0, html.length, '', '', 0);
+}
+
 function resolveNode(html, segs) {
   if (segs[0] === 'header') {
     if (segs.length > 1) throw new PlanError('the header has no children');
@@ -354,8 +402,18 @@ const NODE_ATTRS = {
 };
 const SECTION_STATUS = ['todo', 'in-progress', 'done', 'blocked'];
 
+// Top-level ids only, and SHALLOW BY DESIGN: this backs assertIntact, which
+// must flag an accidental document collapse but NOT a nested child that a
+// `set-body` replacement legitimately removed (deep would false-positive).
 function sectionIds(html) {
   return findElements(html, 'plan-section').map(s => getAttr(s.attrsRaw, 'id')).filter(Boolean);
+}
+// Every id at every depth — for uniqueness checks. Ids must be unique
+// document-wide: they are address segments and browser anchor targets.
+function allSectionIds(html) {
+  const ids = [];
+  walkSections(html, ({ id }) => { if (id) ids.push(id); });
+  return ids;
 }
 function assertIntact(before, after, action) {
   const present = new Set(sectionIds(after));
@@ -441,18 +499,14 @@ function planList(html) {
   if (header) {
     const title = getAttr(header.attrsRaw, 'title') || '(untitled)';
     const status = getAttr(header.attrsRaw, 'status');
-    out.push(`# ${title}${status ? `  [${status}]` : ''}`);
+    out.push(`# ${decodeEntities(title)}${status ? `  [${status}]` : ''}`);
   }
-  const walk = (from, to, depth) => {
-    for (const s of childSections(html, from, to)) {
-      const a = k => getAttr(s.attrsRaw, k);
-      const st = a('status') ? `  [${a('status')}]` : '';
-      out.push(`${'    '.repeat(depth)}${a('num') != null ? a('num') + '. ' : ''}` +
-               `${a('id') || '(no id)'}${a('title') ? ' — ' + a('title') : ''}${st}`);
-      walk(s.innerStart, s.innerEnd, depth + 1);
-    }
-  };
-  walk(0, html.length, 0);
+  walkSections(html, ({ el, id, num, depth }) => {
+    const title = getAttr(el.attrsRaw, 'title');
+    const status = getAttr(el.attrsRaw, 'status');
+    out.push(`${'    '.repeat(depth)}${num}. ${id || '(no id)'}` +
+             `${title ? ' — ' + decodeEntities(title) : ''}${status ? `  [${status}]` : ''}`);
+  });
   return out.join('\n') + '\n';
 }
 
@@ -462,22 +516,13 @@ function planTasks(html, flags) {
   const include = (st) => {
     if (!st) return false;
     if (want) return want.includes(st);
-    if (flags.all) return true;
-    return st !== 'done';
+    return flags.all || st !== 'done';
   };
   const rows = [];
-  const walk = (from, to, prefix) => {
-    let n = 0;
-    for (const s of childSections(html, from, to)) {
-      n++;
-      const id = getAttr(s.attrsRaw, 'id');
-      const addr = prefix ? `${prefix}.${id || n}` : (id || String(n));
-      const st = getAttr(s.attrsRaw, 'status');
-      if (include(st)) rows.push({ addr, status: st, title: getAttr(s.attrsRaw, 'title') || '' });
-      walk(s.innerStart, s.innerEnd, addr);
-    }
-  };
-  walk(0, html.length, '');
+  walkSections(html, ({ el, addr }) => {
+    const status = getAttr(el.attrsRaw, 'status');
+    if (include(status)) rows.push({ addr, status, title: decodeEntities(getAttr(el.attrsRaw, 'title') || '') });
+  });
   if (!rows.length) return 'no open tasks\n';
   const aw = Math.max(...rows.map(r => r.addr.length));
   const sw = Math.max(...rows.map(r => r.status.length));
@@ -540,35 +585,36 @@ function planSetBody(html, address, body, { append = false } = {}) {
 function planAddSection(html, flags, body /* string | null */) {
   if (!flags.id) throw new PlanError('add-section requires --id');
   if (flags.after && flags.before) throw new PlanError('use only one of --after / --before');
-  if (findSectionById(html, flags.id)) throw new PlanError(`section '${flags.id}' already exists`);
-  let out;
-  if (flags.parent && flags.parent !== true) {
-    const parent = resolveNode(html, String(flags.parent).split('.'));
-    const block = buildSection(flags, elementIndent(html, parent) + '  ', body);
-    const childSel = flags.after || flags.before;
-    if (childSel) {
-      const ref = findChildSection(html, parent, String(childSel));
-      if (!ref) throw new PlanError(`child '${childSel}' not found in '${flags.parent}'`);
-      out = insertBlock(html, ref, block, flags.after ? 'after' : 'before');
-    } else {
-      out = insertInside(html, parent, block);
-    }
+  if (allSectionIds(html).includes(flags.id)) throw new PlanError(`section '${flags.id}' already exists`);
+
+  const position = flags.after ? 'after' : flags.before ? 'before' : null;
+  const refAddr = flagValue(flags, position);
+  const parentAddr = flagValue(flags, 'parent');
+  let out, where;
+
+  if (refAddr) {
+    // The ref is a full address, so it fixes BOTH the position and the nesting
+    // depth — --parent is redundant here, and contradicting it is an error
+    // rather than a silently ignored flag.
+    const ref = resolveNode(html, refAddr.split('.'));
+    if (ref.tag === 'plan-header') throw new PlanError('cannot place a section relative to the header');
+    const refParent = refAddr.split('.').slice(0, -1).join('.');
+    if (parentAddr && parentAddr !== refParent)
+      throw new PlanError(`--parent '${parentAddr}' contradicts --${position} '${refAddr}' ` +
+        `(which sits in '${refParent || 'the top level'}') — the ref alone determines placement`);
+    // Match the ref's own indentation: the new section is its sibling.
+    out = insertBlock(html, ref, buildSection(flags, elementIndent(html, ref), body), position);
+    where = ` ${position} '${refAddr}'`;
+  } else if (parentAddr) {
+    const parent = resolveNode(html, parentAddr.split('.'));
+    out = insertInside(html, parent, buildSection(flags, elementIndent(html, parent) + '  ', body));
+    where = ` under '${parentAddr}'`;
   } else {
-    const block = buildSection(flags, sectionIndent(html), body);
-    if (flags.after) {
-      const ref = findSectionById(html, flags.after);
-      if (!ref) throw new PlanError(`--after section '${flags.after}' not found`);
-      out = insertBlock(html, ref, block, 'after');
-    } else if (flags.before) {
-      const ref = findSectionById(html, flags.before);
-      if (!ref) throw new PlanError(`--before section '${flags.before}' not found`);
-      out = insertBlock(html, ref, block, 'before');
-    } else {
-      out = appendSection(html, block);
-    }
+    out = appendSection(html, buildSection(flags, sectionIndent(html), body));
+    where = '';
   }
-  assertIntact(html, out, 'add-section');   // now throws PlanError (§5.2)
-  return { html: out, message: `added section '${flags.id}'${flags.parent ? ` under '${flags.parent}'` : ''}` };
+  assertIntact(html, out, 'add-section');
+  return { html: out, message: `added section '${flags.id}'${where}` };
 }
 
 // Pure: (html, address) -> { html, message }; throws on unknown address or the header.
@@ -583,9 +629,10 @@ function planRmSection(html, address) {
 function planMoveSection(html, address, flags) {
   if (!address) throw new PlanError('move-section requires a section address');
   const position = flags.after ? 'after' : flags.before ? 'before' : null;
-  const refAddr = flags.after || flags.before;
   if (!position) throw new PlanError('move-section requires --after <ref> or --before <ref>');
   if (flags.after && flags.before) throw new PlanError('use only one of --after / --before');
+  const refAddr = flagValue(flags, position);
+  if (!refAddr) throw new PlanError(`--${position} requires a section address`);
   if (address === refAddr) throw new PlanError('cannot move a section relative to itself');
   const el = resolveNode(html, address.split('.'));
   if (el.tag === 'plan-header') throw new PlanError('cannot move the header');
@@ -619,13 +666,14 @@ function cmdSet(file, spec) {
   write(file, html); process.stdout.write(message + '\n');
 }
 function cmdSetBody(file, address, flags) {
-  const body = flags.file && flags.file !== true ? read(flags.file) : readStdin();
+  const src = flagValue(flags, 'file');
+  const body = src ? read(src) : readStdin();
   const { html, message } = planSetBody(read(file), address, body, { append: !!flags.append });
   write(file, html); process.stdout.write(message + '\n');
 }
 function cmdAddSection(file, flags) {
-  const body = flags['body-file'] && flags['body-file'] !== true ? read(flags['body-file']) : null;
-  const { html, message } = planAddSection(read(file), flags, body);
+  const src = flagValue(flags, 'body-file');
+  const { html, message } = planAddSection(read(file), flags, src ? read(src) : null);
   write(file, html); process.stdout.write(message + '\n');
 }
 function cmdRmSection(file, address) {
@@ -670,13 +718,15 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   set          <file> <path>=<value>
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   add-section  <file> --id <id> [--num N] [--title T] [--status S]
-                      [--parent <addr>] [--after <ref> | --before <ref>] [--body-file <f>]
+                      [--parent <addr>] [--after <addr> | --before <addr>] [--body-file <f>]
   rm-section   <file> <address>
-  move-section <file> <address> (--after <ref> | --before <ref>)
+  move-section <file> <address> (--after <addr> | --before <addr>)
 
-address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth;
-         a child is an id or 1-based ordinal). --after/--before take a sibling
-         address; --parent takes the container address.
+address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth; a
+         child is an id or a 1-based ordinal). Every address argument — the
+         positional one, --parent, --after, --before — uses this grammar.
+         --after/--before name a SIBLING, which also fixes the nesting depth,
+         so --parent is only needed to append as the last child.
 round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`;
 
 function main() {
@@ -712,9 +762,9 @@ function main() {
 if (require.main === module) main();   // run the CLI only when invoked directly
 
 module.exports = {
-  render, resolveSkillSubpath, scanAttrs, getAttr, setAttrRaw,
+  render, resolveSkillSubpath, scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findSectionById, childSections, resolveNode,
-  buildSection, sectionIds,
+  buildSection, sectionIds, allSectionIds, walkSections, sectionNumber, decodeEntities,
   PlanError,
   planTemplates, planList, planTasks, planRead,
   planSet, planSetBody, planAddSection, planRmSection, planMoveSection,

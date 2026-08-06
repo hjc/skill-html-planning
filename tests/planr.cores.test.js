@@ -26,7 +26,27 @@ describe('planList', () => {
     const out = planr.planList(DOC);
     expect(out).toMatch(/^# T {2}\[draft\]/);
     expect(out).toMatch(/\n1\. a .* Alpha/);
-    expect(out).toMatch(/\n {4}a1 .*\[todo\]/);   // depth-1, 4-space indent
+    expect(out).toMatch(/\n {4}1\.1\. a1 .*\[todo\]/);   // depth-1: 4-space indent, dotted number
+  });
+  it('numbers from document position, not the num attribute', () => {
+    // 'b' and 'c' carry no num=; their numbers are derived (2, 3), and a
+    // section added later renumbers everything after it with no attribute edit.
+    expect(planr.planList(DOC)).toMatch(/\n2\. b .*\n3\. c /);
+    const { html } = planr.planAddSection(DOC, { id: 'x', title: 'X', after: 'a' }, null);
+    expect(planr.planList(html)).toMatch(/\n2\. x .*\n3\. b .*\n4\. c /);
+  });
+  it('decodes entities in titles', () => {
+    const html = '<plan-section id="s" title="Scope &amp; Prerequisites"></plan-section>';
+    expect(planr.planList(html)).toContain('Scope & Prerequisites');
+  });
+});
+
+describe('sectionNumber', () => {
+  it('joins onto the parent, and takes a DOTTED override as complete', () => {
+    expect(planr.sectionNumber(undefined, '', 3)).toBe('3');
+    expect(planr.sectionNumber(undefined, '5', 1)).toBe('5.1');
+    expect(planr.sectionNumber('2', '5', 9)).toBe('5.2');     // bare override joins
+    expect(planr.sectionNumber('5.1', '5', 9)).toBe('5.1');   // dotted is used as-is
   });
 });
 
@@ -55,24 +75,38 @@ describe('planAddSection', () => {
   it('places a top-level section --after AND --before a ref', () => {
     const after = planr.planAddSection(DOC, { id: 'x', after: 'a' }, null);
     expect(planr.sectionIds(after.html)).toEqual(['a', 'x', 'b', 'c']);
-    expect(after.message).toBe("added section 'x'");
+    expect(after.message).toBe("added section 'x' after 'a'");
 
     const before = planr.planAddSection(DOC, { id: 'x', before: 'a' }, null);
     expect(planr.sectionIds(before.html)).toEqual(['x', 'a', 'b', 'c']);
   });
-  it('places a child --after AND --before a sibling under --parent', () => {
-    const after = planr.planAddSection(DOC, { id: 'a2', parent: 'a', after: 'a1' }, null).html;
+  it('nests from a FULL sibling address — --parent is not needed', () => {
+    const after = planr.planAddSection(DOC, { id: 'a2', after: 'a.a1' }, null).html;
     expect(childIds(after, 'a')).toEqual(['a1', 'a2']);
+    expect(planr.sectionIds(after)).toEqual(['a', 'b', 'c']);   // nested, not top-level
 
-    const before = planr.planAddSection(DOC, { id: 'a0', parent: 'a', before: 'a1' }, null).html;
+    const before = planr.planAddSection(DOC, { id: 'a0', before: 'a.a1' }, null).html;
     expect(childIds(before, 'a')).toEqual(['a0', 'a1']);
+  });
+  it('appends as the last child of --parent when no ref is given', () => {
+    const out = planr.planAddSection(DOC, { id: 'a2', parent: 'a' }, null).html;
+    expect(childIds(out, 'a')).toEqual(['a1', 'a2']);
+  });
+  it('rejects a bare child id as a ref — every address is a full dot-path', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'a2', parent: 'a', after: 'a1' }, null))
+      .toThrow(/section 'a1' not found/);
+  });
+  it('rejects a --parent that contradicts the ref', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', parent: 'b', after: 'a.a1' }, null))
+      .toThrow(/contradicts/);
   });
   it('rejects --after together with --before', () => {
     expect(() => planr.planAddSection(DOC, { id: 'x', after: 'a', before: 'b' }, null))
       .toThrow(/only one of --after/);
   });
-  it('throws on a duplicate id and on a missing --id', () => {
+  it('throws on a duplicate id at ANY depth, and on a missing --id', () => {
     expect(() => planr.planAddSection(DOC, { id: 'a' }, null)).toThrow(/already exists/);
+    expect(() => planr.planAddSection(DOC, { id: 'a1' }, null)).toThrow(/already exists/); // nested
     expect(() => planr.planAddSection(DOC, {}, null)).toThrow('add-section requires --id');
   });
 });
