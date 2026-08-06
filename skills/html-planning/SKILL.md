@@ -24,7 +24,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan"
    ```
-   For a **TDD implementation plan**, add `--template tdd` to scaffold the canonical spine (see [Plan Templates & Canonical Sections](#plan-templates--canonical-sections)):
+   For a **TDD implementation plan**, add `--template tdd` to scaffold the canonical spine (see "Plan Templates & Canonical Sections" below):
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan" --template tdd
    ```
@@ -33,7 +33,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
 
 ## Plan Templates & Canonical Sections
 
-`planr.js new --template tdd` scaffolds the **canonical TDD-plan spine** — a fixed set of section **ids** and titles that the pipefile corpus converged on over dozens of successful plans. Using the canonical ids matters for two reasons: plans become **reliably addressable** (`planr.js read plan.html anti-patterns` works because the id is always `anti-patterns`, never `antipatterns`/`risks`), and consistent across a corpus so cross-plan tooling is possible. Prefer this template for any test-driven implementation plan; fill in the pre-seeded scaffolding rather than inventing new section names.
+`planr.js new --template tdd` scaffolds the **canonical TDD-plan spine** — a fixed set of section **ids** and titles. Use them verbatim: a stable id makes every plan addressable (`planr read plan.html anti-patterns` works because the id is never `antipatterns` or `risks`) and makes a corpus of plans comparable. Prefer this template for any test-driven implementation plan, and fill in the scaffold rather than inventing section names.
 
 | # | id | Title | Purpose | Content convention |
 |---|----|-------|---------|--------------------|
@@ -42,7 +42,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
 | 3 | `recon` | Reconnaissance Summary | Load-bearing facts the executor may need | `plan-table` **File / Lines / What** (+ `plan-file` excerpts, `plan-callout` for key facts) |
 | 4 | `decisions` | Design Decisions | The chosen approach and why | `plan-table` **# / Decision / Rationale** |
 | — | `dataflow` | Data Flow *(optional)* | before→after / sequence of a refactor | prose + `plan-diagram` |
-| 5 | `steps` | Implementation Steps | The TDD steps | one `plan-subsection` per step (with `status`), `<h4>Red Phase</h4>` / `<h4>Green Phase</h4>` rhythm, `plan-file`/`plan-diff` |
+| 5 | `steps` | Implementation Steps | The TDD steps | one nested `plan-section` per step (with `status`), `<h4>Red Phase</h4>` / `<h4>Green Phase</h4>` rhythm, `plan-file`/`plan-diff` |
 | 6 | `callsites` | Callsite Audit | Every reference to the changed thing + its disposition | `plan-table` **# / Callsite / Change** |
 | 7 | `verification` | Verification | Commands that prove it works | `<pre><code class="language-bash">` command + an "Expected: …" line |
 | 8 | `anti-patterns` | Anti-Patterns | Tempting wrong approaches to forbid | `plan-table` **# / Don't / Why** |
@@ -70,7 +70,7 @@ Page header with title, status badge, and metadata chips.
 **Attributes:** `title`, `subtitle`, `status` (draft/approved/implemented/rejected), `date`, `chips` (pipe-delimited).
 
 #### `<plan-nav>`
-Auto-generated sticky nav bar. Renders top-level sections as links; a section with nested sections gets a hover dropdown of its **immediate** children. The nav shows **two levels** — deeper nesting is still addressable and rendered, just not shown in the nav. No attributes needed — place it before `<main>`.
+Auto-generated navigation. By default the runtime shows a **left side-panel tree** covering every section at every depth (see "Architecture" below); the `<plan-nav>` element itself is the fallback view — a sticky top bar that renders top-level sections as links, with a hover dropdown of a section's **immediate** children, so it shows **two levels**. Deeper nesting is still addressable and rendered, just not shown in that bar. Either way the element carries no attributes — place it before `<main>` and the runtime handles the rest.
 ```html
 <plan-nav></plan-nav>
 ```
@@ -85,7 +85,7 @@ A content section. **Sections nest** — a `<plan-section>` may contain child `<
   </plan-section>
 </plan-section>
 ```
-**Attributes:** `id` (required for nav linking + CLI addressing), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a colored pill in the heading; flip it cheaply with `planr`), `num` (optional — **overrides** the auto-number for that one section, e.g. `"Part 1"`; on a nested section a bare value like `1` joins onto the parent → `5.1`, while a dotted value like `5.1` is used as-is).
+**Attributes:** `id` (required for nav linking + CLI addressing; must be **unique document-wide**), `title`, `status` (optional: `todo`/`in-progress`/`done`/`blocked` — a colored pill in the heading; flip it cheaply with `planr`), `num` (optional — **overrides** the auto-number for that one section, e.g. `"Part 1"`; on a nested section a bare value like `1` joins onto the parent → `5.1`, while a dotted value like `5.1` is used as-is). Never write `num` merely to number sections in order; that is derived.
 
 #### `<plan-subsection>`
 Backward-compat **alias for a nested `<plan-section>`** — it renders identically (one level deeper: `h3`, auto-numbered `N.M`). New plans can simply nest `<plan-section>`; the `<plan-subsection>` tag remains so existing plans keep working. Use either for TDD steps, sub-phases, or any sub-grouping.
@@ -190,7 +190,7 @@ Grid of design principles or key decisions.
 > - `>` → `&gt;`
 > - `&` → `&amp;`
 >
-> The runtime then displays them correctly (it re-escapes on output, but it cannot recover what the parser already mangled). This applies inside the element's text content — attribute values like `path=` and the `+`/`-` diff prefixes are unaffected. **The same escaping is required in *any* code shown as text — native `<pre><code>` blocks and inline `<code>` too** (see [Code Blocks](#code-blocks-with-syntax-highlighting)); a literal `<` there is misread as a tag, and if it's a `<plan-*>` tag it can corrupt `planr`'s section scanner.
+> The runtime then displays them correctly (it re-escapes on output, but it cannot recover what the parser already mangled). This applies inside the element's text content — attribute values like `path=` and the `+`/`-` diff prefixes are unaffected. **The same escaping is required in *any* code shown as text — native `<pre><code>` blocks and inline `<code>` too** (see "Code Blocks with Syntax Highlighting"); a literal `<` there is misread as a tag, and if it's a `<plan-*>` tag it can corrupt `planr`'s section scanner.
 
 #### `<plan-file>`
 GitHub-style file code view with filename header, optional line range badge, line number gutter, and syntax highlighting.
@@ -238,6 +238,17 @@ GitHub-style unified diff view with add/delete line coloring and dual line numbe
 > Here the context line `     return ...` and both changed lines keep their leading-space/`+`/`-` gutter; the `-x` in the code is preserved because the marker is a *separate* leading character. A line authored with **no** gutter character renders as context but is flagged amber with a ⚠ (and logged to the console) so the omission is visible rather than silently mis-colored or truncated.
 
 **Line prefix convention:** Lines starting with `+` are additions (green), `-` are deletions (red), space or no prefix are context lines.
+
+#### Embedding a whole file, and verifying the round-trip
+
+When a `<plan-file>` carries a **complete file body** rather than an excerpt — a script or config the plan ships verbatim — generate the block programmatically and verify it survived, rather than trusting a visual scan. A single unescaped bracket truncates the render in a way that looks identical to a correct one at a glance.
+
+- **Escape `&`, `<`, `>` only.** In Python that is `html.escape(s, quote=False)`. Escaping quotes too corrupts the payload, since the executor reads the embedded text as the literal file contents.
+- **Splice between `<plan-file path="X" new>\n` and `\n</plan-file>`.** The closing tag's leading newline **is** the file's final newline, so the embedded text is the file minus exactly one trailing `\n`. A round-trip check that reports "off by 1 char" is therefore **correct** — re-add the `\n` before comparing, or you will chase a phantom.
+- **Round-trip before shipping the plan.** Extract the embedded text back out, unescape it, and diff it against the source file.
+- **Keep the real file authoritative.** Write the file to disk, run it, *then* embed. When a plan and an installed file both exist, treat the installed one as canonical and regenerate the embed from it — hand-editing the copy inside the HTML desynchronizes them with no error.
+
+Prefer `planr set-body --file` / `add-section --body-file` to splice a generated block in: the body is written verbatim and the plan is never loaded into context.
 
 ### Diagrams
 
@@ -337,45 +348,59 @@ Apply these to any element:
 node .claude/skills/html-planning/planr.js <command> <file> [...]
 ```
 
-Run `planr` with no arguments (or `--help`) to print usage. Every command is itemized below — read this table and you can operate the CLI without guessing.
+Run `planr` with no arguments (or `--help`) to print usage.
+
+### Addressing
+
+One grammar for every address argument — the positional `<address>`, `--parent`, `--after`, and `--before` alike:
+
+```
+header                    the <plan-header>
+<sectionId>               a top-level section
+<sectionId>.<child>…      a descendant, to any depth
+```
+
+Each segment after the first is a child's `id` or its **1-based ordinal** among siblings: `steps.step-3`, `steps.3`, `steps.3.detail`. A bare id only resolves at the top level — a nested section always needs its full path (`steps.step-1`, never `step-1`).
+
+`set` is the one exception: its **last** segment is an attribute name, not a node (`steps.3.status=done`).
 
 ### Command reference
 
-Every top-level command. **Positional args are order-sensitive; flags may appear in any order.** `<file>` is the plan path (for `new`, the output path). Flags that take a value are shown as `--flag <x>`; boolean flags take no value.
+**Positional args are order-sensitive; flags may appear in any order.** `<file>` is the plan path (for `new`, the output path).
 
 | Command | Positional args | Flags | What it does |
 |---------|-----------------|-------|--------------|
-| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan into `<file>` from a template. `--template tdd` scaffolds the canonical spine; `--set` fills extra `{{var}}` placeholders. |
-| `templates` | *(none)* | *(none)* | List available template names, one per line. |
-| `list` | `<file>` | *(none)* | Print the title then every section & subsection as `num. id — title [status]`. Orients you without loading the file. |
-| `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List open tasks — nodes carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. `--all` includes done; `--status` filters to the given value(s). |
-| `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content (byte-exact with `set-body`). |
-| `set` | `<file> <path>=<value>` | *(none)* | Set one attribute by address — the **last** `.`-segment of `<path>` is the attribute name. |
+| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. `--set` fills extra `{{var}}` placeholders. |
+| `templates` | *(none)* | *(none)* | List selectable template names, one per line. |
+| `list` | `<file>` | *(none)* | Print the title, then every section as `num. id — title [status]`, indented by depth. Orients you without loading the file. |
+| `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
+| `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content. |
+| `set` | `<file> <path>=<value>` | *(none)* | Set one attribute. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
-| `add-section` | `<file>` | `--id <id>` **(required)** · `--num <N>` · `--title <T>` · `--status <S>` · `--parent <addr>` · `--after <ref>` \| `--before <ref>` · `--body-file <f>` | Insert a new section — empty, or filled from `--body-file`. `--parent` nests it inside that node (else top-level); `--after`/`--before` position it among siblings, else appended. |
-| `rm-section` | `<file> <address>` | *(none)* | Remove the section/subsection at that address (any depth). |
-| `move-section` | `<file> <address>` | `--after <ref>` \| `--before <ref>` **(one required)** | Move the addressed section before/after a sibling (refs are full addresses). |
+| `add-section` | `<file>` | `--id <id>` **(required)** · `--title <T>` · `--status <S>` · `--num <N>` · `--after <addr>` \| `--before <addr>` · `--parent <addr>` · `--body-file <f>` | Insert a section, empty or filled from `--body-file`. |
+| `rm-section` | `<file> <address>` | *(none)* | Remove the section at that address, at any depth. |
+| `move-section` | `<file> <address>` | `--after <addr>` \| `--before <addr>` **(one required)** | Move the addressed section beside a sibling. |
 
-**Rules & gotchas (read these to avoid mistakes):**
+**Rules & gotchas:**
 
-- **Help:** run `planr` with no args, or `planr --help` / `-h`, to print usage.
-- **Addressing (dot-paths, any depth):** `header` · `<sectionId>` · `<sectionId>.<child>` · `<sectionId>.<child>.<grandchild>` … Each segment is a child's `id` or its 1-based ordinal among siblings. `--after`/`--before` refs are **full addresses**; `--parent` takes the container's address.
-- **`set` path grammar:** `<node>.<attr>=<value>` — e.g. `steps.status=done`, `steps.3.status=in-progress`, `header.status=approved`.
-- **`status` values:** sections & subsections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `approved` / `implemented` / `rejected`. `set` **rejects** an out-of-set status or an unknown attribute name (e.g. a typo like `staus`) with an error — it never silently no-ops.
-- **Numbers are automatic:** section numbers (`1`, `1.1`, `1.1.2`) derive from document position and update themselves after add/move/remove — no drift, nothing to maintain. Set `num` only to **override** a label: a bare value (`1`, `"Part 1"`) replaces that level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is taken as the complete number as-is (so it isn't re-prefixed into `5.5.1`).
-- **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render (e.g. `set plan.html 'header.subtitle=the &quot;remember me&quot; box'`).
-- **Mutually exclusive:** `--after` and `--before` (passing both is an error). `move-section` requires exactly one.
-- **Body input:** `set-body` reads `--file <f>` if given, otherwise **stdin** (`… | planr set-body plan.html steps`). `add-section` takes `--body-file <f>` (no stdin).
+- **Placing a section:** `--after`/`--before` name a **sibling by full address**, which fixes the new section's nesting depth too — so `add-section --id step-2 --after steps.step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
+- **Numbers are automatic.** `1`, `1.1`, `1.1.2` derive from document position and re-derive after every add/move/remove — never write a `num` to keep a plan in order, and never renumber by hand. `num` is a label **override** only: a bare value (`"Part 1"`) replaces that one level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is the complete number, used as-is.
+- **`status` values:** sections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `approved` / `implemented` / `rejected`. `set` **rejects** an out-of-set status or a misspelled attribute (`staus`) — it never silently no-ops.
+- **Ids are unique document-wide.** `add-section` rejects an id already used at any depth.
+- **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render.
+- **Body input:** `set-body` reads `--file <f>` if given, otherwise **stdin**. `add-section` takes `--body-file <f>` (no stdin). Bodies splice **verbatim** — they own their whitespace, and escaping is yours.
 - **Round-trip:** `read --body <addr>` → edit the hunk → `set-body <addr>` is byte-for-byte lossless.
-- **Structural ops** (`add-section`/`rm-section`/`move-section`) act on the `<plan-section>` element only, assume canonical one-element-per-line serialization, and leave decorative comments in place — they are **not** a general HTML editor. `set-body` and `add-section` **abort without writing** if the spliced content would break the plan's structure.
-- **Nested edits:** `add-section --parent <addr>` inserts a nested section (e.g. a new TDD step); `rm-section`/`move-section` take a full address, so they reorder or remove at any depth — no separate subsection commands needed.
+- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. `set-body` and `add-section` **abort without writing** if the splice would break the plan's structure.
 
 ```bash
-node .../planr.js new plan.html --title "My Plan" --template tdd     # generate
-node .../planr.js tasks plan.html                                    # what's open
-node .../planr.js set plan.html steps.3.status=done                  # nth-subsection attr
-node .../planr.js read plan.html steps --body > hunk.html            # pull a hunk to edit
+node .../planr.js new plan.html --title "My Plan" --template tdd      # generate
+node .../planr.js list plan.html                                      # what's in it
+node .../planr.js tasks plan.html                                     # what's open
+node .../planr.js set plan.html steps.3.status=done                   # flip one attribute
+node .../planr.js read plan.html steps.step-1 --body > hunk.html      # pull a hunk to edit
 node .../planr.js add-section plan.html --id risks --title "Risks" --after overview
+node .../planr.js add-section plan.html --id step-2 --title "Wire it up" \
+                  --status todo --after steps.step-1                  # nests under steps
 ```
 
 ### Templates
@@ -399,4 +424,4 @@ Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the 
 
 The inline loader in each generated plan file finds `.claude/` in the file path and resolves the skill assets from there, appending the install subpath that `planr new` baked in at generation time (so the skill works under any folder name within `.claude/skills/`). Plan files contain only semantic markup — no CSS or JS.
 
-Every rendered plan also gets a **view-settings gear** (floating, top-right) injected by the runtime, with per-reader toggles persisted via `localStorage`: **"Wrap long lines"** (soft-wraps code/diff blocks), **"Side-panel navigation"** (swaps the two-level top nav for a left **side-panel tree** listing every section at every depth), and **"Full-width content"** (drops the centered reading cap so content fills the available width). The panel is runtime-injected from the live section tree and drawn as a file-tree with connector guides; it has a header with a collapse control, collapses to a floating opener, is resizable by dragging its right edge, and on narrow screens overlays full-screen. A single scroll-spy highlights the active section in whichever view is showing. This is all automatic; you don't author it, and you shouldn't hand-roll your own settings UI or navigation tree.
+Every rendered plan also gets a **view-settings gear** (floating, top-right) injected by the runtime, with per-reader toggles persisted via `localStorage`: **"Wrap long lines"** (soft-wraps code/diff blocks), **"Side-panel navigation"** (**on by default** — a left **side-panel tree** listing every section at every depth; turning it off falls back to the two-level top nav), **"Start sections collapsed"**, and **"Full-width content"** (drops the centered reading cap so content fills the available width). A toggle the reader has never touched tracks its default, so changing a default reaches everyone who hasn't opted out. The panel is runtime-injected from the live section tree and drawn as a file-tree with connector guides; it has a header with a collapse control, collapses to a floating opener, is resizable by dragging its right edge, and on narrow screens overlays full-screen. A single scroll-spy highlights the active section in whichever view is showing. This is all automatic; you don't author it, and you shouldn't hand-roll your own settings UI or navigation tree.

@@ -94,7 +94,7 @@ For a minor size increase over plaintext Markdown plans, plans generated with `h
 
 1. Syntax highlighting for code snippets.
 2. GitHub-style diff markers for lines added and removed, presenting changes in a friendly and efficient manner.
-3. Sections and sub-sections, with top-bar and optional sidebar navigation.
+3. Sections and sub-sections, navigated by a resizable, collapsible side-panel tree (default) or a two-level top bar.
 4. Support for embedding Mermaid diagrams (lazy-loaded when diagrams are present).
 5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
 6. Configurable line wrapping support for code snippets, plus adjustable view width.
@@ -219,6 +219,10 @@ node .claude/skills/html-planning/planr.js set plan.html steps.3.status=done
 node .claude/skills/html-planning/planr.js read plan.html steps
 node .claude/skills/html-planning/planr.js add-section plan.html --id risks --title "Risks" --after overview
 node .claude/skills/html-planning/planr.js move-section plan.html risks --before timeline
+
+# addresses are dot-paths, so the same commands work at any depth — and a
+# sibling ref fixes the nesting, so a new step lands inside "steps"
+node .claude/skills/html-planning/planr.js add-section plan.html --id step-4 --title "Wire it up" --after steps.step-3
 
 # rich content: author a body in isolation, inject it by address (plan never loaded)
 node .claude/skills/html-planning/planr.js add-section plan.html --id caching --title "Caching" --body-file body.html
