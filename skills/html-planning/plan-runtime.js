@@ -115,7 +115,10 @@ class PlanNav extends HTMLElement {
       ticking = true;
       requestAnimationFrame(() => {
         ticking = false;
-        const threshold = this.offsetHeight + 24; // just below the sticky nav
+        // Distance from the viewport top at which a heading counts as "reached":
+        // just below the sticky nav, or a fixed line when the nav is hidden
+        // (side-panel mode, where offsetHeight is 0).
+        const threshold = this.offsetHeight ? this.offsetHeight + 24 : 120;
         let current = allTargets[0];
         for (const t of allTargets) {
           if (t.getBoundingClientRect().top <= threshold) current = t;
@@ -595,13 +598,13 @@ requestAnimationFrame(() => {
 requestAnimationFrame(() => _initPlanTree());
 
 /* ── View: side-panel navigation tree ────────────────── */
-// Runtime-injected full-depth section tree (like the settings gear). Hidden by
-// default; the `.plan-sidebar` gear toggle reveals it and swaps out the top nav.
+// Runtime-injected full-depth section tree (like the settings gear). Shown by
+// default; the `.plan-sidebar` gear toggle swaps between it and the top nav.
 function _initPlanTree() {
   // Per-item collapse: a right-aligned caret on every row that has children
   // toggles `.collapsed` on its <li> (CSS hides the child <ul>). The initial
   // state honors the "Start sections collapsed" view setting.
-  const startCollapsed = !!_readView().navCollapsed;
+  const startCollapsed = !!_viewSetting('navCollapsed');
   const CARET_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
   const build = (container) => {
     const kids = container.querySelectorAll(':scope > plan-section[id], :scope > plan-subsection[id]');
@@ -652,10 +655,20 @@ function _writeView(patch) {
   const s = Object.assign(_readView(), patch);
   try { localStorage.setItem(PLAN_SETTINGS_KEY, JSON.stringify(s)); } catch (e) {}
 }
+// Resolve one setting: an explicitly stored choice always wins, otherwise the
+// `default` declared in PLAN_SETTINGS. Stored and default are kept separate so
+// a reader who has never touched the gear picks up a changed default, while a
+// reader who deliberately turned something off keeps it off.
+function _viewSetting(key) {
+  const stored = _readView();
+  if (Object.prototype.hasOwnProperty.call(stored, key)) return stored[key];
+  const declared = PLAN_SETTINGS.flatMap(g => g.settings).find(s => s.key === key);
+  return declared ? declared.default : undefined;
+}
 
 function _initTreePanel(aside) {
   const doc = document.documentElement;
-  if (_readView().treeCollapsed) doc.classList.add('tree-collapsed');
+  if (_viewSetting('treeCollapsed')) doc.classList.add('tree-collapsed');
 
   // Icons mirror the gear's stroke style so the panel chrome feels of a piece.
   const COLLAPSE_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"></polyline><polyline points="18 17 13 12 18 7"></polyline></svg>';
@@ -684,7 +697,7 @@ function _initTreePanel(aside) {
 
 function _initTreeResize(aside) {
   const doc = document.documentElement;
-  const w = _readView().treeWidth;
+  const w = _viewSetting('treeWidth');
   if (w) doc.style.setProperty('--tree-width', w + 'px');
 
   const handle = document.createElement('div');
@@ -707,25 +720,28 @@ function _initTreeResize(aside) {
 // A small, extensible control panel for runtime view preferences, bucketed by
 // area. `PLAN_SETTINGS` is an array of groups ({title, settings}); each setting
 // `apply`s by flipping a class on <html> (CSS does the rest) or, for the nav
-// toggles, by acting on the tree. Choices persist to localStorage so they stick
-// across reloads and other plans on the same origin.
+// toggles, by acting on the tree. `default` is the value used until the reader
+// makes a choice; choices persist to localStorage so they stick across reloads
+// and other plans on the same origin. Read them through _viewSetting().
 const PLAN_SETTINGS_KEY = 'plan-view-settings';
 const PLAN_SETTINGS = [
   {
     title: 'View',
     settings: [
-      { key: 'wrap', label: 'Wrap long lines',
+      { key: 'wrap', label: 'Wrap long lines', default: false,
         apply: (on) => document.documentElement.classList.toggle('plan-wrap', !!on) },
-      { key: 'fullWidth', label: 'Full-width content',
+      { key: 'fullWidth', label: 'Full-width content', default: false,
         apply: (on) => document.documentElement.classList.toggle('plan-full-width', !!on) },
     ],
   },
   {
     title: 'Navigation',
     settings: [
-      { key: 'sidebar', label: 'Side-panel navigation',
+      // On by default: plans are long and deeply sectioned, and the full-depth
+      // tree navigates them far better than the two-level top bar.
+      { key: 'sidebar', label: 'Side-panel navigation', default: true,
         apply: (on) => document.documentElement.classList.toggle('plan-sidebar', !!on) },
-      { key: 'navCollapsed', label: 'Start sections collapsed',
+      { key: 'navCollapsed', label: 'Start sections collapsed', default: false,
         apply: (on) => document.querySelectorAll('.plan-tree li.has-children')
                          .forEach(li => li.classList.toggle('collapsed', !!on)) },
     ],
@@ -735,12 +751,15 @@ const PLAN_SETTINGS = [
 function _initPlanSettings() {
   if (document.querySelector('.plan-settings')) return; // guard double-init
 
-  const saved = _readView();
-  const persist = () => _writeView(saved);
   const allSettings = PLAN_SETTINGS.flatMap(g => g.settings);
+  // Current value per setting: the reader's stored choice, else the declared
+  // default. Only the toggled key is persisted (see the change handler), so an
+  // untouched setting keeps tracking its default rather than freezing it.
+  const current = {};
+  allSettings.forEach(s => { current[s.key] = !!_viewSetting(s.key); });
 
-  // Apply persisted values up front (before any UI) so there's no flash.
-  allSettings.forEach(s => s.apply(saved[s.key]));
+  // Apply up front (before any UI) so there's no flash.
+  allSettings.forEach(s => s.apply(current[s.key]));
 
   const GEAR_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
 
@@ -750,7 +769,7 @@ function _initPlanSettings() {
        <div class="plan-settings-title">${g.title}</div>
        ${g.settings.map(s =>
          `<label class="plan-settings-row">
-            <input type="checkbox" data-setting="${s.key}"${saved[s.key] ? ' checked' : ''}>
+            <input type="checkbox" data-setting="${s.key}"${current[s.key] ? ' checked' : ''}>
             <span>${s.label}</span>
           </label>`).join('')}
      </div>`
@@ -783,9 +802,9 @@ function _initPlanSettings() {
     input.addEventListener('change', () => {
       const key = input.dataset.setting;
       const setting = allSettings.find(s => s.key === key);
-      saved[key] = input.checked;
+      current[key] = input.checked;
       if (setting) setting.apply(input.checked);
-      persist();
+      _writeView({ [key]: input.checked });
     });
   });
   document.addEventListener('click', (e) => {
