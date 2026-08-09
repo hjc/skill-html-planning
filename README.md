@@ -152,8 +152,11 @@ After installing, delete or add templates as you see fit.
 To interact with the template system:
 
 ```bash
-# list available templates
+# list available templates, with a one-line gist of each
 node .claude/skills/html-planning/planr.js templates
+
+# what a template is for, the conventions it encodes, and what it scaffolds
+node .claude/skills/html-planning/planr.js templates tdd
 
 # scaffold from the tdd template
 node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template tdd
@@ -169,20 +172,30 @@ A template body is just the markup that goes inside `<main>`. Typically, this is
 
 Adding a new file into `templates/` immediately makes it available to the CLI.
 
+**Open it with a comment saying what the template is for.** That leading comment is the template's documentation: its first sentence becomes the gist in the `templates` table, the whole thing is what `templates <name>` prints, and it ships inside every generated plan so the guidance reaches whoever fills the scaffold in. Write no literal `<plan-…>` tag inside it — that would inflate a reader's `grep -c` structure count — and put it before any element, or it reads as an ordinary inline comment.
+
 For example, a lightweight PRD template with a custom `{{owner}}` field:
 
 `templates/prd.html`:
 
 ```html
-<plan-section id="summary" num="1" title="Summary">
+<!-- ════════════════════════════════════════════════════════
+     PRD — what we are building and why, for a reader deciding
+     whether to fund it. Keep Requirements to must-haves; a
+     nice-to-have belongs in Open Questions where it can be cut.
+     ════════════════════════════════════════════════════════ -->
+
+<plan-section id="summary" title="Summary">
   <p><strong>Owner:</strong> {{owner}}</p>
   <p>What we're building and why.</p>
 </plan-section>
 
-<plan-section id="requirements" num="2" title="Requirements">
+<plan-section id="requirements" title="Requirements">
   <p>The must-haves.</p>
 </plan-section>
 ```
+
+(No `num=` — section numbers derive from document position and re-derive after every insert, so writing them by hand only creates collisions.)
 
 Then scaffold from it, filling the custom field with `--set`:
 
@@ -214,7 +227,7 @@ The full surface — `planr --help` prints the same list, and `SKILL.md` carries
 | | Command | What it does |
 |---|---|---|
 | **Create** | `new` | Generate a plan from a template. `--set header.status=review` fills header attributes in the same command. |
-| | `templates` | List the selectable template names. |
+| | `templates` | List the templates with a one-line gist each; `templates <name>` prints that one's full guidance. |
 | **Inspect** | `list` | Every section as `num. id — title [status]`, plus the headings inside each one. `--no-outline` for sections alone. |
 | | `check` | Authoritative structure validation — tag balance, unregistered components, duplicate ids, with line numbers. Exits 1 on a break. |
 | | `tasks` | Just the sections carrying a status, with their addresses. `--all` · `--status <s>`. |

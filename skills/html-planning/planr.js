@@ -7,7 +7,7 @@
 
    Usage:
      node planr.js new         <file> [--title T] [--template <name>] [--set k=v ...]
-     node planr.js templates    (list available templates)
+     node planr.js templates  [<name>]   (list templates; with a name, print its guidance)
      node planr.js list        <file> [--no-outline]
      node planr.js check       <file>
      node planr.js tasks       <file> [--all | --status <s>]
@@ -98,6 +98,41 @@ const TEMPLATE_DIR = path.join(__dirname, 'templates');
 // Every {{placeholder}} the composed template actually offers.
 function templateVars(tpl) {
   return [...new Set([...tpl.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]))].sort();
+}
+
+/* ── template documentation ───────────────────────────────
+   CONVENTION: a template body's LEADING HTML comment is its documentation —
+   what the template is for and the conventions it encodes. It is written for
+   whoever fills the scaffold in, and it ships inside every generated plan, so
+   the guidance travels with the document. `templates` surfaces it rather than
+   leaving it readable only by opening the file.
+
+   Only a comment at the very top counts; anything after the first element is
+   an ordinary inline comment. Rule lines (═══) are decoration and are dropped,
+   and the block is de-indented so it reads flush in a terminal.
+
+   The comment must contain NO literal <plan-*> tag: it would inflate a reader's
+   `grep -c` structure count, balanced, so it never looks like a failure. */
+const RULE_LINE = /^[ \t]*[═─=-]{3,}[ \t]*$/;
+function templateDoc(tpl) {
+  const m = /^\s*<!--([\s\S]*?)-->/.exec(tpl);
+  if (!m) return null;
+  const lines = m[1].split('\n').filter(l => !RULE_LINE.test(l));
+  // De-indent by the shallowest indentation any content line uses, so the
+  // comment's internal structure (bullets, code samples) survives intact.
+  const indents = lines.filter(l => l.trim()).map(l => /^[ \t]*/.exec(l)[0].length);
+  const cut = indents.length ? Math.min(...indents) : 0;
+  const text = lines.map(l => l.slice(cut)).join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, '');
+  return text || null;
+}
+// One-line gist for the `templates` table: the doc's first sentence, or its
+// first paragraph when it has no sentence break.
+function templateSummary(tpl) {
+  const doc = templateDoc(tpl);
+  if (!doc) return '';
+  const para = doc.split(/\n[ \t]*\n/)[0].replace(/\s+/g, ' ').trim();
+  const sentence = /^(.*?[.!?])(\s|$)/.exec(para);
+  return sentence ? sentence[1] : para;
 }
 
 /* ── line helpers ─────────────────────────────────────── */
@@ -842,6 +877,33 @@ function planTemplates(files) {
               .map(f => f.replace(/\.html$/, '')).sort();
 }
 
+/* Pure: ([{name, body}], name?) -> the `templates` report text.
+   Without a name, a table of every template and its one-line gist; with one,
+   that template's full leading comment — the guidance its author wrote for
+   whoever fills the scaffold in. */
+function planTemplateReport(entries, name = null) {
+  const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+  if (!sorted.length) throw new PlanError('no templates found');
+  if (name) {
+    const hit = sorted.find(t => t.name === name);
+    if (!hit) throw new PlanError(`unknown template '${name}' — have: ${sorted.map(t => t.name).join(', ')}`);
+    const doc = templateDoc(hit.body);
+    const sections = [];
+    walkSections(hit.body, ({ id, num, depth }) => sections.push(`${'  '.repeat(depth)}${num}. ${id || '(no id)'}`));
+    return [
+      `# ${hit.name}    (planr new <file> --template ${hit.name})`,
+      '',
+      doc || '(this template has no leading comment — add one to document it)',
+      '',
+      `Scaffolds ${sections.length} section${sections.length === 1 ? '' : 's'}:`,
+      ...sections.map(s => '  ' + s),
+    ].join('\n') + '\n';
+  }
+  const w = Math.max(...sorted.map(t => t.name.length));
+  return sorted.map(t => `${t.name.padEnd(w)}  ${templateSummary(t.body) || '(no description)'}`).join('\n') +
+    `\n\nRun \`planr templates <name>\` for a template's full guidance.\n`;
+}
+
 // Pure: (html, "path=value" | ["path=value", …]) -> { html, message }; throws
 // PlanError on bad input. EVERY assignment is applied — batching two attributes
 // on one node (a status flip plus its chips) is the natural thing to reach for,
@@ -1106,11 +1168,12 @@ function cmdCheck(file) {
   if (!ok) throw new PlanError(report);      // → stderr + exit 1, so CI can gate on it
   process.stdout.write(report + '\n');
 }
-function cmdTemplates() {
+function cmdTemplates(name) {
   let files;
   try { files = fs.readdirSync(TEMPLATE_DIR); }
   catch (e) { throw new PlanError(`cannot read templates dir: ${e.message}`); }
-  process.stdout.write(planTemplates(files).join('\n') + '\n');
+  const entries = planTemplates(files).map(n => ({ name: n, body: read(path.join(TEMPLATE_DIR, `${n}.html`)) }));
+  process.stdout.write(planTemplateReport(entries, name));
 }
 
 // Mutating shell: read, run core, write, print message.
@@ -1185,7 +1248,7 @@ const USAGE = `planr — generate and manipulate plan files
 Usage: node planr.js <command> [args]   (no args or --help prints this)
 
   new          <file> [--title T] [--template <name>] [--set k=v ...]
-  templates    (list available templates)
+  templates    [<name>]                                   (with a name: that template's guidance)
   list         <file> [--no-outline]
   check        <file>                                     (structure validation; exit 1 on a break)
   tasks        <file> [--all | --status <s>]
@@ -1228,7 +1291,7 @@ function main() {
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
     switch (cmd) {
       case 'new':          return cmdNew(file, flags);
-      case 'templates':    return cmdTemplates();
+      case 'templates':    return cmdTemplates(positional[0]);
       case 'list':         return cmdList(file, flags);
       case 'check':        return cmdCheck(file);
       case 'tasks':        return cmdTasks(file, flags);
@@ -1255,12 +1318,13 @@ function main() {
 if (require.main === module) main();   // run the CLI only when invoked directly
 
 module.exports = {
-  render, templateVars, resolveSkillSubpath, scanAttrs, getAttr, setAttrRaw, flagValue,
+  render, templateVars, templateDoc, templateSummary, resolveSkillSubpath,
+  scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
   childSections, resolveNode, ownElements, ownHeadings, resolveContainer, textOf,
   buildSection, sectionIds, allSectionIds, walkSections, walkTags, sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, PLAN_TAGS,
-  planNew, planTemplates, planList, planCheck, planTasks, planRead,
+  planNew, planTemplates, planTemplateReport, planList, planCheck, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planAddSection, planRmSection, planMoveSection,
 };

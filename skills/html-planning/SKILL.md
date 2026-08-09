@@ -391,7 +391,7 @@ tr:2          the 2nd <tr>, 1-based
 | Command | Positional args | Flags | What it does |
 |---------|-----------------|-------|--------------|
 | `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **dotted** `--set` key is a node address applied to the generated file (`header.status=review`); a **bare** key fills a `{{placeholder}}`. Either way an unusable key is an error, never a silent drop. |
-| `templates` | *(none)* | *(none)* | List selectable template names, one per line. |
+| `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
 | `check` | `<file>` | *(none)* | **Authoritative structure validation.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census. Exits **1** with the offending line numbers on any break. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
@@ -464,7 +464,18 @@ Templates live in `./templates/`: `_shell.html` is the shared document + runtime
 | `tdd` | test-driven implementation plans (the canonical spine above) |
 | `issue` | a defect write-up: danger callout → root cause → impact table → remediation table → what is *not* affected → Open |
 
-Values fill via a zero-dep `{{var}}` substitution — `{{title}}`, `{{date}}`, `{{skillSubpath}}`, plus any **bare** `--set` key naming a placeholder the template actually offers. A **dotted** `--set` key is not a placeholder at all: it is a node address applied to the rendered file, which is how the header is filled in the same command. **Add a new spine by dropping a `<name>.html` body file into `templates/`** — no code change; `--template <name>` and `planr templates` pick it up.
+Values fill via a zero-dep `{{var}}` substitution — `{{title}}`, `{{date}}`, `{{skillSubpath}}`, plus any **bare** `--set` key naming a placeholder the template actually offers. A **dotted** `--set` key is not a placeholder at all: it is a node address applied to the rendered file, which is how the header is filled in the same command.
+
+**A template's leading HTML comment is its documentation.** `planr templates <name>` prints it, so before using an unfamiliar template, read what its author wrote:
+
+```bash
+node .claude/skills/html-planning/planr.js templates          # all of them, one gist each
+node .claude/skills/html-planning/planr.js templates tdd      # what tdd is for, and its conventions
+```
+
+The comment also ships inside every generated plan, so the guidance travels with the document to whoever fills the scaffold in.
+
+**Add a new spine by dropping a `<name>.html` body file into `templates/`** — no code change; `--template <name>` and `planr templates` pick it up. Open it with a comment saying what the template is for and the conventions it encodes: the first sentence becomes its one-line gist in the table, and the rest is what `templates <name>` prints. Two rules for that comment — **write no literal `<plan-…>` tag in it** (it would inflate a reader's `grep -c` structure count, balanced, so it never looks like a failure), and put the comment **first**, before any element, or it is treated as an ordinary inline comment.
 
 ### Field notes
 

@@ -333,6 +333,55 @@ describe('planCheck', () => {
   });
 });
 
+describe('template documentation (the leading-comment convention)', () => {
+  const TPL = [
+    '  <!-- ════════════════════════════════════════',
+    '       Probe template — for probing things. Not for anything else.',
+    '',
+    '       Conventions:',
+    '         · One bullet.',
+    '       ════════════════════════════════════════ -->',
+    '',
+    '  <plan-section id="overview" title="Overview"></plan-section>',
+  ].join('\n');
+
+  it('extracts the leading comment, dropping rules and de-indenting', () => {
+    expect(planr.templateDoc(TPL)).toBe(
+      'Probe template — for probing things. Not for anything else.\n\nConventions:\n  · One bullet.');
+  });
+  it('summarises to the first sentence', () => {
+    expect(planr.templateSummary(TPL)).toBe('Probe template — for probing things.');
+    // No sentence break → the whole first paragraph, whitespace collapsed.
+    expect(planr.templateSummary('<!--\n  Just a label\n-->')).toBe('Just a label');
+  });
+  it('only counts a comment at the very top', () => {
+    expect(planr.templateDoc('<plan-section id="a"></plan-section>\n<!-- inline note -->')).toBeNull();
+    expect(planr.templateSummary('<plan-section id="a"></plan-section>')).toBe('');
+  });
+
+  const entries = [
+    { name: 'zeta', body: TPL },
+    { name: 'alpha', body: '<plan-section id="only"></plan-section>' },
+  ];
+  it('lists templates alphabetically with their gist', () => {
+    const out = planr.planTemplateReport(entries);
+    expect(out).toMatch(/^alpha {2}\(no description\)\nzeta {3}Probe template/);
+    expect(out).toContain('Run `planr templates <name>`');
+  });
+  it('describes one template: its guidance and what it scaffolds', () => {
+    const out = planr.planTemplateReport(entries, 'zeta');
+    expect(out).toContain('# zeta');
+    expect(out).toContain('· One bullet.');
+    expect(out).toContain('Scaffolds 1 section:');
+    expect(out).toContain('1. overview');
+  });
+  it('says so when a template carries no guidance, and rejects an unknown name', () => {
+    expect(planr.planTemplateReport(entries, 'alpha')).toContain('no leading comment');
+    expect(() => planr.planTemplateReport(entries, 'nope')).toThrow(/unknown template 'nope' — have: alpha, zeta/);
+    expect(() => planr.planTemplateReport([])).toThrow(/no templates found/);
+  });
+});
+
 describe('planList outline', () => {
   it('lists a section\'s OWN headings by default, never a nested section\'s', () => {
     const out = planr.planList(RICH);

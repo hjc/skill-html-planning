@@ -1,3 +1,29 @@
+  <!-- ════════════════════════════════════════════════════════
+       TDD implementation plan — the canonical spine for test-driven work,
+       written so an executor can follow it without re-deriving the design.
+
+       The section ids below are fixed vocabulary. Use them verbatim: a stable
+       id makes every plan addressable (`planr read plan.html anti-patterns`
+       works because the id is never `antipatterns` or `risks`) and makes a
+       corpus of plans comparable. Fill the scaffold in rather than inventing
+       section names, and delete a section you genuinely do not need.
+
+       Conventions this template encodes:
+         · Reconnaissance, Design Decisions, Callsite Audit and Anti-Patterns
+           are each a table, not prose. The column headers are the convention;
+           keep them so the corpus stays uniform.
+         · One nested section per implementation step, each carrying a status,
+           each with the Red Phase / Green Phase rhythm.
+         · Encode code changes as diff and file components, never as prose
+           ("around line 45, change X"). The markup is the instruction; the
+           prose explains why, not which lines.
+         · Verification is commands plus what a passing run looks like.
+         · Anti-Patterns is the tempting wrong approach and the invariant it
+           violates — the section that saves the most executor time.
+
+       Numbers (1, 1.1) derive from position, so never write a num=.
+       ════════════════════════════════════════════════════════ -->
+
   <plan-section id="overview" title="Overview">
     <p>Goal, background, and the problem this plan solves.</p>
   </plan-section>

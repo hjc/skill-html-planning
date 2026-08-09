@@ -16,6 +16,10 @@ const freshPlan = () => {
   const r = run(['new', P(), '--template', 'tdd']);
   expect(r.code, r.stderr).toBe(0);
 };
+// `templates` prints a name/description table; the name is the first column of
+// each row above the trailing hint paragraph.
+const templateNames = () =>
+  run(['templates']).stdout.split('\n\n')[0].trim().split('\n').map(l => l.split(/\s+/)[0]);
 
 beforeEach(() => { dir = mkTmp(); });
 afterEach(() => { rmTmp(dir); });
@@ -102,12 +106,37 @@ describe('check', () => {
   });
 });
 
+describe('templates', () => {
+  it('lists every template with a gist, and describes one by name', () => {
+    const list = run(['templates']);
+    expect(list.code, list.stderr).toBe(0);
+    expect(list.stdout).toMatch(/^basic\s+\S/m);
+    const one = run(['templates', 'tdd']);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.stdout).toContain('# tdd');
+    expect(one.stdout).toContain('Scaffolds 9 sections:');
+    expect(run(['templates', 'nope']).code).toBe(1);
+  });
+  it('every shipped template documents itself, with no literal plan tag in the comment', () => {
+    // The convention this enforces: a template's leading comment IS its docs.
+    // A literal <plan-* inside it would inflate a reader's grep count.
+    for (const name of templateNames()) {
+      const out = run(['templates', name]);
+      expect(out.stdout, name).not.toContain('no leading comment');
+      const doc = readFileSync(join(SKILL_DIR, 'templates', `${name}.html`), 'utf8');
+      const comment = /^\s*<!--([\s\S]*?)-->/.exec(doc);
+      expect(comment, name).toBeTruthy();
+      expect(comment[1], name).not.toMatch(/<plan-[a-z]/);
+    }
+  });
+});
+
 describe('shipped artifacts pass their own check', () => {
   it('validates every template and the sample plan', () => {
     // The showcase and every scaffold are the skill's own output; if `check`
     // rejects one of them, either the artifact or the checker is wrong.
     expect(run(['check', join(SKILL_DIR, 'examples', 'sample-plan.html')]).code).toBe(0);
-    for (const t of run(['templates']).stdout.trim().split('\n')) {
+    for (const t of templateNames()) {
       const out = join(dir, `${t}.html`);
       expect(run(['new', out, '--template', t]).code, t).toBe(0);
       const r = run(['check', out]);
