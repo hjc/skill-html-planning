@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH } from './helpers.js';
+import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
 // This is the WIRING suite: it proves what only a real subprocess can — argv
 // dispatch, real exit codes, stdin piping, byte-exact file round-trips, the
@@ -64,6 +64,112 @@ describe('read --body | set-body round-trip (crosses the process boundary)', () 
   });
 });
 
+describe('new --set (one-command scaffold)', () => {
+  it('applies dotted keys to the generated file, so `new` needs no follow-up `set`', () => {
+    const r = run(['new', P(), '--title', 'Probe', '--template', 'issue',
+      '--set', 'header.subtitle=SUB', '--set', 'header.chips=A | B', '--set', 'header.status=review']);
+    expect(r.code, r.stderr).toBe(0);
+    const html = readPlan();
+    expect(html).toContain('subtitle="SUB"');
+    expect(html).toContain('chips="A | B"');
+    expect(html).toContain('status="review"');
+  });
+  it('exits 1 rather than dropping an unknown --set key', () => {
+    const r = run(['new', P(), '--set', 'subtitle=SUB']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('--set header.subtitle=');
+  });
+});
+
+describe('check', () => {
+  it('passes a freshly generated plan and fails a corrupted one (exit 1)', () => {
+    freshPlan();
+    const ok = run(['check', P()]);
+    expect(ok.code, ok.stderr).toBe(0);
+    expect(ok.stdout).toContain('structure OK');
+    // `check` and `list` must agree on the section count. A commented plan tag
+    // in a template inflated `grep -c` — balanced, so it never read as a
+    // failure — and sent readers hunting a splice bug that did not exist.
+    expect(ok.stdout).toMatch(/sections: 9 \(1 nested\)/);
+    expect(ok.stdout).toContain('plan-section 9');
+    const listed = run(['list', P()]).stdout.trim().split('\n').length - 1;  // minus the title line
+    expect(listed).toBe(9);
+
+    writeFileSync(P(), readPlan().replace('</plan-section>', ''));
+    const bad = run(['check', P()]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('structure check FAILED');
+  });
+});
+
+describe('shipped artifacts pass their own check', () => {
+  it('validates every template and the sample plan', () => {
+    // The showcase and every scaffold are the skill's own output; if `check`
+    // rejects one of them, either the artifact or the checker is wrong.
+    expect(run(['check', join(SKILL_DIR, 'examples', 'sample-plan.html')]).code).toBe(0);
+    for (const t of run(['templates']).stdout.trim().split('\n')) {
+      const out = join(dir, `${t}.html`);
+      expect(run(['new', out, '--template', t]).code, t).toBe(0);
+      const r = run(['check', out]);
+      expect(r.code, `${t}: ${r.stderr}`).toBe(0);
+    }
+  });
+});
+
+describe('section-relative writes', () => {
+  it('appends into a nested container from --file and stays structurally valid', () => {
+    freshPlan();
+    const hunk = join(dir, 'hunk.html');
+    writeFileSync(hunk, '<tr><td>2</td><td>added row</td><td>via the CLI</td></tr>');
+    const r = run(['append', P(), 'recon', '--into', 'tbody', '--file', hunk]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain("at the end of 'recon' → tbody");
+    expect(readPlan()).toContain('<td>added row</td>');
+    expect(run(['check', P()]).code).toBe(0);
+  });
+  it('prepends from stdin and anchors on a heading', () => {
+    freshPlan();
+    expect(run(['prepend', P(), 'overview'], { input: '<plan-callout type="warn">Amended.</plan-callout>' }).code).toBe(0);
+    expect(run(['read', P(), 'overview', '--body']).stdout).toMatch(/^\s*<plan-callout type="warn">Amended\./);
+    const r = run(['insert', P(), 'steps.step-1', '--after-heading', 'Green Phase'], { input: '<p>note</p>' });
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).toMatch(/<h4>Green Phase<\/h4>\n\s*<p>note<\/p>/);
+  });
+  it('exits 1 when `insert` is given no anchor', () => {
+    freshPlan();
+    const r = run(['insert', P(), 'overview'], { input: '<p>x</p>' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('insert requires --before-heading');
+  });
+});
+
+describe('badge', () => {
+  it('flips a badge inside a table row, and refuses an ambiguous match (exit 1)', () => {
+    freshPlan();
+    const hunk = join(dir, 'rows.html');
+    writeFileSync(hunk, '<plan-table><table><tbody>' +
+      '<tr><td>q16 staging</td><td><plan-badge type="open"></plan-badge></td></tr>' +
+      '<tr><td>q18 signals</td><td><plan-badge type="open"></plan-badge></td></tr>' +
+      '</tbody></table></plan-table>');
+    expect(run(['set-body', P(), 'recon', '--file', hunk]).code).toBe(0);
+    expect(run(['badge', P(), '--match', 'q16', '--set', 'decided']).code).toBe(0);
+    expect(readPlan()).toContain('<td>q16 staging</td><td><plan-badge type="decided">');
+    expect(readPlan()).toContain('<td>q18 signals</td><td><plan-badge type="open">');
+    const amb = run(['badge', P(), '--match', 'q1', '--set', 'decided']);
+    expect(amb.code).toBe(1);
+    expect(amb.stderr).toContain('matches 2 rows');
+  });
+});
+
+describe('list --outline', () => {
+  it('adds authored headings under their section', () => {
+    freshPlan();
+    const out = run(['list', P(), '--outline']).stdout;
+    expect(out).toMatch(/5\.1\. step-1 — First step.*\n\s+h4\s+Red Phase\n\s+h4\s+Green Phase/);
+    expect(run(['list', P()]).stdout).not.toContain('Red Phase');
+  });
+});
+
 describe('end-to-end editing flow', () => {
   it('new -> add-section -> set -> read reflects each change', () => {
     freshPlan();
@@ -76,5 +182,15 @@ describe('end-to-end editing flow', () => {
     const bad = run(['set', P(), 'steps.step-1.status=finished']);
     expect(bad.code).toBe(1);
     expect(bad.stderr).toContain("invalid status 'finished'");
+  });
+  it('applies every positional assignment `set` is given', () => {
+    freshPlan();
+    const r = run(['set', P(), 'header.status=review', 'header.chips=A | B | C', 'overview.status=done']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim().split('\n')).toHaveLength(3);
+    const html = readPlan();
+    expect(html).toContain('status="review"');
+    expect(html).toContain('chips="A | B | C"');
+    expect(run(['read', P(), 'overview']).stdout).toContain('status="done"');
   });
 });

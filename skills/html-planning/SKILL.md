@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # html-planning
@@ -24,12 +24,18 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan"
    ```
-   For a **TDD implementation plan**, add `--template tdd` to scaffold the canonical spine (see "Plan Templates & Canonical Sections" below):
+   For a **TDD implementation plan**, add `--template tdd` to scaffold the canonical spine (see "Plan Templates & Canonical Sections" below); for a defect write-up, `--template issue`:
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan" --template tdd
    ```
+   Set header attributes in the **same command** with dotted `--set` keys — they use the ordinary address grammar, so there is no follow-up `set`:
+   ```bash
+   node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan" --template issue \
+     --set header.subtitle="What it covers" --set header.status=review --set "header.chips=Bug | Production"
+   ```
 2. **Read the generated file.**
-3. **Use `Edit`** (or `planr`) to add sections, cards, tables, and other components using the Web Component tags below.
+3. **Use `planr`** (or `Edit`) to add sections, cards, tables, and other components using the Web Component tags below.
+4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count.
 
 ## Plan Templates & Canonical Sections
 
@@ -67,7 +73,9 @@ Page header with title, status badge, and metadata chips.
   chips="Backend | Frontend | Phase 1">
 </plan-header>
 ```
-**Attributes:** `title`, `subtitle`, `status` (draft/approved/implemented/rejected), `date`, `chips` (pipe-delimited).
+**Attributes:** `title`, `subtitle`, `status`, `date`, `chips` (pipe-delimited).
+
+**`status` values:** `draft` · `review` · `approved` · `implemented` · `rejected` — the full set, each with its own dot colour. This is the **header's own** enum and is different from a section's (`todo`/`in-progress`/`done`/`blocked`); `planr set` validates each against the right one. Use `review` for claimed-but-unresolved work.
 
 #### `<plan-nav>`
 Auto-generated navigation. By default the runtime shows a **left side-panel tree** covering every section at every depth (see "Architecture" below); the `<plan-nav>` element itself is the fallback view — a sticky top bar that renders top-level sections as links, with a hover dropdown of a section's **immediate** children, so it shows **two levels**. Deeper nesting is still addressable and rendered, just not shown in that bar. Either way the element carries no attributes — place it before `<main>` and the runtime handles the rest.
@@ -239,6 +247,8 @@ GitHub-style unified diff view with add/delete line coloring and dual line numbe
 
 **Line prefix convention:** Lines starting with `+` are additions (green), `-` are deletions (red), space or no prefix are context lines.
 
+> **`plan-diff` is for changes; `plan-file` is for code.** A `<plan-diff>` whose content has no `+`/`-` lines renders fine, but it is the wrong tag: it labels an unchanged snippet as a change and spends two gutter columns saying nothing. Use `<plan-file>` for any code the reader is meant to *read* — an excerpt (`lines="42-58"`), a whole new file (`new`), or an appended block (`add`) — and `<plan-diff>` only when the point is what differs between two versions.
+
 #### Embedding a whole file, and verifying the round-trip
 
 When a `<plan-file>` carries a **complete file body** rather than an excerpt — a script or config the plan ships verbatim — generate the block programmatically and verify it survived, rather than trusting a visual scan. A single unescaped bracket truncates the render in a way that looks identical to a correct one at a glance.
@@ -352,7 +362,7 @@ Run `planr` with no arguments (or `--help`) to print usage.
 
 ### Addressing
 
-One grammar for every address argument — the positional `<address>`, `--parent`, `--after`, and `--before` alike:
+One grammar for every address argument — the positional `<address>`, `--parent`, `--after`, `--before`, `--in`, and a dotted `new --set` key alike:
 
 ```
 header                    the <plan-header>
@@ -364,19 +374,34 @@ Each segment after the first is a child's `id` or its **1-based ordinal** among 
 
 `set` is the one exception: its **last** segment is an attribute name, not a node (`steps.3.status=done`).
 
+**`--into <sel>` is the only non-address selector**, and it never replaces an address — it names a plain HTML container *inside* an already-addressed section:
+
+```
+ul            the LAST <ul> the section owns   (what "the running list" means)
+tr:2          the 2nd <tr>, 1-based
+#tickets      the element carrying id="tickets"
+```
+
+"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. A `<plan-*>` tag is rejected here: address those with the dot-path.
+
 ### Command reference
 
 **Positional args are order-sensitive; flags may appear in any order.** `<file>` is the plan path (for `new`, the output path).
 
 | Command | Positional args | Flags | What it does |
 |---------|-----------------|-------|--------------|
-| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. `--set` fills extra `{{var}}` placeholders. |
+| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **dotted** `--set` key is a node address applied to the generated file (`header.status=review`); a **bare** key fills a `{{placeholder}}`. Either way an unusable key is an error, never a silent drop. |
 | `templates` | *(none)* | *(none)* | List selectable template names, one per line. |
-| `list` | `<file>` | *(none)* | Print the title, then every section as `num. id — title [status]`, indented by depth. Orients you without loading the file. |
+| `list` | `<file>` | `--outline` | Print the title, then every section as `num. id — title [status]`, indented by depth. `--outline` also lists each section's own `<h1>`–`<h6>` headings — where a large plan's real structure lives. |
+| `check` | `<file>` | *(none)* | **Authoritative structure validation.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census. Exits **1** with the offending line numbers on any break. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content. |
-| `set` | `<file> <path>=<value>` | *(none)* | Set one attribute. |
+| `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
+| `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
+| `append` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **end** of that body / container, just above its closing tag. |
+| `insert` | `<file> <address>` | `--before-heading <T>` \| `--after-heading <T>` **(one required)** · `--file <f>` · `--into <sel>` | Insert a hunk relative to an authored heading, matched on visible text (case-insensitive substring). |
+| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. |
 | `add-section` | `<file>` | `--id <id>` **(required)** · `--title <T>` · `--status <S>` · `--num <N>` · `--after <addr>` \| `--before <addr>` · `--parent <addr>` · `--body-file <f>` | Insert a section, empty or filled from `--body-file`. |
 | `rm-section` | `<file> <address>` | *(none)* | Remove the section at that address, at any depth. |
 | `move-section` | `<file> <address>` | `--after <addr>` \| `--before <addr>` **(one required)** | Move the addressed section beside a sibling. |
@@ -385,31 +410,77 @@ Each segment after the first is a child's `id` or its **1-based ordinal** among 
 
 - **Placing a section:** `--after`/`--before` name a **sibling by full address**, which fixes the new section's nesting depth too — so `add-section --id step-2 --after steps.step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
 - **Numbers are automatic.** `1`, `1.1`, `1.1.2` derive from document position and re-derive after every add/move/remove — never write a `num` to keep a plan in order, and never renumber by hand. `num` is a label **override** only: a bare value (`"Part 1"`) replaces that one level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is the complete number, used as-is.
-- **`status` values:** sections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `approved` / `implemented` / `rejected`. `set` **rejects** an out-of-set status or a misspelled attribute (`staus`) — it never silently no-ops.
-- **Ids are unique document-wide.** `add-section` rejects an id already used at any depth.
+- **`status` values:** sections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `review` / `approved` / `implemented` / `rejected`. `set` validates each against **its own** enum, and **rejects** an out-of-set status or a misspelled attribute (`staus`) — it never silently no-ops. That holds for `new --set header.status=…` too, which is the same code path.
+- **Nothing is dropped in silence.** `set` applies every assignment it is given; `new --set` errors on a key that addresses nothing. If a command exits 0, every argument you passed took effect.
+- **Ids are unique document-wide.** `add-section` rejects an id already used at any depth, and `check` reports a duplicate that got in another way.
 - **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render.
-- **Body input:** `set-body` reads `--file <f>` if given, otherwise **stdin**. `add-section` takes `--body-file <f>` (no stdin). Bodies splice **verbatim** — they own their whitespace, and escaping is yours.
+- **Body input:** `set-body`, `prepend`, `append`, and `insert` read `--file <f>` if given, otherwise **stdin**. `add-section` takes `--body-file <f>` (no stdin).
+- **`set-body` is verbatim; the hunk commands fit the seam.** A `set-body` body owns its whitespace byte-for-byte (that is what makes the round-trip lossless). A `prepend`/`append`/`insert` hunk is placed at one point instead, so blank edge lines are dropped and the anchor's indentation is applied **only when the hunk carries none of its own**. Escaping is yours either way.
 - **Round-trip:** `read --body <addr>` → edit the hunk → `set-body <addr>` is byte-for-byte lossless.
-- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. `set-body` and `add-section` **abort without writing** if the splice would break the plan's structure.
+- **Ambiguity is an error, not a guess.** `insert --before-heading` refuses a text that matches two headings, and `badge --match` refuses a text that matches two rows (pass `--all` if you mean both). Both list the candidates so you can narrow it.
+- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. Every body-writing command — `set-body`, `prepend`, `append`, `insert`, `add-section`, `badge` — **aborts without writing** if the splice would break the plan's structure.
 
 ```bash
 node .../planr.js new plan.html --title "My Plan" --template tdd      # generate
-node .../planr.js list plan.html                                      # what's in it
+node .../planr.js new issue.html --template issue --title "Bug" \
+                  --set header.status=review --set "header.chips=Bug | Prod"   # header in one command
+node .../planr.js list plan.html --outline                            # sections + their headings
+node .../planr.js check plan.html                                     # is it still structurally sound
 node .../planr.js tasks plan.html                                     # what's open
-node .../planr.js set plan.html steps.3.status=done                   # flip one attribute
+node .../planr.js set plan.html steps.3.status=done header.status=review       # both land
 node .../planr.js read plan.html steps.step-1 --body > hunk.html      # pull a hunk to edit
+node .../planr.js prepend plan.html resolution --file amendment.html  # amendment above the section
+node .../planr.js append plan.html decisions --into ul --file gist.html        # one <li> onto the running list
+node .../planr.js append plan.html vocab --into tbody --file rows.html         # rows onto a table
+node .../planr.js insert plan.html resolution --before-heading "The six decisions" --file note.html
+node .../planr.js badge plan.html --match "q16" --set decided         # flip a badge in a tickets table
 node .../planr.js add-section plan.html --id risks --title "Risks" --after overview
 node .../planr.js add-section plan.html --id step-2 --title "Wire it up" \
                   --status todo --after steps.step-1                  # nests under steps
 ```
 
+### Editing a document too big to load
+
+The characteristic write on a long-lived plan is **small and deep**: an amendment callout at the top of a resolution decided three sessions ago, one `<li>` onto a running gist, four rows onto a vocabulary table, one badge flipped in a ticket table. None of those is a whole-section rewrite, and none should cost a `set-body` of the surrounding 20KB.
+
+| The write | Reach for |
+|---|---|
+| Amendment above everything in a section | `prepend <section> --file` |
+| One more item on a running list | `append <section> --into ul --file` |
+| More rows on a table | `append <section> --into tbody --file` |
+| Something next to a known heading | `insert <section> --before-heading "…" --file` |
+| A status/badge transition | `set <addr>.status=…` · `badge --match … --set …` |
+| Replacing a whole section's content | `set-body <section> --file` |
+
+**Prefer these over `Edit` for anything structural.** An `Edit` on a plan means hand-lifting an `old_string` out of a large file, which is where this toolchain's worst failure mode lives — and a `<plan-badge>` in a table row is usually an *empty* tag (`<plan-badge type="open"></plan-badge>`), so an `old_string` written assuming inner text matches nothing at all.
+
 ### Templates
 
-Templates live in `./templates/`: `_shell.html` is the shared document + runtime loader (with a `{{body}}` slot), and every other `<name>.html` is a body selectable via `--template <name>`. Values fill via a zero-dep `{{var}}` substitution — `{{title}}`, `{{date}}`, `{{skillSubpath}}`, plus anything you pass with `--set`. **Add a new spine by dropping a `<name>.html` body file into `templates/`** — no code change; `--template <name>` and `planr templates` pick it up.
+Templates live in `./templates/`: `_shell.html` is the shared document + runtime loader (with a `{{body}}` slot), and every other `<name>.html` is a body selectable via `--template <name>`. Run `planr templates` for the current list; today it is:
+
+| Template | For |
+|---|---|
+| `basic` | anything without a fixed spine — one starter section |
+| `tdd` | test-driven implementation plans (the canonical spine above) |
+| `issue` | a defect write-up: danger callout → root cause → impact table → remediation table → what is *not* affected → Open |
+
+Values fill via a zero-dep `{{var}}` substitution — `{{title}}`, `{{date}}`, `{{skillSubpath}}`, plus any **bare** `--set` key naming a placeholder the template actually offers. A **dotted** `--set` key is not a placeholder at all: it is a node address applied to the rendered file, which is how the header is filled in the same command. **Add a new spine by dropping a `<name>.html` body file into `templates/`** — no code change; `--template <name>` and `planr templates` pick it up.
+
+### Field notes
+
+Established by driving `planr` against real multi-session plan sets. Each of these cost a failed edit or a wrong conclusion before it was written down; they are re-learned every session otherwise.
+
+- **`list` and `check` are the authoritative section counts — `grep` is not.** `grep -c '<plan-section'` counts literal strings, so a commented example inflates the total. The over-count stays *balanced*, so it never reads as a failure, and reconciling it against `list` sends you hunting a splice bug that does not exist. Use `check` for balance and `list` for the count. (The shipped templates no longer contain a commented plan tag, but plans in the wild may.)
+- **`read <addr> --body` is byte-faithful.** Indentation is preserved exactly; it prepends a single leading newline and nothing else. An `Edit` `old_string` can be lifted from its output directly.
+- **…but never reconstruct an `old_string` from a byte-truncated view of it.** `tail -c N` / `cut -c` truncate mid-line, which makes wrapped prose look like it starts at a line boundary when it does not — the resulting `Edit` fails with "String to replace not found." Use `grep -n` plus `Read` with an offset to get line-accurate text. Better: use `prepend`/`append`/`insert` and skip the `old_string` entirely.
+- **`planr` handles plans written before the CLI existed.** `list`, `read`, `set`, and `set-body` all address hand-authored plan files unchanged — no migration step.
+- **Large splices are fine.** A single `set-body --file` of ~17KB into an existing section is a normal operation; there is no observed size-related failure mode. Structure is re-verified after every splice.
+- **A literal `sed -i` substitution over a plan file is safe** for text-content-only changes (repointing a moved path, say) — the file still parses and every tag pair stays balanced. It is still not a substitute for `set-body` when the change is structural. Run `check` afterwards either way.
+- **Windows paths with forward slashes work from the Bash tool** (`--file "C:/Users/.../hunk.html"`) with no `MSYS_NO_PATHCONV=1` prefix, because the path sits inside a quoted argument.
 
 ### Rich content
 
-Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the content — but you can pay for the content *without* also paying to load the plan. Author the body as normal plan markup in a scratch file, then inject it by address with `add-section --body-file` or `set-body --file`; the plan is mutated in place and never read into context. To fix content in an existing section, pull just that hunk with `read --body`, edit it, and push it back with `set-body` — ~2× the hunk, still far less than materializing the whole plan. Bodies are spliced **verbatim** (they own their own whitespace), and escaping is your responsibility exactly as when authoring markup directly.
+Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the content — but you can pay for the content *without* also paying to load the plan. Author the body as normal plan markup in a scratch file, then inject it by address with `add-section --body-file` or `set-body --file`; the plan is mutated in place and never read into context. To fix content in an existing section, pull just that hunk with `read --body`, edit it, and push it back with `set-body` — ~2× the hunk, still far less than materializing the whole plan. To *add* to a section rather than rewrite it, skip the read entirely and use `prepend` / `append` / `insert` (see "Editing a document too big to load"): the cost is the hunk alone. `set-body` and `add-section` splice **verbatim** (the body owns its whitespace); escaping is your responsibility exactly as when authoring markup directly.
 
 ## Architecture
 

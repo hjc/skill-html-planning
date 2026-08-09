@@ -71,6 +71,75 @@ describe('addressing', () => {
   });
 });
 
+describe('walkTags (linear scan backing `check`)', () => {
+  const collect = (html, keep = () => true) => {
+    const out = [];
+    planr.walkTags(html, keep, t => out.push(`${t.kind}:${t.name}`));
+    return out;
+  };
+  it('reports opens, closes and self-closing tags in document order', () => {
+    expect(collect('<plan-nav/><plan-section id="a"></plan-section>'))
+      .toEqual(['self:plan-nav', 'open:plan-section', 'close:plan-section']);
+  });
+  it('sees the unbalanced tags findClose gives up on', () => {
+    // findElement returns null here; `check` still has to name the problem.
+    expect(planr.findElement('<plan-callout>oops', 'plan-callout')).toBeNull();
+    expect(collect('<plan-callout>oops')).toEqual(['open:plan-callout']);
+    expect(collect('</plan-table>')).toEqual(['close:plan-table']);
+  });
+  it('skips comments, and steps over a quoted attribute containing markup', () => {
+    expect(collect('<!-- <plan-section id="x"></plan-section> -->')).toEqual([]);
+    expect(collect('<plan-card title="a <plan-badge> in prose"></plan-card>'))
+      .toEqual(['open:plan-card', 'close:plan-card']);
+  });
+  it('ignores doctypes and a bare < in prose', () => {
+    expect(collect('<!DOCTYPE html>\n<p>a < b</p>', n => n === 'p')).toEqual(['open:p', 'close:p']);
+  });
+});
+
+describe('hunk fitting', () => {
+  it('trimEdgeBlank drops blank edge lines without touching the first indent', () => {
+    expect(planr.trimEdgeBlank('\n   \n    <li>a</li>\n\n  ')).toBe('    <li>a</li>');
+  });
+  it('childIndent copies what existing children use, else one level in', () => {
+    const doc = '  <plan-section id="s">\n      <p>deep</p>\n  </plan-section>';
+    expect(planr.childIndent(doc, planr.findSectionById(doc, 's'))).toBe('      ');   // matches the sibling
+    const empty = '  <plan-section id="s"></plan-section>';
+    expect(planr.childIndent(empty, planr.findSectionById(empty, 's'))).toBe('    '); // own line + 2
+  });
+  it('fitBlock indents only a hunk that carries no indentation of its own', () => {
+    expect(planr.fitBlock('<li>a</li>\n<li>b</li>', '  ')).toBe('  <li>a</li>\n  <li>b</li>');
+    expect(planr.fitBlock('    <li>a</li>', '  ')).toBe('    <li>a</li>');   // author's own wins
+    expect(() => planr.fitBlock('  \n \n', '  ')).toThrow(planr.PlanError);
+  });
+});
+
+describe('container + heading scoping', () => {
+  const doc = [
+    '<plan-section id="p">',
+    '  <h3>Own</h3>',
+    '  <plan-callout><ul><li>buried but mine</li></ul></plan-callout>',
+    '  <plan-section id="k"><h3>Kid</h3><ul><li>kid</li></ul></plan-section>',
+    '</plan-section>',
+  ].join('\n');
+  const node = () => planr.findSectionById(doc, 'p');
+  it('ownElements reaches nested containers but stops at a child section', () => {
+    const uls = planr.ownElements(doc, node(), 'ul');
+    expect(uls).toHaveLength(1);
+    expect(planr.textOf(doc, uls[0])).toBe('buried but mine');
+  });
+  it('ownHeadings likewise excludes a child section\'s headings', () => {
+    expect(planr.ownHeadings(doc, node()).map(h => planr.textOf(doc, h))).toEqual(['Own']);
+  });
+  it('resolveContainer names which match it took when several exist', () => {
+    const two = '<plan-section id="s"><ul id="first"><li>1</li></ul><ul><li>2</li></ul></plan-section>';
+    const n = planr.findSectionById(two, 's');
+    expect(planr.resolveContainer(two, n, 'ul').label).toBe('ul:2 of 2');       // last wins, and says so
+    expect(planr.textOf(two, planr.resolveContainer(two, n, 'ul:1').el)).toBe('1');
+    expect(planr.textOf(two, planr.resolveContainer(two, n, '#first').el)).toBe('1');
+  });
+});
+
 describe('builders', () => {
   it('buildSection emits attributes in canonical order and seeds a body', () => {
     const b = planr.buildSection({ id: 'x', num: '2', title: 'T', status: 'todo' }, '  ', null);

@@ -1,0 +1,100 @@
+  <!-- ════════════════════════════════════════════════════════
+       Issue template — a defect found while doing something else,
+       written for whoever picks it up cold.
+
+       Conventions this template encodes:
+         · Lead with a danger callout that states the defect and its
+           blast radius in the first sentence. Someone triaging reads
+           only that.
+         · Separate ROOT CAUSE from IMPACT. The cause is one mechanism;
+           the impact is usually a table, because one mechanism tends to
+           break several things.
+         · Say what is ALREADY being fixed elsewhere, so the next reader
+           does not duplicate work or widen scope.
+         · Remediation is an ordered table with blockers named, not prose.
+         · Keep an Open section. An issue with no open questions is
+           usually one that has not been looked at hard enough.
+
+       Suggested header chips:
+         chips="Bug | Production | Silent | From: <where it was found>"
+       Status stays `draft` until someone owns it.
+       ════════════════════════════════════════════════════════ -->
+
+  <plan-section id="overview" title="Overview">
+    <plan-callout type="danger">
+      <strong>State the defect and its blast radius in one sentence.</strong> Then how long it has been
+      true, and whether it fails loudly or silently — a silent failure is a different kind of problem and
+      the reader needs to know which this is up front.
+    </plan-callout>
+
+    <h3>Root cause</h3>
+    <p>
+      The single mechanism. Cite the file and line — <code>path/to/file.py:42</code> — and quote the
+      offending construct rather than describing it. If the cause was <em>measured</em> rather than reasoned
+      about, say so and give the command or probe, because the next reader will want to re-run it.
+    </p>
+    <plan-diff>
+      <pre><code>the offending code, verbatim</code></pre>
+    </plan-diff>
+
+    <h3>Impact</h3>
+    <p>One mechanism usually breaks more than one thing. Convention: a table, most severe first.</p>
+    <plan-table>
+      <table>
+        <thead><tr><th>Area</th><th>What breaks</th><th>Consequence</th><th>Severity</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><code>component</code></td>
+            <td>The specific thing that does not happen</td>
+            <td>What that costs — and whether the lost data or state is
+              <strong>recoverable</strong>, which is usually the deciding factor</td>
+            <td><strong>High</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </plan-table>
+
+    <plan-callout type="info">
+      <strong>Already being fixed elsewhere — do not duplicate.</strong> Name any part of this defect that
+      another effort already owns, and which ticket or plan owns it. Delete this callout if nothing is
+      covered. Its purpose is to stop the next reader from widening scope by accident.
+    </plan-callout>
+
+    <h3>Remediation</h3>
+    <plan-table>
+      <table>
+        <thead><tr><th>#</th><th>Step</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>The fix itself</td>
+            <td>Whether it mirrors an existing pattern, and where that pattern lives</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>A test that would have caught it</td>
+            <td>For a silent failure, assert on the <em>wiring</em>, not the behaviour — a missing
+              receiver looks identical to a quiet system</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Assess the backlog the defect accumulated</td>
+            <td>Name the blocker: quantify before enabling, if switching it on has a one-time cost</td>
+          </tr>
+        </tbody>
+      </table>
+    </plan-table>
+
+    <plan-callout type="warn">
+      <strong>What is NOT affected.</strong> Bound the defect explicitly. A reader who has just learned the
+      mechanism will assume it is everywhere, and the cheapest thing you can give them is the list of places
+      that look implicated but are fine.
+    </plan-callout>
+
+    <h3>Open</h3>
+    <ul>
+      <li>A question whose answer changes the remediation.</li>
+      <li>Anything downstream that may already be silently compensating for this — or silently relying on
+        the broken behaviour.</li>
+    </ul>
+  </plan-section>

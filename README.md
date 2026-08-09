@@ -135,12 +135,13 @@ Then start adding any relevant components, open in your browser and enjoy!
 
 ## Templates
 
-`planr new` composes a plan from a template; two ship by default:
+`planr new` composes a plan from a template; three ship by default:
 
 | Template | Use it for |
 |----------|------------|
 | `basic` | A minimal starting point — a single section, ready to fill in. |
 | `tdd` | An opinionated software implementation plan with the canonical spine: Overview, Scope, Reconnaissance, Design Decisions, Implementation Steps, Callsite Audit, Verification, Anti-Patterns. |
+| `issue` | A defect write-up: a danger callout stating the blast radius, root cause, impact table, remediation table, what is *not* affected, and open questions. |
 
 After installing, delete or add templates as you see fit.
 
@@ -211,9 +212,9 @@ node .claude/skills/html-planning/planr.js list plan.html
 # just the open work (sections/steps that aren't done), with addresses to act on
 node .claude/skills/html-planning/planr.js tasks plan.html
 
-# flip a status (section, subsection, or header)
+# flip statuses (section, subsection, or header) — every assignment given is applied
 node .claude/skills/html-planning/planr.js set plan.html steps.status=in-progress
-node .claude/skills/html-planning/planr.js set plan.html steps.3.status=done
+node .claude/skills/html-planning/planr.js set plan.html steps.3.status=done header.status=review
 
 # read one section back, add/remove/reorder sections
 node .claude/skills/html-planning/planr.js read plan.html steps
@@ -231,6 +232,25 @@ node .claude/skills/html-planning/planr.js set-body plan.html caching --file bod
 # fix a section in place: pull just its hunk, edit, push it back (~2x the hunk, not the whole plan)
 node .claude/skills/html-planning/planr.js read plan.html caching --body > hunk.html
 node .claude/skills/html-planning/planr.js set-body plan.html caching --file hunk.html
+```
+
+On a long-lived plan the common edit is smaller still — an amendment above a section, one item onto a running list, four rows onto a table, one badge flipped — and none of those should cost a whole-section rewrite. Those go in at a point:
+
+```bash
+# structure first: the authoritative validation, and the section outline
+node .claude/skills/html-planning/planr.js check plan.html
+node .claude/skills/html-planning/planr.js list plan.html --outline
+
+# put a hunk at one point inside a section — start, end, or beside a heading
+node .claude/skills/html-planning/planr.js prepend plan.html resolution --file amendment.html
+node .claude/skills/html-planning/planr.js insert plan.html resolution --before-heading "The six decisions" --file note.html
+
+# ...or inside a container within it: the running <ul>, a table's <tbody>
+node .claude/skills/html-planning/planr.js append plan.html decisions --into ul --file gist.html
+node .claude/skills/html-planning/planr.js append plan.html vocab --into tbody --file rows.html
+
+# flip a <plan-badge> in a table row, found by the row's visible text
+node .claude/skills/html-planning/planr.js badge plan.html --match "q16" --set decided
 ```
 
 `planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. See `SKILL.md` for the full command and addressing reference.
@@ -251,8 +271,8 @@ Relative to `skills/html-planning/`:
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
-| `planr.js` | The CLI — generates plan skeletons (`planr new`) and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps) without re-reading the whole file. |
-| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`). |
+| `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
+| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |
