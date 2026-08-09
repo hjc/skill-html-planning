@@ -228,6 +228,8 @@ The vars `_shell.html` ships with:
 
 Run `planr templates <name>` to see this list for any template, including its own vars. A `--set` key that matches no placeholder is an **error** listing the ones that exist — it is never silently dropped. A placeholder with **no** declared default and no value is left literally in the output, so a missing required var is visible rather than silent.
 
+The above is the tour. The full authoring reference — section-id and `num` constraints, how to verify a new template, what belongs in the leading comment and why — lives with the skill at [`skills/html-planning/references/template-authoring.md`](skills/html-planning/references/template-authoring.md), so it ships to anyone who installs it.
+
 ## Editing Plans Cheaply
 
 The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
@@ -323,6 +325,7 @@ Relative to `skills/html-planning/`:
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
 | `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
 | `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). |
+| `references/` | Deep-dive docs the skill points at rather than inlining — currently `template-authoring.md`. |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |

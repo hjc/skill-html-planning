@@ -8,7 +8,9 @@ This repo hosts the `html-planning` Claude Code skill — not a project that con
 
 Everything at the repo **root** (`package.json`, `tests/`, `node_modules/`) is a sibling of the skill folder — it is never discovered and never installed, so dev tooling is "tree-shaken" out of the delivered artifact by construction.
 
-`skills/html-planning/SKILL.md` is the agent-facing contract (loaded into Claude's context when the skill is invoked). `skills/html-planning/README.md` is the human-facing version. Both document the same component vocabulary — keep them in sync with the code.
+`skills/html-planning/SKILL.md` is the agent-facing contract (loaded into Claude's context when the skill is invoked). `README.md` at the repo root is the human-facing version. Both document the same component vocabulary — keep them in sync with the code.
+
+`skills/html-planning/references/` holds deep-dive docs that SKILL.md **points at rather than inlines** — currently `template-authoring.md`. The split is by audience: SKILL.md covers *using* the skill and is paid for on every invocation, so guidance only a template author needs belongs in a reference, read on demand. Note this directory must live **inside** the skill folder: anything at the repo root is never installed, so a root-level `references/` would leave the pointer dangling for everyone who installs the skill. When adding a reference, link it from SKILL.md at the point of need — an unlinked reference is never read.
 
 ## Verifying changes
 

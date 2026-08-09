@@ -464,28 +464,21 @@ Templates live in `./templates/`: `_shell.html` is the shared document + runtime
 | `tdd` | test-driven implementation plans (the canonical spine above) |
 | `issue` | a defect write-up: danger callout → root cause → impact table → remediation table → what is *not* affected → Open |
 
-Values fill via a zero-dep `{{var}}` substitution. A placeholder may declare a default as **`{{name:default}}`** — that is how a template marks an attribute as a knob:
-
-```html
-<html lang="{{lang:en}}">              <!-- `en`, or --set lang=fr -->
-  status="{{status:draft}}"            <!-- `draft`, or --set status=review -->
-  subtitle="{{subtitle:}}"             <!-- empty, but settable -->
-```
-
-So **the settable surface belongs to the template**, not to a fixed list — make any attribute configurable by writing it as a placeholder. `planr templates <name>` lists every variable a template offers with its default, and an unusable `--set` key errors with the same list, so nothing is undocumented and nothing is silently dropped.
-
-The shell currently offers `lang`, `title`, `subtitle`, `status`, `chips`, `date`, and `skillSubpath`. A **dotted** `--set` key is not a placeholder at all: it is a node address applied to the rendered file. Both paths are validated identically — `--set status=aproved` and `--set header.status=aproved` both fail.
-
-**A template's leading HTML comment is its documentation.** `planr templates <name>` prints it, so before using an unfamiliar template, read what its author wrote:
+**Read a template before using it.** Each one opens with a comment stating what it is for and the conventions it encodes; `planr templates <name>` prints that, along with the sections it scaffolds and the variables it accepts:
 
 ```bash
 node .claude/skills/html-planning/planr.js templates          # all of them, one gist each
 node .claude/skills/html-planning/planr.js templates tdd      # what tdd is for, and its conventions
 ```
 
-The comment also ships inside every generated plan, so the guidance travels with the document to whoever fills the scaffold in.
+**Setting values.** `new --set` takes two key shapes, told apart by whether the key has a dot:
 
-**Add a new spine by dropping a `<name>.html` body file into `templates/`** — no code change; `--template <name>` and `planr templates` pick it up. Open it with a comment saying what the template is for and the conventions it encodes: the first sentence becomes its one-line gist in the table, and the rest is what `templates <name>` prints. Two rules for that comment — **write no literal `<plan-…>` tag in it** (it would inflate a reader's `grep -c` structure count, balanced, so it never looks like a failure), and put the comment **first**, before any element, or it is treated as an ordinary inline comment.
+- **bare** — `--set lang=fr` — fills a `{{placeholder}}` the template declares. The shell offers `lang`, `title`, `subtitle`, `status`, `chips`, `date`, `skillSubpath`; `templates <name>` lists any others, with defaults.
+- **dotted** — `--set header.status=review` — is a node address applied to the rendered document, reaching any `<plan-*>` node whether or not the template parameterised it.
+
+Both are validated identically (`--set status=aproved` and `--set header.status=aproved` both fail), and a key that matches nothing is an error listing the ones that exist — never a silent drop.
+
+> **Writing or changing a template?** See **[`references/template-authoring.md`](references/template-authoring.md)** — the `{{name:default}}` placeholder syntax, the leading-comment convention and the two rules it depends on, section-id and `num` constraints, how to verify a new template, and a complete worked example. Adding a template is a file drop into `templates/`, not a code change.
 
 ### Field notes
 
@@ -509,6 +502,7 @@ Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the 
 .claude/skills/html-planning/
 ├── planr.js          ← Generate (from a template) + address-based plan mutator
 ├── templates/        ← _shell.html (shared doc + loader) and <name>.html bodies (basic, tdd, …)
+├── references/       ← Deep-dive docs, read on demand (template-authoring.md)
 ├── plan-styles.css   ← Design system (loaded at runtime)
 ├── plan-runtime.js   ← Web Component definitions (loaded at runtime)
 └── SKILL.md          ← This file (agent instructions)

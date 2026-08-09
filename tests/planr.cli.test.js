@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
@@ -156,6 +156,18 @@ describe('templates', () => {
       expect(comment, name).toBeTruthy();
       expect(comment[1], name).not.toMatch(/<plan-[a-z]/);
     }
+  });
+});
+
+describe('SKILL.md references resolve', () => {
+  it('every references/ link in SKILL.md points at a file that ships', () => {
+    // An unlinked reference is never read; a dangling link is worse — it ships
+    // to every install and reads as a missing file.
+    const skill = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+    const links = [...skill.matchAll(/\]\((references\/[\w./-]+)\)/g)].map(m => m[1]);
+    expect(links.length).toBeGreaterThan(0);
+    for (const rel of new Set(links))
+      expect(existsSync(join(SKILL_DIR, rel)), rel).toBe(true);
   });
 });
 
