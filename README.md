@@ -129,6 +129,10 @@ Happy planning!
 node .claude/skills/html-planning/planr.js new <plan-output-path>.html --title "New Plan"
 
 # use --template <name> to start from a spine (e.g. tdd); `planr templates` lists them
+
+# --set takes the same addresses as `set`, so the header is filled in one command
+node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template issue \
+  --set header.status=review --set "header.chips=Bug | Production"
 ```
 
 Then start adding any relevant components, open in your browser and enjoy!
@@ -204,6 +208,27 @@ Unknown placeholders are left untouched, so a `{{typo}}` with no matching value 
 The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
 
 `planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document.
+
+The full surface — `planr --help` prints the same list, and `SKILL.md` carries the per-flag reference:
+
+| | Command | What it does |
+|---|---|---|
+| **Create** | `new` | Generate a plan from a template. `--set header.status=review` fills header attributes in the same command. |
+| | `templates` | List the selectable template names. |
+| **Inspect** | `list` | Every section as `num. id — title [status]`, plus the headings inside each one. `--no-outline` for sections alone. |
+| | `check` | Authoritative structure validation — tag balance, unregistered components, duplicate ids, with line numbers. Exits 1 on a break. |
+| | `tasks` | Just the sections carrying a status, with their addresses. `--all` · `--status <s>`. |
+| | `read` | One node's markup; `--body` for its inner content only. |
+| **Edit in place** | `set` | Set attributes. Every assignment given is applied. |
+| | `badge` | Flip a `<plan-badge>` in a table row, found by the row's visible text. |
+| **Write content** | `set-body` | Replace a node's whole inner content. |
+| | `prepend` / `append` | Put a hunk at the start or end of a body — or of a container inside it, via `--into`. |
+| | `insert` | Put a hunk beside an authored heading (`--before-heading` / `--after-heading`). |
+| **Restructure** | `add-section` | Insert a section, empty or filled from `--body-file`. |
+| | `rm-section` | Remove the section at an address, at any depth. |
+| | `move-section` | Reorder a section beside a sibling. |
+
+Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it.
 
 ```bash
 # orient without loading the file — every section, and the headings inside them
