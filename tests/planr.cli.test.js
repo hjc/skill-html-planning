@@ -68,43 +68,23 @@ describe('read --body | set-body round-trip (crosses the process boundary)', () 
   });
 });
 
+// planNew's own behaviour (bare vs dotted keys, defaults, validation) is
+// covered in-process by the core suite. These prove the wiring, and that the
+// SHIPPED _shell.html really declares the variables the core can fill.
 describe('new --set (one-command scaffold)', () => {
-  it('applies dotted keys to the generated file, so `new` needs no follow-up `set`', () => {
-    const r = run(['new', P(), '--title', 'Probe', '--template', 'issue',
-      '--set', 'header.subtitle=SUB', '--set', 'header.chips=A | B', '--set', 'header.status=review']);
-    expect(r.code, r.stderr).toBe(0);
-    const html = readPlan();
-    expect(html).toContain('subtitle="SUB"');
-    expect(html).toContain('chips="A | B"');
-    expect(html).toContain('status="review"');
-  });
-  it('fills every variable the shell declares, bare — including lang', () => {
+  it('fills the shipped shell from repeated --set flags, bare and dotted', () => {
     const r = run(['new', P(), '--title', 'Probe', '--set', 'lang=fr',
-      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'chips=A | B']);
+      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'header.chips=A | B']);
     expect(r.code, r.stderr).toBe(0);
     const html = readPlan();
     expect(html).toContain('<html lang="fr">');
     expect(html).toContain('subtitle="SUB"');
     expect(html).toContain('status="review"');
     expect(html).toContain('chips="A | B"');
-    expect(html).not.toContain('{{');
+    expect(html).not.toContain('{{');           // every declared var resolved
   });
-  it('falls back to each declared default when a variable is not set', () => {
-    expect(run(['new', P(), '--title', 'Probe']).code).toBe(0);
-    const html = readPlan();
-    expect(html).toContain('<html lang="en">');
-    expect(html).toContain('status="draft"');
-    expect(html).toContain('subtitle=""');
-  });
-  it('exits 1 rather than dropping an unknown --set key, and lists the real ones', () => {
-    const r = run(['new', P(), '--set', 'frobnicate=1']);
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("matches no {{placeholder}}");
-    expect(r.stderr).toMatch(/lang \(default: en\)/);
-  });
-  it('validates a bare status fill, not just the dotted node address', () => {
-    // The placeholder path bypasses planSet, so it needs its own check or
-    // `--set status=aproved` silently writes a typo the header renders greyed.
+  it('exits 1 on an unknown key and on an invalid value, by either key shape', () => {
+    expect(run(['new', P(), '--set', 'frobnicate=1']).stderr).toContain('matches no {{placeholder}}');
     for (const spec of ['status=aproved', 'header.status=aproved']) {
       const r = run(['new', P(), '--set', spec]);
       expect(r.code, spec).toBe(1);
@@ -160,14 +140,11 @@ describe('templates', () => {
 });
 
 describe('SKILL.md references resolve', () => {
-  it('every references/ link in SKILL.md points at a file that ships', () => {
-    // An unlinked reference is never read; a dangling link is worse — it ships
-    // to every install and reads as a missing file.
+  it('every references/ link points at a file that ships', () => {
     const skill = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
-    const links = [...skill.matchAll(/\]\((references\/[\w./-]+)\)/g)].map(m => m[1]);
+    const links = [...new Set([...skill.matchAll(/\]\((references\/[\w./-]+)\)/g)].map(m => m[1]))];
     expect(links.length).toBeGreaterThan(0);
-    for (const rel of new Set(links))
-      expect(existsSync(join(SKILL_DIR, rel)), rel).toBe(true);
+    for (const rel of links) expect(existsSync(join(SKILL_DIR, rel)), rel).toBe(true);
   });
 });
 

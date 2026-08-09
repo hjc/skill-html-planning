@@ -478,7 +478,7 @@ node .claude/skills/html-planning/planr.js templates tdd      # what tdd is for,
 
 Both are validated identically (`--set status=aproved` and `--set header.status=aproved` both fail), and a key that matches nothing is an error listing the ones that exist — never a silent drop.
 
-> **Writing or changing a template?** See **[`references/template-authoring.md`](references/template-authoring.md)** — the `{{name:default}}` placeholder syntax, the leading-comment convention and the two rules it depends on, section-id and `num` constraints, how to verify a new template, and a complete worked example. Adding a template is a file drop into `templates/`, not a code change.
+> **Writing or changing a template?** See **[`references/template-authoring.md`](references/template-authoring.md)**.
 
 ### Field notes
 

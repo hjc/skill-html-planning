@@ -79,21 +79,12 @@ function readStdin() {
 }
 
 /* ── templating (generate) ────────────────────────────────
-   Zero-dep {{var}} substitution — a function replacer, so `$` in values is
-   never reinterpreted.
-
-   A placeholder may DECLARE A DEFAULT as `{{name:default}}`, which is how a
-   template says "this is a knob, here is its resting value":
-
-     <html lang="{{lang:en}}">          → `en`, or `--set lang=fr`
-     status="{{status:draft}}"          → `draft`, or `--set status=review`
-     subtitle="{{subtitle:}}"           → empty, but settable
-
-   That makes the settable surface a property of the TEMPLATE, not a list baked
-   into this file: any attribute an author wants configurable becomes so by
-   being written as a placeholder, and `planr templates <name>` lists every one
-   with its default. A placeholder with no default and no value is left intact,
-   so a missing required var is visible in the output rather than silent. */
+   Zero-dep {{var}} substitution — a function replacer, so `$` in a value is
+   never reinterpreted. `{{name:default}}` declares a default, which is how a
+   template (not this file) decides what `--set` can fill. A placeholder with
+   neither default nor value is left intact, so a missing required var is
+   visible rather than silently empty.
+   Authoring guide: references/template-authoring.md. */
 const PLACEHOLDER = /\{\{(\w+)(?::([^}]*))?\}\}/g;
 function render(tpl, vars) {
   return tpl.replace(PLACEHOLDER, (m, k, def) =>
@@ -121,18 +112,10 @@ function templateVars(tpl) {
 }
 
 /* ── template documentation ───────────────────────────────
-   CONVENTION: a template body's LEADING HTML comment is its documentation —
-   what the template is for and the conventions it encodes. It is written for
-   whoever fills the scaffold in, and it ships inside every generated plan, so
-   the guidance travels with the document. `templates` surfaces it rather than
-   leaving it readable only by opening the file.
-
-   Only a comment at the very top counts; anything after the first element is
-   an ordinary inline comment. Rule lines (═══) are decoration and are dropped,
-   and the block is de-indented so it reads flush in a terminal.
-
-   The comment must contain NO literal <plan-*> tag: it would inflate a reader's
-   `grep -c` structure count, balanced, so it never looks like a failure. */
+   A template's leading HTML comment is its documentation, surfaced by
+   `templates`. Only a comment before the first element counts; rule lines are
+   dropped and the block de-indented. The convention, and why that comment must
+   hold no literal <plan-*> tag: references/template-authoring.md. */
 const RULE_LINE = /^[ \t]*[═─=-]{3,}[ \t]*$/;
 function templateDoc(tpl) {
   const m = /^\s*<!--([\s\S]*?)-->/.exec(tpl);
@@ -759,25 +742,24 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {
         ? ` — or address the node directly: --set header.${key}=…`
         : '';
       throw new PlanError(`--set key '${key}' matches no {{placeholder}}${hint}\n` +
-        `this template offers: ${offered.map(describeVar).join(', ')}`);
+        `this template offers: ${offered.map(v => [v.name, varDefault(v)].filter(Boolean).join(' ')).join(', ')}`);
     }
     vars[key] = value;
   }
   let html = render(composed, vars);
   if (nodeSets.length) html = planSet(html, nodeSets).html;
-  // A placeholder fill bypasses planSet, so validate the finished document's
-  // header the same way `set` would. Without this, `--set status=aproved`
-  // reopens exactly the silent-typo hole that `set header.status=` closes.
+  // A bare fill is substitution, not planSet, so the rendered header needs the
+  // same status check `set` applies — else `--set status=aproved` writes a typo.
   const header = findElement(html, 'plan-header');
   const status = header && getAttr(header.attrsRaw, 'status');
   if (status && status !== true && !HEADER_STATUS.includes(status))
     throw new PlanError(`invalid status '${status}' for <plan-header> — valid: ${HEADER_STATUS.join(', ')}`);
   return html;
 }
-// "status (default: draft)" — how a template's knobs read in an error or a
-// `templates <name>` listing.
-function describeVar(v) {
-  return v.def === undefined ? v.name : `${v.name} (default: ${v.def === '' ? 'empty' : v.def})`;
+// "(default: draft)", or null when the variable declares none. One spelling for
+// both the `--set` error and the `templates <name>` listing.
+function varDefault(v) {
+  return v.def === undefined ? null : `(default: ${v.def === '' ? 'empty' : v.def})`;
 }
 
 /* Pure: (html, flags) -> the `list` report text (trailing newline included).
@@ -809,12 +791,11 @@ function planList(html, flags = {}) {
   return out.join('\n') + '\n';
 }
 
-/* Pure: html -> { ok, report }. The authoritative structure check, and the
-   reason `grep -c '<plan-table>'` is no longer the recipe: grep counts literal
-   strings (so a commented example inflates the total, balanced, and never reads
-   as a failure), while this walks the same tag scanner the rest of the tool
-   addresses with. Reports per-tag balance, unregistered components, and
-   duplicate section ids. */
+/* Pure: html -> { ok, report }. The authoritative structure check — per-tag
+   balance, unregistered components, duplicate section ids — walking the same
+   scanner the rest of the tool addresses with. Replaces `grep -c '<plan-table>'`,
+   which counts literal strings and so miscounts a commented example, balanced,
+   in the way that never reads as a failure. */
 function planCheck(html) {
   const watched = new Set(BALANCED_HTML_TAGS);
   const problems = [];
@@ -924,9 +905,8 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
     const doc = templateDoc(hit.body);
     const sections = [];
     walkSections(hit.body, ({ id, num, depth }) => sections.push(`${'  '.repeat(depth)}${num}. ${id || '(no id)'}`));
-    // Variables come from the shell AND the body: `lang` and the header
-    // attributes live in the shared shell, so listing the body alone would
-    // under-report what `--set` accepts — which is how they went undocumented.
+    // Shell AND body: `lang` and the header attributes live in the shell, so
+    // scanning the body alone under-reports what `--set` accepts.
     const vars = templateVars(shellTpl + hit.body).filter(v => v.name !== 'body');
     const w = vars.length ? Math.max(...vars.map(v => v.name.length)) : 0;
     return [
@@ -938,8 +918,7 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
       ...sections.map(s => '  ' + s),
       '',
       `Variables (planr new <file> --set <name>=<value>):`,
-      ...vars.map(v => `  ${v.name.padEnd(w)}  ${v.def === undefined ? '(no default — always filled)'
-        : v.def === '' ? '(default: empty)' : `(default: ${v.def})`}`),
+      ...vars.map(v => `  ${v.name.padEnd(w)}  ${varDefault(v) || '(no default — always filled)'}`),
     ].join('\n') + '\n';
   }
   const w = Math.max(...sorted.map(t => t.name.length));
@@ -948,10 +927,8 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
 }
 
 // Pure: (html, "path=value" | ["path=value", …]) -> { html, message }; throws
-// PlanError on bad input. EVERY assignment is applied — batching two attributes
-// on one node (a status flip plus its chips) is the natural thing to reach for,
-// and dropping the extras in silence was a real bug. Each is applied to the
-// html the previous one produced, so offsets are always re-resolved.
+// PlanError on bad input. EVERY assignment is applied, each to the html the
+// previous one produced, so two writes to one node both land.
 function planSet(html, specs) {
   const list = (Array.isArray(specs) ? specs : [specs]).filter(s => s != null && s !== '');
   if (!list.length) throw new PlanError('set expects <path>=<value>, e.g. `set plan.html steps.status=done`');
@@ -969,8 +946,7 @@ function planSet(html, specs) {
     const allowed = NODE_ATTRS[node.tag];
     if (allowed && !allowed.includes(attr))
       throw new PlanError(`unknown attribute '${attr}' for <${node.tag}> — valid: ${allowed.join(', ')}`);
-    // The header has its own status enum; validating only sections let a typo'd
-    // header status through, and it renders with an uncolored dot.
+    // Per-tag enum: the header's set differs from a section's.
     if (attr === 'status' && NODE_ATTRS[node.tag]) {
       const valid = statusEnum(node.tag);
       if (!valid.includes(value))
@@ -996,17 +972,9 @@ function planSetBody(html, address, body, { append = false } = {}) {
 }
 
 /* Pure: (html, address, body, opts) -> { html, message }.
-   The section-relative write. set-body replaces a whole body, so adding fifteen
-   lines to a 20KB section meant re-supplying the 20KB; every one of those fell
-   back to a hand-lifted `old_string`. This places a hunk at one point instead:
-
-     { where: 'start' | 'end' }        the section body's start or end
-     { into: '<sel>' }                 …of a container INSIDE it (the running
-                                       <ul>, a table's <tbody>) — see resolveContainer
-     { beforeHeading | afterHeading }  …relative to an authored heading
-
-   Like set-body, it re-verifies the document parses afterwards and refuses to
-   write a splice that would collapse it. */
+   The section-relative write: where set-body replaces a whole body, this places
+   a hunk at one point in it — either end, an `--into` container inside it, or
+   beside an authored heading. Re-verifies structure afterwards like set-body. */
 function planInsert(html, address, body, opts = {}) {
   const { where = 'end', into = null, beforeHeading = null, afterHeading = null, anchored = false } = opts;
   if (!address) throw new PlanError('an address is required, e.g. `append plan.html decisions --into ul`');
@@ -1054,11 +1022,10 @@ function planInsert(html, address, body, opts = {}) {
 }
 
 /* Pure: (html, flags) -> { html, message }.
-   Flips a <plan-badge> inside a table row identified by the row's visible text.
-   Every ticket transition touches one of these, and an `Edit` cannot: the badge
-   is usually an EMPTY tag (`<plan-badge type="open"></plan-badge>`), so an
-   old_string written assuming inner text matches nothing. Refuses to guess —
-   an ambiguous --match errors rather than writing the first hit. */
+   Flips a <plan-badge> inside the table row whose visible text matches. Exists
+   because these are usually EMPTY tags (`<plan-badge type="open"></plan-badge>`),
+   so an `Edit` written assuming inner text matches nothing. Refuses to guess: an
+   ambiguous --match errors rather than writing the first hit. */
 function planBadge(html, flags) {
   const match = flagValue(flags, 'match');
   const type = flagValue(flags, 'set');

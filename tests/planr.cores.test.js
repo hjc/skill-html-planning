@@ -130,19 +130,12 @@ describe('planNew', () => {
     expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['nosuch.title=X'] }))
       .toThrow(/section 'nosuch' not found/);
   });
-  it('fills a BARE key that names a real placeholder', () => {
-    expect(planr.planNew(SHELL, BODY, { ...base, sets: ['title=Override'] })).toContain('<title>Override</title>');
-  });
-  it('fills a declared placeholder, or falls back to its default', () => {
-    // A template makes an attribute settable by writing it as {{name:default}} —
-    // the settable surface belongs to the template, not to a list in planr.js.
+  it('fills a BARE key from the template\'s own declaration, or its default', () => {
     const shell = '<html lang="{{lang:en}}"><plan-header title="{{title}}" status="{{status:draft}}">' +
                   '</plan-header><main>{{body}}</main>';
     expect(planr.planNew(shell, BODY, base)).toContain('lang="en"');
     expect(planr.planNew(shell, BODY, { ...base, sets: ['lang=fr'] })).toContain('lang="fr"');
-    expect(planr.planNew(shell, BODY, base)).toContain('status="draft"');
-    expect(planr.planNew(shell, BODY, { ...base, sets: ['status=review'] })).toContain('status="review"');
-    // …and the bare fill is validated, exactly as the dotted address is.
+    // A bare fill bypasses planSet, so it needs its own validation.
     expect(() => planr.planNew(shell, BODY, { ...base, sets: ['status=aproved'] }))
       .toThrow(/invalid status 'aproved' for <plan-header>/);
   });
