@@ -78,10 +78,38 @@ describe('new --set (one-command scaffold)', () => {
     expect(html).toContain('chips="A | B"');
     expect(html).toContain('status="review"');
   });
-  it('exits 1 rather than dropping an unknown --set key', () => {
-    const r = run(['new', P(), '--set', 'subtitle=SUB']);
+  it('fills every variable the shell declares, bare — including lang', () => {
+    const r = run(['new', P(), '--title', 'Probe', '--set', 'lang=fr',
+      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'chips=A | B']);
+    expect(r.code, r.stderr).toBe(0);
+    const html = readPlan();
+    expect(html).toContain('<html lang="fr">');
+    expect(html).toContain('subtitle="SUB"');
+    expect(html).toContain('status="review"');
+    expect(html).toContain('chips="A | B"');
+    expect(html).not.toContain('{{');
+  });
+  it('falls back to each declared default when a variable is not set', () => {
+    expect(run(['new', P(), '--title', 'Probe']).code).toBe(0);
+    const html = readPlan();
+    expect(html).toContain('<html lang="en">');
+    expect(html).toContain('status="draft"');
+    expect(html).toContain('subtitle=""');
+  });
+  it('exits 1 rather than dropping an unknown --set key, and lists the real ones', () => {
+    const r = run(['new', P(), '--set', 'frobnicate=1']);
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain('--set header.subtitle=');
+    expect(r.stderr).toContain("matches no {{placeholder}}");
+    expect(r.stderr).toMatch(/lang \(default: en\)/);
+  });
+  it('validates a bare status fill, not just the dotted node address', () => {
+    // The placeholder path bypasses planSet, so it needs its own check or
+    // `--set status=aproved` silently writes a typo the header renders greyed.
+    for (const spec of ['status=aproved', 'header.status=aproved']) {
+      const r = run(['new', P(), '--set', spec]);
+      expect(r.code, spec).toBe(1);
+      expect(r.stderr, spec).toContain("invalid status 'aproved'");
+    }
   });
 });
 

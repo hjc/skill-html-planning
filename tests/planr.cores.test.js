@@ -133,6 +133,19 @@ describe('planNew', () => {
   it('fills a BARE key that names a real placeholder', () => {
     expect(planr.planNew(SHELL, BODY, { ...base, sets: ['title=Override'] })).toContain('<title>Override</title>');
   });
+  it('fills a declared placeholder, or falls back to its default', () => {
+    // A template makes an attribute settable by writing it as {{name:default}} —
+    // the settable surface belongs to the template, not to a list in planr.js.
+    const shell = '<html lang="{{lang:en}}"><plan-header title="{{title}}" status="{{status:draft}}">' +
+                  '</plan-header><main>{{body}}</main>';
+    expect(planr.planNew(shell, BODY, base)).toContain('lang="en"');
+    expect(planr.planNew(shell, BODY, { ...base, sets: ['lang=fr'] })).toContain('lang="fr"');
+    expect(planr.planNew(shell, BODY, base)).toContain('status="draft"');
+    expect(planr.planNew(shell, BODY, { ...base, sets: ['status=review'] })).toContain('status="review"');
+    // …and the bare fill is validated, exactly as the dotted address is.
+    expect(() => planr.planNew(shell, BODY, { ...base, sets: ['status=aproved'] }))
+      .toThrow(/invalid status 'aproved' for <plan-header>/);
+  });
   it('throws on a bare key with no placeholder — it used to be dropped in silence', () => {
     // The exact shape reached for first: a header attribute with no dot.
     expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['subtitle=SUB'] }))
@@ -368,12 +381,19 @@ describe('template documentation (the leading-comment convention)', () => {
     expect(out).toMatch(/^alpha {2}\(no description\)\nzeta {3}Probe template/);
     expect(out).toContain('Run `planr templates <name>`');
   });
-  it('describes one template: its guidance and what it scaffolds', () => {
+  it('describes one template: its guidance, what it scaffolds, and its variables', () => {
     const out = planr.planTemplateReport(entries, 'zeta');
     expect(out).toContain('# zeta');
     expect(out).toContain('· One bullet.');
     expect(out).toContain('Scaffolds 1 section:');
     expect(out).toContain('1. overview');
+  });
+  it('lists variables from the SHELL as well as the body — that is where lang lives', () => {
+    const shell = '<html lang="{{lang:en}}"><title>{{title}}</title>{{body}}';
+    const out = planr.planTemplateReport(entries, 'zeta', shell);
+    expect(out).toMatch(/lang\s+\(default: en\)/);
+    expect(out).toMatch(/title\s+\(no default — always filled\)/);
+    expect(out).not.toContain('body');   // the slot is not a knob
   });
   it('says so when a template carries no guidance, and rejects an unknown name', () => {
     expect(planr.planTemplateReport(entries, 'alpha')).toContain('no leading comment');

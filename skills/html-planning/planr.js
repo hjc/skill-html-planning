@@ -80,9 +80,24 @@ function readStdin() {
 
 /* ── templating (generate) ────────────────────────────────
    Zero-dep {{var}} substitution — a function replacer, so `$` in values is
-   never reinterpreted. Unknown placeholders are left intact. */
+   never reinterpreted.
+
+   A placeholder may DECLARE A DEFAULT as `{{name:default}}`, which is how a
+   template says "this is a knob, here is its resting value":
+
+     <html lang="{{lang:en}}">          → `en`, or `--set lang=fr`
+     status="{{status:draft}}"          → `draft`, or `--set status=review`
+     subtitle="{{subtitle:}}"           → empty, but settable
+
+   That makes the settable surface a property of the TEMPLATE, not a list baked
+   into this file: any attribute an author wants configurable becomes so by
+   being written as a placeholder, and `planr templates <name>` lists every one
+   with its default. A placeholder with no default and no value is left intact,
+   so a missing required var is visible in the output rather than silent. */
+const PLACEHOLDER = /\{\{(\w+)(?::([^}]*))?\}\}/g;
 function render(tpl, vars) {
-  return tpl.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? vars[k] : m));
+  return tpl.replace(PLACEHOLDER, (m, k, def) =>
+    (k in vars ? vars[k] : (def !== undefined ? def : m)));
 }
 // The skill's install subpath under .claude, from how planr was invoked:
 // argv[1] preserves the symlinked .claude/skills/<name> path that __dirname
@@ -95,9 +110,14 @@ function resolveSkillSubpath(invoked = process.argv[1] || __filename) {
   return 'skills/' + path.basename(path.dirname(invoked));
 }
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
-// Every {{placeholder}} the composed template actually offers.
+// Every {{placeholder}} the template offers, as {name, def}, sorted. `def` is
+// undefined for a placeholder that declares none. First declaration wins, so a
+// var used twice (title, in <title> and the header) reports one entry.
 function templateVars(tpl) {
-  return [...new Set([...tpl.matchAll(/\{\{(\w+)\}\}/g)].map(m => m[1]))].sort();
+  const seen = new Map();
+  for (const m of tpl.matchAll(PLACEHOLDER))
+    if (!seen.has(m[1])) seen.set(m[1], { name: m[1], def: m[2] });
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /* ── template documentation ───────────────────────────────
@@ -733,17 +753,31 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {
     const key = String(pair).slice(0, eq).trim(), value = String(pair).slice(eq + 1);
     if (!key) throw new PlanError(`--set expects key=value, got "${pair}"`);
     if (key.includes('.')) { nodeSets.push(`${key}=${value}`); continue; }
-    const offered = templateVars(composed).filter(v => v !== 'body');
-    if (!offered.includes(key)) {
+    const offered = templateVars(composed).filter(v => v.name !== 'body');
+    if (!offered.some(v => v.name === key)) {
       const hint = NODE_ATTRS['plan-header'].includes(key)
-        ? ` — for a header attribute use the node address: --set header.${key}=…`
-        : ` — this template offers: ${offered.join(', ')}`;
-      throw new PlanError(`--set key '${key}' matches no {{placeholder}}${hint}`);
+        ? ` — or address the node directly: --set header.${key}=…`
+        : '';
+      throw new PlanError(`--set key '${key}' matches no {{placeholder}}${hint}\n` +
+        `this template offers: ${offered.map(describeVar).join(', ')}`);
     }
     vars[key] = value;
   }
-  const html = render(composed, vars);
-  return nodeSets.length ? planSet(html, nodeSets).html : html;
+  let html = render(composed, vars);
+  if (nodeSets.length) html = planSet(html, nodeSets).html;
+  // A placeholder fill bypasses planSet, so validate the finished document's
+  // header the same way `set` would. Without this, `--set status=aproved`
+  // reopens exactly the silent-typo hole that `set header.status=` closes.
+  const header = findElement(html, 'plan-header');
+  const status = header && getAttr(header.attrsRaw, 'status');
+  if (status && status !== true && !HEADER_STATUS.includes(status))
+    throw new PlanError(`invalid status '${status}' for <plan-header> — valid: ${HEADER_STATUS.join(', ')}`);
+  return html;
+}
+// "status (default: draft)" — how a template's knobs read in an error or a
+// `templates <name>` listing.
+function describeVar(v) {
+  return v.def === undefined ? v.name : `${v.name} (default: ${v.def === '' ? 'empty' : v.def})`;
 }
 
 /* Pure: (html, flags) -> the `list` report text (trailing newline included).
@@ -881,7 +915,7 @@ function planTemplates(files) {
    Without a name, a table of every template and its one-line gist; with one,
    that template's full leading comment — the guidance its author wrote for
    whoever fills the scaffold in. */
-function planTemplateReport(entries, name = null) {
+function planTemplateReport(entries, name = null, shellTpl = '') {
   const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
   if (!sorted.length) throw new PlanError('no templates found');
   if (name) {
@@ -890,6 +924,11 @@ function planTemplateReport(entries, name = null) {
     const doc = templateDoc(hit.body);
     const sections = [];
     walkSections(hit.body, ({ id, num, depth }) => sections.push(`${'  '.repeat(depth)}${num}. ${id || '(no id)'}`));
+    // Variables come from the shell AND the body: `lang` and the header
+    // attributes live in the shared shell, so listing the body alone would
+    // under-report what `--set` accepts — which is how they went undocumented.
+    const vars = templateVars(shellTpl + hit.body).filter(v => v.name !== 'body');
+    const w = vars.length ? Math.max(...vars.map(v => v.name.length)) : 0;
     return [
       `# ${hit.name}    (planr new <file> --template ${hit.name})`,
       '',
@@ -897,6 +936,10 @@ function planTemplateReport(entries, name = null) {
       '',
       `Scaffolds ${sections.length} section${sections.length === 1 ? '' : 's'}:`,
       ...sections.map(s => '  ' + s),
+      '',
+      `Variables (planr new <file> --set <name>=<value>):`,
+      ...vars.map(v => `  ${v.name.padEnd(w)}  ${v.def === undefined ? '(no default — always filled)'
+        : v.def === '' ? '(default: empty)' : `(default: ${v.def})`}`),
     ].join('\n') + '\n';
   }
   const w = Math.max(...sorted.map(t => t.name.length));
@@ -1173,7 +1216,7 @@ function cmdTemplates(name) {
   try { files = fs.readdirSync(TEMPLATE_DIR); }
   catch (e) { throw new PlanError(`cannot read templates dir: ${e.message}`); }
   const entries = planTemplates(files).map(n => ({ name: n, body: read(path.join(TEMPLATE_DIR, `${n}.html`)) }));
-  process.stdout.write(planTemplateReport(entries, name));
+  process.stdout.write(planTemplateReport(entries, name, read(path.join(TEMPLATE_DIR, '_shell.html'))));
 }
 
 // Mutating shell: read, run core, write, print message.

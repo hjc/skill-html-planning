@@ -390,7 +390,7 @@ tr:2          the 2nd <tr>, 1-based
 
 | Command | Positional args | Flags | What it does |
 |---------|-----------------|-------|--------------|
-| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **dotted** `--set` key is a node address applied to the generated file (`header.status=review`); a **bare** key fills a `{{placeholder}}`. Either way an unusable key is an error, never a silent drop. |
+| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `chips`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. Run `templates <name>` for the variables a template offers. |
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
 | `check` | `<file>` | *(none)* | **Authoritative structure validation.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census. Exits **1** with the offending line numbers on any break. |
@@ -464,7 +464,17 @@ Templates live in `./templates/`: `_shell.html` is the shared document + runtime
 | `tdd` | test-driven implementation plans (the canonical spine above) |
 | `issue` | a defect write-up: danger callout → root cause → impact table → remediation table → what is *not* affected → Open |
 
-Values fill via a zero-dep `{{var}}` substitution — `{{title}}`, `{{date}}`, `{{skillSubpath}}`, plus any **bare** `--set` key naming a placeholder the template actually offers. A **dotted** `--set` key is not a placeholder at all: it is a node address applied to the rendered file, which is how the header is filled in the same command.
+Values fill via a zero-dep `{{var}}` substitution. A placeholder may declare a default as **`{{name:default}}`** — that is how a template marks an attribute as a knob:
+
+```html
+<html lang="{{lang:en}}">              <!-- `en`, or --set lang=fr -->
+  status="{{status:draft}}"            <!-- `draft`, or --set status=review -->
+  subtitle="{{subtitle:}}"             <!-- empty, but settable -->
+```
+
+So **the settable surface belongs to the template**, not to a fixed list — make any attribute configurable by writing it as a placeholder. `planr templates <name>` lists every variable a template offers with its default, and an unusable `--set` key errors with the same list, so nothing is undocumented and nothing is silently dropped.
+
+The shell currently offers `lang`, `title`, `subtitle`, `status`, `chips`, `date`, and `skillSubpath`. A **dotted** `--set` key is not a placeholder at all: it is a node address applied to the rendered file. Both paths are validated identically — `--set status=aproved` and `--set header.status=aproved` both fail.
 
 **A template's leading HTML comment is its documentation.** `planr templates <name>` prints it, so before using an unfamiliar template, read what its author wrote:
 

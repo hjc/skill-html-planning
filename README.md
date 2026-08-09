@@ -206,15 +206,27 @@ node .claude/skills/html-planning/planr.js new checkout.html \
 
 The body is injected into `_shell.html`'s `{{body}}` slot, and every `{{var}}` is substituted.
 
-The default supported vars (injected into `_shell.html`) are:
+A placeholder can **declare a default** as `{{name:default}}`. That is how a template marks an attribute as a knob — write it as a placeholder and it becomes settable with `--set`, with no code change:
 
-| Placeholder | Filled with |
-|-------------|-------------|
-| `{{title}}` | `--title` (default `Untitled Plan`); shown in the browser tab and the header. |
-| `{{date}}` | Today's date (`YYYY-MM-DD`), automatically. |
-| `{{skillSubpath}}` | The skill's install path, baked into the loader in `_shell.html`, rarely needs changing. |
+```html
+<html lang="{{lang:en}}">              <!-- `en`, or --set lang=fr -->
+  status="{{status:draft}}"            <!-- `draft`, or --set status=review -->
+  subtitle="{{subtitle:}}"             <!-- empty, but settable -->
+```
 
-Unknown placeholders are left untouched, so a `{{typo}}` with no matching value stays literally in the output.
+The vars `_shell.html` ships with:
+
+| Placeholder | Default | Filled with |
+|-------------|---------|-------------|
+| `{{title}}` | `Untitled Plan` | `--title`, or `--set title=`; shown in the browser tab and the header. |
+| `{{lang}}` | `en` | The document language, on `<html lang>`. |
+| `{{subtitle}}` | *empty* | The header's subtitle line. |
+| `{{status}}` | `draft` | The header's status — validated against `draft`/`review`/`approved`/`implemented`/`rejected`. |
+| `{{chips}}` | *empty* | The header's pipe-delimited metadata chips. |
+| `{{date}}` | today | `YYYY-MM-DD`, filled automatically. |
+| `{{skillSubpath}}` | — | The skill's install path, baked into the loader. Rarely needs changing. |
+
+Run `planr templates <name>` to see this list for any template, including its own vars. A `--set` key that matches no placeholder is an **error** listing the ones that exist — it is never silently dropped. A placeholder with **no** declared default and no value is left literally in the output, so a missing required var is visible rather than silent.
 
 ## Editing Plans Cheaply
 
@@ -226,7 +238,7 @@ The full surface — `planr --help` prints the same list, and `SKILL.md` carries
 
 | | Command | What it does |
 |---|---|---|
-| **Create** | `new` | Generate a plan from a template. `--set header.status=review` fills header attributes in the same command. |
+| **Create** | `new` | Generate a plan from a template. `--set status=review --set lang=fr` fills the template's variables in the same command. |
 | | `templates` | List the templates with a one-line gist each; `templates <name>` prints that one's full guidance. |
 | **Inspect** | `list` | Every section as `num. id — title [status]`, plus the headings inside each one. `--no-outline` for sections alone. |
 | | `check` | Authoritative structure validation — tag balance, unregistered components, duplicate ids, with line numbers. Exits 1 on a break. |

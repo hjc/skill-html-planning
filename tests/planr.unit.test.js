@@ -12,6 +12,23 @@ describe('render()', () => {
     expect(planr.render('{{missing}}', {})).toBe('{{missing}}');
     expect(planr.render('{{v}}', { v: '$& $1 ok' })).toBe('$& $1 ok');  // no regex reinterpretation
   });
+  it('honors a declared default, and lets a value override it', () => {
+    expect(planr.render('{{lang:en}}', {})).toBe('en');
+    expect(planr.render('{{lang:en}}', { lang: 'fr' })).toBe('fr');
+    expect(planr.render('x="{{sub:}}"', {})).toBe('x=""');        // empty default
+    expect(planr.render('{{status:draft}}', { status: '' })).toBe('');  // explicit empty wins
+  });
+});
+
+describe('templateVars()', () => {
+  it('reports each placeholder once, with its default, sorted', () => {
+    const tpl = '<html lang="{{lang:en}}"><title>{{title}}</title><p>{{title}} {{sub:}}</p>';
+    expect(planr.templateVars(tpl)).toEqual([
+      { name: 'lang', def: 'en' },
+      { name: 'sub', def: '' },
+      { name: 'title', def: undefined },   // no default declared
+    ]);
+  });
 });
 
 describe('resolveSkillSubpath(invoked)', () => {
