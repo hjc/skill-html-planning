@@ -92,7 +92,7 @@ describe('check', () => {
     // failure — and sent readers hunting a splice bug that did not exist.
     expect(ok.stdout).toMatch(/sections: 9 \(1 nested\)/);
     expect(ok.stdout).toContain('plan-section 9');
-    const listed = run(['list', P()]).stdout.trim().split('\n').length - 1;  // minus the title line
+    const listed = run(['list', P(), '--no-outline']).stdout.trim().split('\n').length - 1;  // minus the title line
     expect(listed).toBe(9);
 
     writeFileSync(P(), readPlan().replace('</plan-section>', ''));
@@ -161,12 +161,29 @@ describe('badge', () => {
   });
 });
 
-describe('list --outline', () => {
-  it('adds authored headings under their section', () => {
+describe('list outline', () => {
+  it('includes authored headings by default, and drops them for --no-outline', () => {
     freshPlan();
-    const out = run(['list', P(), '--outline']).stdout;
+    const out = run(['list', P()]).stdout;
     expect(out).toMatch(/5\.1\. step-1 — First step.*\n\s+h4\s+Red Phase\n\s+h4\s+Green Phase/);
-    expect(run(['list', P()]).stdout).not.toContain('Red Phase');
+    expect(run(['list', P(), '--no-outline']).stdout).not.toContain('Red Phase');
+  });
+});
+
+describe('flag parsing', () => {
+  it('lets a valueless flag precede the file — it used to eat the filename', () => {
+    // `tasks --all plan.html` consumed plan.html as --all's value, then failed
+    // with "requires a <file> argument" while the file sat on the command line.
+    freshPlan();
+    for (const args of [['tasks', '--all', P()], ['tasks', P(), '--all']]) {
+      const r = run(args);
+      expect(r.code, `${args.join(' ')}: ${r.stderr}`).toBe(0);
+      expect(r.stdout).toContain('steps.step-1');
+    }
+    expect(run(['list', '--no-outline', P()]).code).toBe(0);
+    expect(run(['read', '--body', P(), 'overview']).stdout).not.toContain('<plan-section');
+    // A flag that DOES take a value still consumes the next token either way.
+    expect(run(['tasks', '--status', 'todo', P()]).stdout).toContain('step-1');
   });
 });
 

@@ -333,15 +333,17 @@ describe('planCheck', () => {
   });
 });
 
-describe('planList --outline', () => {
-  it('lists a section\'s OWN headings, never a nested section\'s', () => {
-    const out = planr.planList(RICH, { outline: true });
+describe('planList outline', () => {
+  it('lists a section\'s OWN headings by default, never a nested section\'s', () => {
+    const out = planr.planList(RICH);
     expect(out).toMatch(/1\. map — Map\n {4}h3 {2}Decisions so far\n {4}h3 {2}Tickets/);
     // "Nested heading" belongs to `vocab`, one level deeper — not to `map`.
     expect(out).toMatch(/1\.1\. vocab — Vocabulary\n {8}h3 {2}Nested heading/);
   });
-  it('is off by default', () => {
-    expect(planr.planList(RICH)).not.toContain('Decisions so far');
+  it('--no-outline falls back to sections alone', () => {
+    const terse = planr.planList(RICH, { 'no-outline': true });
+    expect(terse).not.toContain('Decisions so far');
+    expect(terse).toContain('1. map — Map');
   });
 });
 

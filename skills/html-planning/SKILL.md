@@ -392,7 +392,7 @@ tr:2          the 2nd <tr>, 1-based
 |---------|-----------------|-------|--------------|
 | `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **dotted** `--set` key is a node address applied to the generated file (`header.status=review`); a **bare** key fills a `{{placeholder}}`. Either way an unusable key is an error, never a silent drop. |
 | `templates` | *(none)* | *(none)* | List selectable template names, one per line. |
-| `list` | `<file>` | `--outline` | Print the title, then every section as `num. id — title [status]`, indented by depth. `--outline` also lists each section's own `<h1>`–`<h6>` headings — where a large plan's real structure lives. |
+| `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
 | `check` | `<file>` | *(none)* | **Authoritative structure validation.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census. Exits **1** with the offending line numbers on any break. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content. |
@@ -424,7 +424,7 @@ tr:2          the 2nd <tr>, 1-based
 node .../planr.js new plan.html --title "My Plan" --template tdd      # generate
 node .../planr.js new issue.html --template issue --title "Bug" \
                   --set header.status=review --set "header.chips=Bug | Prod"   # header in one command
-node .../planr.js list plan.html --outline                            # sections + their headings
+node .../planr.js list plan.html                                      # sections + their headings
 node .../planr.js check plan.html                                     # is it still structurally sound
 node .../planr.js tasks plan.html                                     # what's open
 node .../planr.js set plan.html steps.3.status=done header.status=review       # both land

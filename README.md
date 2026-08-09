@@ -206,7 +206,7 @@ The same token pressure that makes verbose HTML expensive to *write* also makes 
 `planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document.
 
 ```bash
-# orient without loading the file
+# orient without loading the file — every section, and the headings inside them
 node .claude/skills/html-planning/planr.js list plan.html
 
 # just the open work (sections/steps that aren't done), with addresses to act on
@@ -237,11 +237,11 @@ node .claude/skills/html-planning/planr.js set-body plan.html caching --file hun
 On a long-lived plan the common edit is smaller still — an amendment above a section, one item onto a running list, four rows onto a table, one badge flipped — and none of those should cost a whole-section rewrite. Those go in at a point:
 
 ```bash
-# structure first: the authoritative validation, and the section outline
+# the authoritative structure validation — exits 1 on a break, with line numbers
 node .claude/skills/html-planning/planr.js check plan.html
-node .claude/skills/html-planning/planr.js list plan.html --outline
 
 # put a hunk at one point inside a section — start, end, or beside a heading
+# (`list` above names the headings you can anchor on)
 node .claude/skills/html-planning/planr.js prepend plan.html resolution --file amendment.html
 node .claude/skills/html-planning/planr.js insert plan.html resolution --before-heading "The six decisions" --file note.html
 

@@ -8,7 +8,7 @@
    Usage:
      node planr.js new         <file> [--title T] [--template <name>] [--set k=v ...]
      node planr.js templates    (list available templates)
-     node planr.js list        <file> [--outline]
+     node planr.js list        <file> [--no-outline]
      node planr.js check       <file>
      node planr.js tasks       <file> [--all | --status <s>]
      node planr.js read        <file> <address> [--body]
@@ -711,11 +711,15 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {
   return nodeSets.length ? planSet(html, nodeSets).html : html;
 }
 
-// Pure: (html, flags) -> the `list` report text (trailing newline included).
-// --outline additionally prints the authored headings owned by each section,
-// which is where a big plan's real structure lives (`list` alone stops at the
-// section boundary).
+/* Pure: (html, flags) -> the `list` report text (trailing newline included).
+   The outline — each section's own authored headings — is ON by default,
+   because stopping at the section boundary hides where a large plan's real
+   structure lives, and finding an edit anchor then means `grep -n '<h3>'`.
+   Measured across a corpus of 87 real plans it costs a median ~250 bytes and a
+   worst case ~2.9KB, against documents of 25–106KB. `--no-outline` is the
+   escape hatch for the pathological document. */
 function planList(html, flags = {}) {
+  const outline = !flags['no-outline'];
   const out = [];
   const header = findElement(html, 'plan-header');
   if (header) {
@@ -728,7 +732,7 @@ function planList(html, flags = {}) {
     const status = getAttr(el.attrsRaw, 'status');
     out.push(`${'    '.repeat(depth)}${num}. ${id || '(no id)'}` +
              `${title ? ' — ' + decodeEntities(title) : ''}${status ? `  [${status}]` : ''}`);
-    if (flags.outline) {
+    if (outline) {
       for (const h of ownHeadings(html, el))
         out.push(`${'    '.repeat(depth + 1)}${h.level}  ${textOf(html, h)}`);
     }
@@ -1151,6 +1155,11 @@ function cmdMoveSection(file, address, flags) {
 }
 
 /* ── flag parsing + dispatch ──────────────────────────── */
+// Flags that never take a value. A valueless flag is otherwise indistinguishable
+// from one whose value follows, so `tasks --all plan.html` consumed the FILENAME
+// as --all's value and then reported a missing <file> — with the file right
+// there on the line. Declaring them keeps flag order free.
+const BOOLEAN_FLAGS = new Set(['all', 'body', 'append', 'outline', 'no-outline', 'help']);
 function parseFlags(argv) {
   const flags = {};
   const positional = [];
@@ -1159,7 +1168,7 @@ function parseFlags(argv) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
+      if (!BOOLEAN_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) {
         flags[key] = key in flags ? [].concat(flags[key], next) : next; // repeats accumulate
         i++;
       } else {
@@ -1177,7 +1186,7 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
 
   new          <file> [--title T] [--template <name>] [--set k=v ...]
   templates    (list available templates)
-  list         <file> [--outline]
+  list         <file> [--no-outline]
   check        <file>                                     (structure validation; exit 1 on a break)
   tasks        <file> [--all | --status <s>]
   read         <file> <address> [--body]
