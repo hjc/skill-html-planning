@@ -2,7 +2,7 @@
 description: Load the branch's handoff doc written by /handoff, verify it against the repo, archive it, and resume the work.
 ---
 
-# Pickup
+# Pickup Handoff
 
 Resume work that a previous session recorded with `/handoff`. Treat the handoff document as the authoritative account of what is happening — it was written by an agent that had the full context you do not.
 

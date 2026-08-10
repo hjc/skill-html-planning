@@ -22,7 +22,7 @@ Create `.claude/handoffs/` if it does not exist.
 **Fold forward prior handoff content — never silently drop it.** An earlier session may have recorded a dead end or a standing order that this session no longer holds in context. Two cases:
 
 - **A live handoff already exists at that path** (`/handoff` run twice without a pickup in between): read it and merge its still-relevant content into the new one.
-- **No live handoff, but `.claude/handoffs/.consumed/` holds an archived one for this branch key** (this session resumed via `/pickup`): read the most recent one. Carry forward anything still true — particularly section 3 standing orders and section 5 dead ends, which stay valid across cycles. Drop what the work has since superseded.
+- **No live handoff, but `.claude/handoffs/.consumed/` holds an archived one for this branch key** (this session resumed via `/pickup-handoff`): read the most recent one. Carry forward anything still true — particularly section 3 standing orders and section 5 dead ends, which stay valid across cycles. Drop what the work has since superseded.
 
 ## Step 2 — Gather ground truth
 
@@ -121,4 +121,4 @@ If `$ARGUMENTS` is non-empty, treat it as additional emphasis from the user abou
 
 ## Step 4 — Report back
 
-Tell the user the absolute path as a `file://` URL, plus a three-line summary of what the handoff covers. Remind them the flow is: `/clear`, then `/pickup`.
+Tell the user the absolute path as a `file://` URL, plus a three-line summary of what the handoff covers. Remind them the flow is: `/clear`, then `/pickup-handoff`.
