@@ -1,12 +1,10 @@
   <!-- ════════════════════════════════════════════════════════
-       Section Template — copy & adapt as needed. Sections nest to any
-       depth; the heading level and number (1, 1.1, 1.1.2) are derived
-       from position, so never write a num= unless you are deliberately
-       overriding the label:
+       Basic plan — one section to start from. Add more with:
 
-       <plan-section id="section-id" title="Section Title">
-         <p>Section content here.</p>
-       </plan-section>
+         planr add-section <file> --id <id> --title "Title" --after overview
+
+       Sections nest to any depth — pass --parent, or an --after whose address
+       already names a nested sibling.
        ════════════════════════════════════════════════════════ -->
 
   <plan-section id="overview" title="Overview">

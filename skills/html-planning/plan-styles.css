@@ -170,10 +170,14 @@ plan-header .meta-row {
   border-radius: 50%;
   display: inline-block;
 }
+/* Header status dots. One rule per value in planr's HEADER_STATUS enum — a
+   value with no rule here renders an uncolored dot, which is how `rejected`
+   shipped documented-but-unstyled. */
 .dot.draft { background: var(--amber); }
 .dot.review { background: var(--accent); }
 .dot.approved { background: var(--green); }
 .dot.implemented { background: var(--purple); }
+.dot.rejected { background: var(--red); }
 
 /* ── main (container) ─────────────────────────────────── */
 /* Centered, capped column by default (comfortable reading measure). The gear's

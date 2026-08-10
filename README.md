@@ -128,35 +128,33 @@ Happy planning!
 ```bash
 node .claude/skills/html-planning/planr.js new <plan-output-path>.html --title "New Plan"
 
-# use --template <name> to start from a spine (e.g. tdd); `planr templates` lists them
+# start from a spine, and fill the header in the same command
+node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template issue \
+  --set status=review --set "chips=Bug | Production"
 ```
 
 Then start adding any relevant components, open in your browser and enjoy!
 
 ## Templates
 
-`planr new` composes a plan from a template; two ship by default:
+`planr new` composes a plan from a template; three ship by default:
 
 | Template | Use it for |
 |----------|------------|
 | `basic` | A minimal starting point — a single section, ready to fill in. |
 | `tdd` | An opinionated software implementation plan with the canonical spine: Overview, Scope, Reconnaissance, Design Decisions, Implementation Steps, Callsite Audit, Verification, Anti-Patterns. |
+| `issue` | A defect write-up: a danger callout stating the blast radius, root cause, impact table, remediation table, what is *not* affected, and open questions. |
 
 After installing, delete or add templates as you see fit.
 
-To interact with the template system:
+Each one documents itself, so you can read a template before committing to it:
 
 ```bash
-# list available templates
-node .claude/skills/html-planning/planr.js templates
-
-# scaffold from the tdd template
-node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template tdd
+node .claude/skills/html-planning/planr.js templates       # all of them, one line each
+node .claude/skills/html-planning/planr.js templates tdd   # what it is for, and what it scaffolds
 ```
 
-All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body. As such, templates should just express the body of the final HTML document.
-
-Templates can be parameterized with variables as needed.
+All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body, so a template only expresses the body of the final document, and can be parameterized with variables.
 
 ### Writing a custom template
 
@@ -164,17 +162,25 @@ A template body is just the markup that goes inside `<main>`. Typically, this is
 
 Adding a new file into `templates/` immediately makes it available to the CLI.
 
+**Open it with a comment saying what the template is for.** That leading comment is the template's documentation — `templates` shows its first sentence as a gist, `templates <name>` prints all of it, and it ships inside every generated plan so the guidance reaches whoever fills the scaffold in.
+
 For example, a lightweight PRD template with a custom `{{owner}}` field:
 
 `templates/prd.html`:
 
 ```html
-<plan-section id="summary" num="1" title="Summary">
+<!-- ════════════════════════════════════════════════════════
+     PRD — what we are building and why, for a reader deciding
+     whether to fund it. Keep Requirements to must-haves; a
+     nice-to-have belongs in Open Questions where it can be cut.
+     ════════════════════════════════════════════════════════ -->
+
+<plan-section id="summary" title="Summary">
   <p><strong>Owner:</strong> {{owner}}</p>
   <p>What we're building and why.</p>
 </plan-section>
 
-<plan-section id="requirements" num="2" title="Requirements">
+<plan-section id="requirements" title="Requirements">
   <p>The must-haves.</p>
 </plan-section>
 ```
@@ -186,54 +192,48 @@ node .claude/skills/html-planning/planr.js new checkout.html \
   --title "Checkout PRD" --template prd --set owner="Payments Team"
 ```
 
-The body is injected into `_shell.html`'s `{{body}}` slot, and every `{{var}}` is substituted.
+Write a placeholder as `{{name:default}}` and it becomes a knob — settable with `--set`, listed by `planr templates <name>`, with no code change:
 
-The default supported vars (injected into `_shell.html`) are:
+```html
+<html lang="{{lang:en}}">              <!-- `en`, or --set lang=fr -->
+  status="{{status:draft}}"            <!-- `draft`, or --set status=review -->
+```
 
-| Placeholder | Filled with |
-|-------------|-------------|
-| `{{title}}` | `--title` (default `Untitled Plan`); shown in the browser tab and the header. |
-| `{{date}}` | Today's date (`YYYY-MM-DD`), automatically. |
-| `{{skillSubpath}}` | The skill's install path, baked into the loader in `_shell.html`, rarely needs changing. |
-
-Unknown placeholders are left untouched, so a `{{typo}}` with no matching value stays literally in the output.
+That is the tour. The authoring reference ships with the skill at [`references/template-authoring.md`](skills/html-planning/references/template-authoring.md).
 
 ## Editing Plans Cheaply
 
 The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
 
-`planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document.
+`planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document. (`planr` below is shorthand for `node .claude/skills/html-planning/planr.js`.)
 
 ```bash
-# orient without loading the file
-node .claude/skills/html-planning/planr.js list plan.html
+# orient without loading the file — every section, and the headings inside them
+planr list plan.html
 
-# just the open work (sections/steps that aren't done), with addresses to act on
-node .claude/skills/html-planning/planr.js tasks plan.html
+# flip a status, or several at once, without reading the plan
+planr set plan.html steps.3.status=done header.status=review
 
-# flip a status (section, subsection, or header)
-node .claude/skills/html-planning/planr.js set plan.html steps.status=in-progress
-node .claude/skills/html-planning/planr.js set plan.html steps.3.status=done
-
-# read one section back, add/remove/reorder sections
-node .claude/skills/html-planning/planr.js read plan.html steps
-node .claude/skills/html-planning/planr.js add-section plan.html --id risks --title "Risks" --after overview
-node .claude/skills/html-planning/planr.js move-section plan.html risks --before timeline
-
-# addresses are dot-paths, so the same commands work at any depth — and a
-# sibling ref fixes the nesting, so a new step lands inside "steps"
-node .claude/skills/html-planning/planr.js add-section plan.html --id step-4 --title "Wire it up" --after steps.step-3
-
-# rich content: author a body in isolation, inject it by address (plan never loaded)
-node .claude/skills/html-planning/planr.js add-section plan.html --id caching --title "Caching" --body-file body.html
-node .claude/skills/html-planning/planr.js set-body plan.html caching --file body.html
-
-# fix a section in place: pull just its hunk, edit, push it back (~2x the hunk, not the whole plan)
-node .claude/skills/html-planning/planr.js read plan.html caching --body > hunk.html
-node .claude/skills/html-planning/planr.js set-body plan.html caching --file hunk.html
+# pull one section's hunk out, edit it, push it back
+planr read plan.html caching --body > hunk.html
+planr set-body plan.html caching --file hunk.html
 ```
 
-`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. See `SKILL.md` for the full command and addressing reference.
+Addresses are dot-paths, so the same commands reach any depth: `steps.step-3.detail`.
+
+On a long-lived plan the common edit is smaller still — an amendment above a section, one item onto a running list, four rows onto a table, one badge flipped — and none should cost a whole-section rewrite. Those go in at a point:
+
+```bash
+planr prepend plan.html resolution --file amendment.html            # above everything in a section
+planr insert  plan.html resolution --before-heading "Decisions" --file note.html
+planr append  plan.html decisions --into ul --file gist.html        # one <li> onto the running list
+planr append  plan.html vocab --into tbody --file rows.html         # rows onto a table
+planr badge   plan.html --match "q16" --set decided                 # flip a badge in a table row
+```
+
+Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it.
+
+`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
 
 ## Developing this skill
 
@@ -251,8 +251,9 @@ Relative to `skills/html-planning/`:
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
-| `planr.js` | The CLI — generates plan skeletons (`planr new`) and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps) without re-reading the whole file. |
-| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`). |
+| `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
+| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). |
+| `references/` | Deep-dive docs the skill points at rather than inlining — currently `template-authoring.md`. |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |

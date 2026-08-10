@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH } from './helpers.js';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
 // This is the WIRING suite: it proves what only a real subprocess can — argv
 // dispatch, real exit codes, stdin piping, byte-exact file round-trips, the
@@ -16,6 +16,10 @@ const freshPlan = () => {
   const r = run(['new', P(), '--template', 'tdd']);
   expect(r.code, r.stderr).toBe(0);
 };
+// `templates` prints a name/description table; the name is the first column of
+// each row above the trailing hint paragraph.
+const templateNames = () =>
+  run(['templates']).stdout.split('\n\n')[0].trim().split('\n').map(l => l.split(/\s+/)[0]);
 
 beforeEach(() => { dir = mkTmp(); });
 afterEach(() => { rmTmp(dir); });
@@ -64,6 +68,181 @@ describe('read --body | set-body round-trip (crosses the process boundary)', () 
   });
 });
 
+// planNew's own behaviour (bare vs dotted keys, defaults, validation) is
+// covered in-process by the core suite. These prove the wiring, and that the
+// SHIPPED _shell.html really declares the variables the core can fill.
+describe('new --set (one-command scaffold)', () => {
+  it('fills the shipped shell from repeated --set flags, bare and dotted', () => {
+    const r = run(['new', P(), '--title', 'Probe', '--set', 'lang=fr',
+      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'header.chips=A | B']);
+    expect(r.code, r.stderr).toBe(0);
+    const html = readPlan();
+    expect(html).toContain('<html lang="fr">');
+    expect(html).toContain('subtitle="SUB"');
+    expect(html).toContain('status="review"');
+    expect(html).toContain('chips="A | B"');
+    expect(html).not.toContain('{{');           // every declared var resolved
+  });
+  it('exits 1 on an unknown key and on an invalid value, by either key shape', () => {
+    expect(run(['new', P(), '--set', 'frobnicate=1']).stderr).toContain('matches no {{placeholder}}');
+    for (const spec of ['status=aproved', 'header.status=aproved']) {
+      const r = run(['new', P(), '--set', spec]);
+      expect(r.code, spec).toBe(1);
+      expect(r.stderr, spec).toContain("invalid status 'aproved'");
+    }
+  });
+});
+
+describe('check', () => {
+  it('passes a freshly generated plan and fails a corrupted one (exit 1)', () => {
+    freshPlan();
+    const ok = run(['check', P()]);
+    expect(ok.code, ok.stderr).toBe(0);
+    expect(ok.stdout).toContain('structure OK');
+    // `check` and `list` must agree on the section count. A commented plan tag
+    // in a template inflated `grep -c` — balanced, so it never read as a
+    // failure — and sent readers hunting a splice bug that did not exist.
+    expect(ok.stdout).toMatch(/sections: 9 \(1 nested\)/);
+    expect(ok.stdout).toContain('plan-section 9');
+    const listed = run(['list', P(), '--no-outline']).stdout.trim().split('\n').length - 1;  // minus the title line
+    expect(listed).toBe(9);
+
+    writeFileSync(P(), readPlan().replace('</plan-section>', ''));
+    const bad = run(['check', P()]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('structure check FAILED');
+  });
+});
+
+describe('templates', () => {
+  it('lists every template with a gist, and describes one by name', () => {
+    const list = run(['templates']);
+    expect(list.code, list.stderr).toBe(0);
+    expect(list.stdout).toMatch(/^basic\s+\S/m);
+    const one = run(['templates', 'tdd']);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.stdout).toContain('# tdd');
+    expect(one.stdout).toContain('Scaffolds 9 sections:');
+    expect(run(['templates', 'nope']).code).toBe(1);
+  });
+  it('every shipped template documents itself, with no literal plan tag in the comment', () => {
+    // The convention this enforces: a template's leading comment IS its docs.
+    // A literal <plan-* inside it would inflate a reader's grep count.
+    for (const name of templateNames()) {
+      const out = run(['templates', name]);
+      expect(out.stdout, name).not.toContain('no leading comment');
+      const doc = readFileSync(join(SKILL_DIR, 'templates', `${name}.html`), 'utf8');
+      const comment = /^\s*<!--([\s\S]*?)-->/.exec(doc);
+      expect(comment, name).toBeTruthy();
+      expect(comment[1], name).not.toMatch(/<plan-[a-z]/);
+    }
+  });
+});
+
+describe('shipped docs stand alone', () => {
+  // Only skills/html-planning/ is installed. A shipped doc that links outside
+  // it, or points at repo-only tooling, is a broken reference for every reader
+  // who did not clone the repo.
+  const docs = ['SKILL.md', 'references/template-authoring.md'];
+  it('link only to files that ship, and never cite repo-only tooling', () => {
+    let checked = 0;
+    for (const doc of docs) {
+      const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
+      expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
+      for (const rel of new Set([...text.matchAll(/\]\((?!https?:|#)([^)]+)\)/g)].map(m => m[1]))) {
+        expect(existsSync(join(SKILL_DIR, dirname(doc), rel)), `${doc} → ${rel}`).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked, 'no relative links found — has the pattern gone stale?').toBeGreaterThan(0);
+  });
+});
+
+describe('shipped artifacts pass their own check', () => {
+  it('validates every template and the sample plan', () => {
+    // The showcase and every scaffold are the skill's own output; if `check`
+    // rejects one of them, either the artifact or the checker is wrong.
+    expect(run(['check', join(SKILL_DIR, 'examples', 'sample-plan.html')]).code).toBe(0);
+    for (const t of templateNames()) {
+      const out = join(dir, `${t}.html`);
+      expect(run(['new', out, '--template', t]).code, t).toBe(0);
+      const r = run(['check', out]);
+      expect(r.code, `${t}: ${r.stderr}`).toBe(0);
+    }
+  });
+});
+
+describe('section-relative writes', () => {
+  it('appends into a nested container from --file and stays structurally valid', () => {
+    freshPlan();
+    const hunk = join(dir, 'hunk.html');
+    writeFileSync(hunk, '<tr><td>2</td><td>added row</td><td>via the CLI</td></tr>');
+    const r = run(['append', P(), 'recon', '--into', 'tbody', '--file', hunk]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain("at the end of 'recon' → tbody");
+    expect(readPlan()).toContain('<td>added row</td>');
+    expect(run(['check', P()]).code).toBe(0);
+  });
+  it('prepends from stdin and anchors on a heading', () => {
+    freshPlan();
+    expect(run(['prepend', P(), 'overview'], { input: '<plan-callout type="warn">Amended.</plan-callout>' }).code).toBe(0);
+    expect(run(['read', P(), 'overview', '--body']).stdout).toMatch(/^\s*<plan-callout type="warn">Amended\./);
+    const r = run(['insert', P(), 'steps.step-1', '--after-heading', 'Green Phase'], { input: '<p>note</p>' });
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).toMatch(/<h4>Green Phase<\/h4>\n\s*<p>note<\/p>/);
+  });
+  it('exits 1 when `insert` is given no anchor', () => {
+    freshPlan();
+    const r = run(['insert', P(), 'overview'], { input: '<p>x</p>' });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('insert requires --before-heading');
+  });
+});
+
+describe('badge', () => {
+  it('flips a badge inside a table row, and refuses an ambiguous match (exit 1)', () => {
+    freshPlan();
+    const hunk = join(dir, 'rows.html');
+    writeFileSync(hunk, '<plan-table><table><tbody>' +
+      '<tr><td>q16 staging</td><td><plan-badge type="open"></plan-badge></td></tr>' +
+      '<tr><td>q18 signals</td><td><plan-badge type="open"></plan-badge></td></tr>' +
+      '</tbody></table></plan-table>');
+    expect(run(['set-body', P(), 'recon', '--file', hunk]).code).toBe(0);
+    expect(run(['badge', P(), '--match', 'q16', '--set', 'decided']).code).toBe(0);
+    expect(readPlan()).toContain('<td>q16 staging</td><td><plan-badge type="decided">');
+    expect(readPlan()).toContain('<td>q18 signals</td><td><plan-badge type="open">');
+    const amb = run(['badge', P(), '--match', 'q1', '--set', 'decided']);
+    expect(amb.code).toBe(1);
+    expect(amb.stderr).toContain('matches 2 rows');
+  });
+});
+
+describe('list outline', () => {
+  it('includes authored headings by default, and drops them for --no-outline', () => {
+    freshPlan();
+    const out = run(['list', P()]).stdout;
+    expect(out).toMatch(/5\.1\. step-1 — First step.*\n\s+h4\s+Red Phase\n\s+h4\s+Green Phase/);
+    expect(run(['list', P(), '--no-outline']).stdout).not.toContain('Red Phase');
+  });
+});
+
+describe('flag parsing', () => {
+  it('lets a valueless flag precede the file — it used to eat the filename', () => {
+    // `tasks --all plan.html` consumed plan.html as --all's value, then failed
+    // with "requires a <file> argument" while the file sat on the command line.
+    freshPlan();
+    for (const args of [['tasks', '--all', P()], ['tasks', P(), '--all']]) {
+      const r = run(args);
+      expect(r.code, `${args.join(' ')}: ${r.stderr}`).toBe(0);
+      expect(r.stdout).toContain('steps.step-1');
+    }
+    expect(run(['list', '--no-outline', P()]).code).toBe(0);
+    expect(run(['read', '--body', P(), 'overview']).stdout).not.toContain('<plan-section');
+    // A flag that DOES take a value still consumes the next token either way.
+    expect(run(['tasks', '--status', 'todo', P()]).stdout).toContain('step-1');
+  });
+});
+
 describe('end-to-end editing flow', () => {
   it('new -> add-section -> set -> read reflects each change', () => {
     freshPlan();
@@ -76,5 +255,15 @@ describe('end-to-end editing flow', () => {
     const bad = run(['set', P(), 'steps.step-1.status=finished']);
     expect(bad.code).toBe(1);
     expect(bad.stderr).toContain("invalid status 'finished'");
+  });
+  it('applies every positional assignment `set` is given', () => {
+    freshPlan();
+    const r = run(['set', P(), 'header.status=review', 'header.chips=A | B | C', 'overview.status=done']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim().split('\n')).toHaveLength(3);
+    const html = readPlan();
+    expect(html).toContain('status="review"');
+    expect(html).toContain('chips="A | B | C"');
+    expect(run(['read', P(), 'overview']).stdout).toContain('status="done"');
   });
 });
