@@ -145,12 +145,23 @@ function lineEndAfterNewline(s, idx) {
   const nl = s.indexOf('\n', idx);
   return nl === -1 ? s.length : nl + 1;
 }
+// Offsets of every '\n' in the source (see sourceIndex — built once per string).
+function lineOffsets(s) {
+  const c = sourceIndex(s);
+  let arr = c.lines;
+  if (!arr) {
+    arr = [];
+    for (let i = s.indexOf('\n'); i !== -1; i = s.indexOf('\n', i + 1)) arr.push(i);
+    c.lines = arr;
+  }
+  return arr;
+}
 // 1-based line number of an offset — for `check`'s problem report, which is
-// read next to the file in an editor.
+// read next to the file in an editor. Counted off the cached newline offsets:
+// `check` asks once per section plus once per problem, and counting from the
+// start of the string each time made that O(document) per call.
 function lineOf(s, idx) {
-  let n = 1;
-  for (let i = s.indexOf('\n'); i !== -1 && i < idx; i = s.indexOf('\n', i + 1)) n++;
-  return n;
+  return firstAt(lineOffsets(s), idx) + 1;
 }
 // The leading whitespace of the line `idx` sits on.
 function indentAt(s, idx) {
@@ -187,10 +198,42 @@ function findCommentRanges(html) {
   }
   return ranges;
 }
-let _lastHtml = null, _lastRanges = null;
+/* Every scan in this file is a repeated indexOf over ONE immutable source
+   string, so each derived index (comment ranges, tag-token offsets, newline
+   offsets) is built lazily and keyed on string identity. One slot, as before:
+   nothing interleaves two sources within a single operation. */
+let _src = { html: null, comments: null, tokens: null, lines: null };
+function sourceIndex(html) {
+  if (_src.html !== html) _src = { html, comments: null, tokens: new Map(), lines: null };
+  return _src;
+}
 function commentRanges(html) {
-  if (html !== _lastHtml) { _lastHtml = html; _lastRanges = findCommentRanges(html); }
-  return _lastRanges;
+  const c = sourceIndex(html);
+  return c.comments || (c.comments = findCommentRanges(html));
+}
+// Offsets of every occurrence of `tok` — always a `<name` or `</name>` token,
+// which cannot overlap itself, so stepping by tok.length matches what a
+// repeated indexOf would have found. Replaces that indexOf, which scanned to
+// the END of the document even when the caller only cared about a range, so
+// every range-limited lookup cost O(document) instead of O(range).
+function tokenOffsets(html, tok) {
+  const c = sourceIndex(html);
+  let arr = c.tokens.get(tok);
+  if (!arr) {
+    arr = [];
+    for (let i = html.indexOf(tok); i !== -1; i = html.indexOf(tok, i + tok.length)) arr.push(i);
+    c.tokens.set(tok, arr);
+  }
+  return arr;
+}
+// Index of the first offset >= idx, by binary search (offsets are ascending).
+function firstAt(offsets, idx) {
+  let lo = 0, hi = offsets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid] < idx) lo = mid + 1; else hi = mid;
+  }
+  return lo;
 }
 function inRanges(idx, ranges) {
   for (const [s, e] of ranges) {
@@ -205,20 +248,34 @@ function inRanges(idx, ranges) {
    closing '>' while skipping quoted attribute values (so a '>' inside an
    attribute doesn't end the tag early). Returns the tag name, the raw
    attribute span [attrStart, attrEnd), and the index just past '>'. */
+// [A-Za-z0-9-] by char code: the name scan runs on every tag in the document,
+// where a regex literal per character was the bulk of the cost.
+function isNameCode(c) {
+  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 45;
+}
+function tagNameEnd(html, nameStart) {
+  let i = nameStart;
+  while (i < html.length && isNameCode(html.charCodeAt(i))) i++;
+  return i;
+}
 function readOpenTag(html, ltIndex) {
-  let i = ltIndex + 1;
-  let name = '';
-  while (i < html.length && /[A-Za-z0-9-]/.test(html[i])) { name += html[i]; i++; }
-  const attrStart = i;
-  let quote = null;
+  return readAttrSpan(html, ltIndex, tagNameEnd(html, ltIndex + 1));
+}
+// The tail of an open tag, given the index just past its name. Split out
+// because walkTags has already scanned that name and would otherwise pay for it
+// a second time in here.
+function readAttrSpan(html, ltIndex, attrStart) {
+  const name = html.slice(ltIndex + 1, attrStart);
+  let i = attrStart;
+  let quote = 0;
   while (i < html.length) {
-    const c = html[i];
+    const c = html.charCodeAt(i);
     if (quote) {
-      if (c === quote) quote = null;
-    } else if (c === '"' || c === "'") {
+      if (c === quote) quote = 0;
+    } else if (c === 34 || c === 39) {          // " '
       quote = c;
-    } else if (c === '>') {
-      const selfClose = html[i - 1] === '/';
+    } else if (c === 62) {                      // >
+      const selfClose = html.charCodeAt(i - 1) === 47;   // /
       return { name, attrStart, attrEnd: selfClose ? i - 1 : i, openEnd: i + 1, selfClose };
     }
     i++;
@@ -236,17 +293,19 @@ function findClose(html, tag, from) {
   const comments = commentRanges(html);
   const openTok = '<' + tag;
   const closeTok = '</' + tag + '>';
-  // Next occurrence of `tok` at/after `i` that is NOT inside a comment.
-  const nextTok = (tok, i) => {
-    let idx = html.indexOf(tok, i);
-    while (idx !== -1 && inRanges(idx, comments)) idx = html.indexOf(tok, idx + tok.length);
-    return idx;
+  const openOffsets = tokenOffsets(html, openTok);
+  const closeOffsets = tokenOffsets(html, closeTok);
+  // Next occurrence of the token at/after `i` that is NOT inside a comment.
+  const nextTok = (offsets, i) => {
+    for (let k = firstAt(offsets, i); k < offsets.length; k++)
+      if (!inRanges(offsets[k], comments)) return offsets[k];
+    return -1;
   };
   let depth = 1;
   let i = from;
   while (i < html.length) {
-    const nextOpen = nextTok(openTok, i);
-    const nextClose = nextTok(closeTok, i);
+    const nextOpen = nextTok(openOffsets, i);
+    const nextClose = nextTok(closeOffsets, i);
     if (nextClose === -1) return null;
     if (nextOpen !== -1 && nextOpen < nextClose && isBoundary(html[nextOpen + openTok.length])) {
       const open = readOpenTag(html, nextOpen);
@@ -265,12 +324,12 @@ function findClose(html, tag, from) {
 function findElement(html, tag, from = 0, limit = null) {
   const cap = limit == null ? html.length : limit;
   const comments = commentRanges(html);
-  let searchFrom = from;
   const tok = '<' + tag;
-  while (true) {
-    const idx = html.indexOf(tok, searchFrom);
-    if (idx === -1 || idx >= cap) return null;
-    if (inRanges(idx, comments) || !isBoundary(html[idx + tok.length])) { searchFrom = idx + tok.length; continue; }
+  const offsets = tokenOffsets(html, tok);
+  for (let k = firstAt(offsets, from); k < offsets.length; k++) {
+    const idx = offsets[k];
+    if (idx >= cap) return null;
+    if (inRanges(idx, comments) || !isBoundary(html[idx + tok.length])) continue;
     const open = readOpenTag(html, idx);
     if (!open) return null;
     if (open.selfClose) {
@@ -280,6 +339,7 @@ function findElement(html, tag, from = 0, limit = null) {
     if (!close) return null;
     return element(html, tag, idx, open.openEnd, close.start, close.end, open);
   }
+  return null;   // no occurrence left in range
 }
 function element(html, tag, outerStart, innerStart, innerEnd, outerEnd, open) {
   return {
@@ -316,17 +376,17 @@ function walkTags(html, keep, visit) {
     const lt = html.indexOf('<', i);
     if (lt === -1) break;
     if (inRanges(lt, comments)) { i = lt + 1; continue; }
-    const isClose = html[lt + 1] === '/';
-    let j = lt + (isClose ? 2 : 1);
-    let name = '';
-    while (j < html.length && /[A-Za-z0-9-]/.test(html[j])) { name += html[j]; j++; }
+    const isClose = html.charCodeAt(lt + 1) === 47;   // /
+    const nameStart = lt + (isClose ? 2 : 1);
+    const j = tagNameEnd(html, nameStart);
+    const name = html.slice(nameStart, j);
     if (!name) { i = lt + 1; continue; }          // <!DOCTYPE, a bare '<' in prose, …
     if (isClose) {
       const gt = html.indexOf('>', j);
       if (keep(name)) visit({ name, kind: 'close', index: lt });
       i = gt === -1 ? html.length : gt + 1;
     } else {
-      const open = readOpenTag(html, lt);
+      const open = readAttrSpan(html, lt, j);      // name already scanned
       if (!open) { i = lt + 1; continue; }         // unterminated tag — nothing to balance
       if (keep(name)) visit({ name, kind: open.selfClose ? 'self' : 'open', index: lt });
       i = open.openEnd;
@@ -338,34 +398,39 @@ function walkTags(html, keep, visit) {
    scanAttrs walks a raw attribute span into {name, value, positions},
    quote-aware, handling boolean attributes (no value). All positions are
    relative to `raw`. */
+// Sticky char-class RUNS rather than one regex test per character: scanAttrs
+// sits under every getAttr, which the section walks call several times per
+// element. Shared lastIndex is safe — nothing here reenters mid-scan.
+const RUN_SEP = /[\s/]*/y;        // separators between attributes
+const RUN_NAME = /[\w-]*/y;       // an attribute name
+const RUN_WS = /\s*/y;            // whitespace around '='
+const RUN_UNQUOTED = /[^\s]*/y;   // an unquoted attribute value
+function runEnd(re, raw, i) { re.lastIndex = i; re.exec(raw); return re.lastIndex; }
 function scanAttrs(raw) {
   const attrs = [];
   const n = raw.length;
   let i = 0;
   while (i < n) {
-    while (i < n && /[\s/]/.test(raw[i])) i++;
+    i = runEnd(RUN_SEP, raw, i);
     if (i >= n) break;
     const nameStart = i;
-    while (i < n && /[\w-]/.test(raw[i])) i++;
+    i = runEnd(RUN_NAME, raw, i);
     if (i === nameStart) { i++; continue; } // stray char
     const name = raw.slice(nameStart, i);
     const nameEnd = i;
-    let j = i;
-    while (j < n && /\s/.test(raw[j])) j++;
+    let j = runEnd(RUN_WS, raw, i);
     if (raw[j] === '=') {
-      j++;
-      while (j < n && /\s/.test(raw[j])) j++;
+      j = runEnd(RUN_WS, raw, j + 1);
       const q = raw[j];
       if (q === '"' || q === "'") {
         const valueStart = j + 1;
-        let k = valueStart;
-        while (k < n && raw[k] !== q) k++;
+        const closing = raw.indexOf(q, valueStart);
+        const k = closing === -1 ? n : closing;
         attrs.push({ name, nameStart, nameEnd, hasValue: true, valueStart, valueEnd: k, value: raw.slice(valueStart, k), end: k + 1 });
         i = k + 1;
       } else {
         const valueStart = j;
-        let k = j;
-        while (k < n && !/\s/.test(raw[k])) k++;
+        const k = runEnd(RUN_UNQUOTED, raw, j);
         attrs.push({ name, nameStart, nameEnd, hasValue: true, valueStart, valueEnd: k, value: raw.slice(valueStart, k), end: k });
         i = k;
       }
@@ -418,7 +483,11 @@ function findChildSection(html, node, selector) {
 // inside one of its nested sections. Without the filter, "the last <ul> in
 // `decisions`" would happily return a list buried in a child section.
 function ownElements(html, node, tag) {
-  const kids = childSections(html, node.innerStart, node.innerEnd);
+  return ownIn(html, childSections(html, node.innerStart, node.innerEnd), node, tag);
+}
+// The same with the node's child sections already in hand — ownHeadings asks
+// for six tags against one node, and would otherwise re-derive them per tag.
+function ownIn(html, kids, node, tag) {
   return findElementsDeep(html, tag, node.innerStart, node.innerEnd)
     .filter(el => !kids.some(k => k.outerStart <= el.outerStart && el.outerEnd <= k.outerEnd));
 }
@@ -437,7 +506,8 @@ const HEADING_TAGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
 // Authored headings owned by `node`, in document order. The runtime generates a
 // section's own heading at render time, so every heading in the FILE is content.
 function ownHeadings(html, node) {
-  return HEADING_TAGS.flatMap(t => ownElements(html, node, t).map(el => ({ ...el, level: t })))
+  const kids = childSections(html, node.innerStart, node.innerEnd);
+  return HEADING_TAGS.flatMap(t => ownIn(html, kids, node, t).map(el => ({ ...el, level: t })))
                      .sort((a, b) => a.outerStart - b.outerStart);
 }
 // Visible text of an element's inner HTML: tags dropped, entities decoded,
@@ -595,8 +665,11 @@ function allSectionIds(html) {
   return ids;
 }
 function assertIntact(before, after, action) {
+  // `before` first, then `after` twice: the caller was just scanning `before`,
+  // so this order costs the per-source index one rebuild instead of three.
+  const was = sectionIds(before);
   const present = new Set(sectionIds(after));
-  const lost = sectionIds(before).filter(id => !present.has(id));
+  const lost = was.filter(id => !present.has(id));
   if (lost.length) {
     throw new PlanError(`${action} would break the plan — section(s) no longer resolve: ${lost.join(', ')}. ` +
         `Likely an unbalanced or unescaped <plan-*> tag in the content (escape < > & in code). ` +
@@ -800,7 +873,7 @@ function planCheck(html) {
   const problems = [];
   const counts = {};
   const stack = [];
-  walkTags(html, (n) => n.toLowerCase().startsWith('plan-') || watched.has(n.toLowerCase()), ({ name, kind, index }) => {
+  walkTags(html, (n) => { const t = n.toLowerCase(); return t.startsWith('plan-') || watched.has(t); }, ({ name, kind, index }) => {
     const tag = name.toLowerCase();
     if (kind !== 'close') {
       counts[tag] = (counts[tag] || 0) + 1;
@@ -809,12 +882,13 @@ function planCheck(html) {
     }
     if (kind === 'self') return;
     if (kind === 'open') { stack.push({ tag, index }); return; }
-    const fromTop = [...stack].reverse().findIndex(e => e.tag === tag);
-    if (fromTop === -1) {
+    // The nearest matching open tag, scanned from the top of the stack down.
+    let keep = -1;
+    for (let i = stack.length - 1; i >= 0; i--) if (stack[i].tag === tag) { keep = i; break; }
+    if (keep === -1) {
       problems.push({ line: lineOf(html, index), text: `stray </${tag}> — no open <${tag}> to close` });
       return;
     }
-    const keep = stack.length - 1 - fromTop;
     for (let i = stack.length - 1; i > keep; i--)
       problems.push({ line: lineOf(html, stack[i].index), text: `<${stack[i].tag}> is never closed — </${tag}> closes an outer element first` });
     stack.length = keep;
