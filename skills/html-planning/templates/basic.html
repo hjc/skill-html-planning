@@ -3,14 +3,8 @@
 
          planr add-section <file> --id <id> --title "Title" --after overview
 
-       Sections nest to any depth (pass --parent, or an --after whose address
-       already names a nested sibling), and the heading level and number
-       (1, 1.1, 1.1.2) are derived from position — so never write a num=
-       unless you are deliberately overriding the label.
-
-       This comment names no plan tag on purpose: a literal tag written here
-       would inflate `grep -c` structure counts. Use `planr check` for the
-       authoritative count and balance.
+       Sections nest to any depth — pass --parent, or an --after whose address
+       already names a nested sibling.
        ════════════════════════════════════════════════════════ -->
 
   <plan-section id="overview" title="Overview">

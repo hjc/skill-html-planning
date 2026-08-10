@@ -39,10 +39,9 @@
 
    Templates live in ./templates/ — `_shell.html` is the shared document +
    runtime loader (with a `{{body}}` slot); every other `<name>.html` is a body
-   selectable via `--template <name>`. Values are filled with a zero-dep
-   `{{var}}` substitution: {{title}}, {{date}}, {{skillSubpath}}, plus any
-   BARE `--set key=value`. Zero dependencies throughout — the <plan-*> scanner
-   and the templater keep the tool install-free.
+   selectable via `--template <name>`. Values fill via `{{var}}` substitution:
+   {{title}}, {{date}}, {{skillSubpath}}, plus any BARE `--set key=value`.
+   Writing a template: references/template-authoring.md.
    ═══════════════════════════════════════════════════════════ */
 
 'use strict';

@@ -9,6 +9,12 @@
          · Separate ROOT CAUSE from IMPACT. The cause is one mechanism;
            the impact is usually a table, because one mechanism tends to
            break several things.
+         · Quote the offending code as a plan-file with its real path and
+           line range — never as a bare snippet. A path plus gutter numbers
+           is the difference between a report and a lead.
+         · Show the fix as a plan-diff only when its shape is actually
+           known. A plausible-looking diff nobody has validated is worse
+           than an open question.
          · Say what is ALREADY being fixed elsewhere, so the next reader
            does not duplicate work or widen scope.
          · Remediation is an ordered table with blockers named, not prose.
@@ -29,13 +35,16 @@
 
     <h3>Root cause</h3>
     <p>
-      The single mechanism. Cite the file and line — <code>path/to/file.py:42</code> — and quote the
-      offending construct rather than describing it. If the cause was <em>measured</em> rather than reasoned
-      about, say so and give the command or probe, because the next reader will want to re-run it.
+      The single mechanism. Quote the offending construct rather than describing it, and give it a real path
+      and line range so the next reader can open it. If the cause was <em>measured</em> rather than reasoned
+      about, say so and give the command or probe, because they will want to re-run it.
     </p>
-    <plan-diff>
-      <pre><code>the offending code, verbatim</code></pre>
-    </plan-diff>
+    <plan-file path="path/to/file.py" lines="40-43" lang="python">
+def handler(sender, instance, **kwargs):
+    # the construct that does the wrong thing, verbatim from the file
+    if not instance.pk:
+        return
+    </plan-file>
 
     <h3>Impact</h3>
     <p>One mechanism usually breaks more than one thing. Convention: a table, most severe first.</p>
@@ -84,6 +93,18 @@
         </tbody>
       </table>
     </plan-table>
+
+    <p>
+      If the shape of the fix is known, show it. If it is not, delete this block and say what is undecided
+      instead — a plausible-looking diff nobody has validated is worse than an open question.
+    </p>
+    <plan-diff path="path/to/file.py" old-start="40" new-start="40">
+ def handler(sender, instance, **kwargs):
+-    if not instance.pk:
+-        return
++    if not instance.pk:
++        Audit.objects.create(target=instance, action="created")
+ </plan-diff>
 
     <plan-callout type="warn">
       <strong>What is NOT affected.</strong> Bound the defect explicitly. A reader who has just learned the
