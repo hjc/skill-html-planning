@@ -3,3 +3,7 @@ node_modules/
 
 # Scratch / planning artifacts
 .tmp/
+
+# Session handoff docs — ephemeral, written by /handoff and consumed by /pickup.
+# The commands themselves (.claude/commands/) are tracked.
+.claude/handoffs/
