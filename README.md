@@ -128,11 +128,9 @@ Happy planning!
 ```bash
 node .claude/skills/html-planning/planr.js new <plan-output-path>.html --title "New Plan"
 
-# use --template <name> to start from a spine (e.g. tdd); `planr templates` lists them
-
-# --set takes the same addresses as `set`, so the header is filled in one command
+# start from a spine, and fill the header in the same command
 node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template issue \
-  --set header.status=review --set "header.chips=Bug | Production"
+  --set status=review --set "chips=Bug | Production"
 ```
 
 Then start adding any relevant components, open in your browser and enjoy!
@@ -149,22 +147,14 @@ Then start adding any relevant components, open in your browser and enjoy!
 
 After installing, delete or add templates as you see fit.
 
-To interact with the template system:
+Each one documents itself, so you can read a template before committing to it:
 
 ```bash
-# list available templates, with a one-line gist of each
-node .claude/skills/html-planning/planr.js templates
-
-# what a template is for, the conventions it encodes, and what it scaffolds
-node .claude/skills/html-planning/planr.js templates tdd
-
-# scaffold from the tdd template
-node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template tdd
+node .claude/skills/html-planning/planr.js templates       # all of them, one line each
+node .claude/skills/html-planning/planr.js templates tdd   # what it is for, and what it scaffolds
 ```
 
-All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body. As such, templates should just express the body of the final HTML document.
-
-Templates can be parameterized with variables as needed.
+All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body, so a template only expresses the body of the final document, and can be parameterized with variables.
 
 ### Writing a custom template
 
@@ -172,7 +162,7 @@ A template body is just the markup that goes inside `<main>`. Typically, this is
 
 Adding a new file into `templates/` immediately makes it available to the CLI.
 
-**Open it with a comment saying what the template is for.** That leading comment is the template's documentation: its first sentence becomes the gist in the `templates` table, the whole thing is what `templates <name>` prints, and it ships inside every generated plan so the guidance reaches whoever fills the scaffold in. Write no literal `<plan-…>` tag inside it — that would inflate a reader's `grep -c` structure count — and put it before any element, or it reads as an ordinary inline comment.
+**Open it with a comment saying what the template is for.** That leading comment is the template's documentation — `templates` shows its first sentence as a gist, `templates <name>` prints all of it, and it ships inside every generated plan so the guidance reaches whoever fills the scaffold in.
 
 For example, a lightweight PRD template with a custom `{{owner}}` field:
 
@@ -195,8 +185,6 @@ For example, a lightweight PRD template with a custom `{{owner}}` field:
 </plan-section>
 ```
 
-(No `num=` — section numbers derive from document position and re-derive after every insert, so writing them by hand only creates collisions.)
-
 Then scaffold from it, filling the custom field with `--set`:
 
 ```bash
@@ -204,108 +192,48 @@ node .claude/skills/html-planning/planr.js new checkout.html \
   --title "Checkout PRD" --template prd --set owner="Payments Team"
 ```
 
-The body is injected into `_shell.html`'s `{{body}}` slot, and every `{{var}}` is substituted.
-
-A placeholder can **declare a default** as `{{name:default}}`. That is how a template marks an attribute as a knob — write it as a placeholder and it becomes settable with `--set`, with no code change:
+Write a placeholder as `{{name:default}}` and it becomes a knob — settable with `--set`, listed by `planr templates <name>`, with no code change:
 
 ```html
 <html lang="{{lang:en}}">              <!-- `en`, or --set lang=fr -->
   status="{{status:draft}}"            <!-- `draft`, or --set status=review -->
-  subtitle="{{subtitle:}}"             <!-- empty, but settable -->
 ```
 
-The vars `_shell.html` ships with:
-
-| Placeholder | Default | Filled with |
-|-------------|---------|-------------|
-| `{{title}}` | `Untitled Plan` | `--title`, or `--set title=`; shown in the browser tab and the header. |
-| `{{lang}}` | `en` | The document language, on `<html lang>`. |
-| `{{subtitle}}` | *empty* | The header's subtitle line. |
-| `{{status}}` | `draft` | The header's status — validated against `draft`/`review`/`approved`/`implemented`/`rejected`. |
-| `{{chips}}` | *empty* | The header's pipe-delimited metadata chips. |
-| `{{date}}` | today | `YYYY-MM-DD`, filled automatically. |
-| `{{skillSubpath}}` | — | The skill's install path, baked into the loader. Rarely needs changing. |
-
-Run `planr templates <name>` to see this list for any template, including its own vars. A `--set` key that matches no placeholder is an **error** listing the ones that exist — it is never silently dropped. A placeholder with **no** declared default and no value is left literally in the output, so a missing required var is visible rather than silent.
-
-The above is the tour. The full authoring reference — section-id and `num` constraints, how to verify a new template, what belongs in the leading comment and why — lives with the skill at [`skills/html-planning/references/template-authoring.md`](skills/html-planning/references/template-authoring.md), so it ships to anyone who installs it.
+That is the tour. The authoring reference ships with the skill at [`references/template-authoring.md`](skills/html-planning/references/template-authoring.md).
 
 ## Editing Plans Cheaply
 
 The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
 
-`planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document.
-
-The full surface — `planr --help` prints the same list, and `SKILL.md` carries the per-flag reference:
-
-| | Command | What it does |
-|---|---|---|
-| **Create** | `new` | Generate a plan from a template. `--set status=review --set lang=fr` fills the template's variables in the same command. |
-| | `templates` | List the templates with a one-line gist each; `templates <name>` prints that one's full guidance. |
-| **Inspect** | `list` | Every section as `num. id — title [status]`, plus the headings inside each one. `--no-outline` for sections alone. |
-| | `check` | Authoritative structure validation — tag balance, unregistered components, duplicate ids, with line numbers. Exits 1 on a break. |
-| | `tasks` | Just the sections carrying a status, with their addresses. `--all` · `--status <s>`. |
-| | `read` | One node's markup; `--body` for its inner content only. |
-| **Edit in place** | `set` | Set attributes. Every assignment given is applied. |
-| | `badge` | Flip a `<plan-badge>` in a table row, found by the row's visible text. |
-| **Write content** | `set-body` | Replace a node's whole inner content. |
-| | `prepend` / `append` | Put a hunk at the start or end of a body — or of a container inside it, via `--into`. |
-| | `insert` | Put a hunk beside an authored heading (`--before-heading` / `--after-heading`). |
-| **Restructure** | `add-section` | Insert a section, empty or filled from `--body-file`. |
-| | `rm-section` | Remove the section at an address, at any depth. |
-| | `move-section` | Reorder a section beside a sibling. |
-
-Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it.
+`planr.js` sidesteps that by mutating a plan **by address**, so an edit costs tokens proportional to the change, not the size of the document. (`planr` below is shorthand for `node .claude/skills/html-planning/planr.js`.)
 
 ```bash
 # orient without loading the file — every section, and the headings inside them
-node .claude/skills/html-planning/planr.js list plan.html
+planr list plan.html
 
-# just the open work (sections/steps that aren't done), with addresses to act on
-node .claude/skills/html-planning/planr.js tasks plan.html
+# flip a status, or several at once, without reading the plan
+planr set plan.html steps.3.status=done header.status=review
 
-# flip statuses (section, subsection, or header) — every assignment given is applied
-node .claude/skills/html-planning/planr.js set plan.html steps.status=in-progress
-node .claude/skills/html-planning/planr.js set plan.html steps.3.status=done header.status=review
-
-# read one section back, add/remove/reorder sections
-node .claude/skills/html-planning/planr.js read plan.html steps
-node .claude/skills/html-planning/planr.js add-section plan.html --id risks --title "Risks" --after overview
-node .claude/skills/html-planning/planr.js move-section plan.html risks --before timeline
-
-# addresses are dot-paths, so the same commands work at any depth — and a
-# sibling ref fixes the nesting, so a new step lands inside "steps"
-node .claude/skills/html-planning/planr.js add-section plan.html --id step-4 --title "Wire it up" --after steps.step-3
-
-# rich content: author a body in isolation, inject it by address (plan never loaded)
-node .claude/skills/html-planning/planr.js add-section plan.html --id caching --title "Caching" --body-file body.html
-node .claude/skills/html-planning/planr.js set-body plan.html caching --file body.html
-
-# fix a section in place: pull just its hunk, edit, push it back (~2x the hunk, not the whole plan)
-node .claude/skills/html-planning/planr.js read plan.html caching --body > hunk.html
-node .claude/skills/html-planning/planr.js set-body plan.html caching --file hunk.html
+# pull one section's hunk out, edit it, push it back
+planr read plan.html caching --body > hunk.html
+planr set-body plan.html caching --file hunk.html
 ```
 
-On a long-lived plan the common edit is smaller still — an amendment above a section, one item onto a running list, four rows onto a table, one badge flipped — and none of those should cost a whole-section rewrite. Those go in at a point:
+Addresses are dot-paths, so the same commands reach any depth: `steps.step-3.detail`.
+
+On a long-lived plan the common edit is smaller still — an amendment above a section, one item onto a running list, four rows onto a table, one badge flipped — and none should cost a whole-section rewrite. Those go in at a point:
 
 ```bash
-# the authoritative structure validation — exits 1 on a break, with line numbers
-node .claude/skills/html-planning/planr.js check plan.html
-
-# put a hunk at one point inside a section — start, end, or beside a heading
-# (`list` above names the headings you can anchor on)
-node .claude/skills/html-planning/planr.js prepend plan.html resolution --file amendment.html
-node .claude/skills/html-planning/planr.js insert plan.html resolution --before-heading "The six decisions" --file note.html
-
-# ...or inside a container within it: the running <ul>, a table's <tbody>
-node .claude/skills/html-planning/planr.js append plan.html decisions --into ul --file gist.html
-node .claude/skills/html-planning/planr.js append plan.html vocab --into tbody --file rows.html
-
-# flip a <plan-badge> in a table row, found by the row's visible text
-node .claude/skills/html-planning/planr.js badge plan.html --match "q16" --set decided
+planr prepend plan.html resolution --file amendment.html            # above everything in a section
+planr insert  plan.html resolution --before-heading "Decisions" --file note.html
+planr append  plan.html decisions --into ul --file gist.html        # one <li> onto the running list
+planr append  plan.html vocab --into tbody --file rows.html         # rows onto a table
+planr badge   plan.html --match "q16" --set decided                 # flip a badge in a table row
 ```
 
-`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. See `SKILL.md` for the full command and addressing reference.
+Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it.
+
+`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
 
 ## Developing this skill
 
