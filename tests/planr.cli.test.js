@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
 // This is the WIRING suite: it proves what only a real subprocess can — argv
@@ -139,12 +139,22 @@ describe('templates', () => {
   });
 });
 
-describe('SKILL.md references resolve', () => {
-  it('every references/ link points at a file that ships', () => {
-    const skill = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
-    const links = [...new Set([...skill.matchAll(/\]\((references\/[\w./-]+)\)/g)].map(m => m[1]))];
-    expect(links.length).toBeGreaterThan(0);
-    for (const rel of links) expect(existsSync(join(SKILL_DIR, rel)), rel).toBe(true);
+describe('shipped docs stand alone', () => {
+  // Only skills/html-planning/ is installed. A shipped doc that links outside
+  // it, or points at repo-only tooling, is a broken reference for every reader
+  // who did not clone the repo.
+  const docs = ['SKILL.md', 'references/template-authoring.md'];
+  it('link only to files that ship, and never cite repo-only tooling', () => {
+    let checked = 0;
+    for (const doc of docs) {
+      const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
+      expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
+      for (const rel of new Set([...text.matchAll(/\]\((?!https?:|#)([^)]+)\)/g)].map(m => m[1]))) {
+        expect(existsSync(join(SKILL_DIR, dirname(doc), rel)), `${doc} → ${rel}`).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked, 'no relative links found — has the pattern gone stale?').toBeGreaterThan(0);
   });
 });
 

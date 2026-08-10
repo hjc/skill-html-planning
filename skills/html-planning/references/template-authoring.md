@@ -93,7 +93,7 @@ node .claude/skills/html-planning/planr.js list /tmp/probe.html   # the spine, a
 
 Check that no `{{placeholder}}` survives into the generated file unless you meant it to, and open the result in a browser once.
 
-In this repo, `npm test` additionally asserts that **every shipped template** carries a leading comment, contains no literal plan tag in it, and passes `check` after generation.
+Done when all four hold: the gist reads as a sentence, `templates <name>` shows the guidance and every variable you declared, `check` exits 0, and `list` shows the spine you intended.
 
 ## A complete example
 
