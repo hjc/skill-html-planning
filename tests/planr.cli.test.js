@@ -341,3 +341,82 @@ describe('check warnings (guards)', () => {
     }
   });
 });
+
+describe('bare-id addressing', () => {
+  it('reads and sets a nested section by its bare id', () => {
+    freshPlan();
+    expect(run(['set', P(), 'step-1.status=done']).code).toBe(0);
+    const r = run(['read', P(), 'step-1']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('<plan-section id="step-1" title="First step" status="done">');
+  });
+});
+
+describe('read --text', () => {
+  it('prints structure-preserving text, with --text accepted before the file', () => {
+    freshPlan();
+    const r = run(['read', '--text', P(), 'step-1']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^### \d+\.1\. First step\n/);
+    expect(r.stdout).toContain('#### Red Phase\n');
+    expect(r.stdout).not.toContain('<');
+    expect(run(['--help']).stdout).toMatch(/read\s+<file> <address> \[--body\] \[--text\]/);
+  });
+});
+
+describe('text-addressed writes', () => {
+  // overview gets a running list and a sentence to address by visible text.
+  const seed = () => {
+    freshPlan();
+    const hunk = join(dir, 'seed.html');
+    writeFileSync(hunk, '\n    <ul>\n      <li>alpha item</li>\n      <li>beta item</li>\n    </ul>\n' +
+                        '    <p>We ship on Friday, after the review.</p>\n  ');
+    expect(run(['set-body', P(), 'overview', '--file', hunk]).code).toBe(0);
+  };
+  const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+
+  it('rm-item removes a list item by its text, and exits 1 on an ambiguous match', () => {
+    seed();
+    const amb = run(['rm-item', P(), 'overview', '--match', 'item']);
+    expect(amb.code).toBe(1);
+    expect(amb.stderr).toContain('matches 2 items');
+    const r = run(['rm-item', P(), 'overview', '--match', 'beta', '--into', 'ul']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).not.toContain('beta item');
+    expect(run(['rm-item', P(), 'overview', '--all', '--match', 'item']).code).toBe(0);
+    expect(readPlan()).not.toContain('alpha item');
+    expect(run(['check', P()]).code).toBe(0);
+    expect(run(['--help']).stdout).toContain('rm-item');
+    expect(skill()).toContain('| `rm-item` |');
+  });
+
+  it('strike wraps a matched run in <s>, and exits 1 on a run already struck', () => {
+    seed();
+    const r = run(['strike', P(), 'overview', '--match', 'on friday']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).toContain('<p>We ship <s>on Friday</s>, after the review.</p>');
+    const again = run(['strike', P(), 'overview', '--match', 'Friday']);
+    expect(again.code).toBe(1);
+    expect(again.stderr).toContain('is already struck');
+    expect(run(['check', P()]).code).toBe(0);
+    expect(run(['--help']).stdout).toContain('strike');
+    expect(skill()).toContain('| `strike` |');
+  });
+
+  it('replace takes the replacement from --with, --file, or stdin', () => {
+    seed();
+    expect(run(['replace', P(), 'overview', '--match', 'Friday', '--with', 'Monday']).code).toBe(0);
+    const hunk = join(dir, 'with.html');
+    writeFileSync(hunk, 'the audit\n');
+    expect(run(['replace', P(), 'overview', '--match', 'the review', '--file', hunk]).code).toBe(0);
+    const piped = run(['replace', P(), 'overview', '--match', 'ship'], { input: 'land' });
+    expect(piped.code, piped.stderr).toBe(0);
+    expect(run(['read', P(), 'overview', '--body', '--text']).stdout)
+      .toBe('- alpha item\n- beta item\nWe land on Monday, after the audit.\n');
+    const both = run(['replace', P(), 'overview', '--match', 'land', '--with', 'x', '--file', hunk]);
+    expect(both.code).toBe(1);
+    expect(both.stderr).toContain('use only one of --with / --file');
+    expect(run(['--help']).stdout).toContain('replace');
+    expect(skill()).toContain('| `replace` |');
+  });
+});

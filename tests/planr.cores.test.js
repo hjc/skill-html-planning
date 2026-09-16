@@ -235,10 +235,6 @@ describe('planAddSection', () => {
     const out = planr.planAddSection(DOC, { id: 'a2', parent: 'a' }, null).html;
     expect(childIds(out, 'a')).toEqual(['a1', 'a2']);
   });
-  it('rejects a bare child id as a ref — every address is a full dot-path', () => {
-    expect(() => planr.planAddSection(DOC, { id: 'a2', parent: 'a', after: 'a1' }, null))
-      .toThrow(/section 'a1' not found/);
-  });
   it('rejects a --parent that contradicts the ref', () => {
     expect(() => planr.planAddSection(DOC, { id: 'x', parent: 'b', after: 'a.a1' }, null))
       .toThrow(/contradicts/);
@@ -433,8 +429,8 @@ describe('planCheck warnings — section references', () => {
     ].join('\n'));
     const warnings = planr.planCheck(html).warnings;
     expect(warnings.map(w => w.line)).toEqual([4, 5]);
-    expect(warnings[0].text).toBe('link text "&sect;1" (href="#reviews") is a bare section number — numbers re-derive ' +
-      'when a section is added or moved; name the section too, e.g. "&sect;1 Reviews"');
+    expect(warnings[0].text).toBe('link text "§1" (href="#reviews") is a bare section number — numbers re-derive ' +
+      'when a section is added or moved; name the section too, e.g. "§1 Reviews"');
   });
 });
 
@@ -797,5 +793,277 @@ describe('planBadge label handling', () => {
 describe('resolveNode error path (now throwing, not exiting)', () => {
   it('throws PlanError on an unknown address', () => {
     expect(() => planr.planRead(DOC, 'nope', {})).toThrow(planr.PlanError);
+  });
+});
+
+describe('bare ids through the cores', () => {
+  it('read, set and set-body all accept a nested section by its bare id', () => {
+    expect(planr.planRead(DOC, 'a1', {})).toContain('<plan-section id="a1"');
+    expect(planr.planSet(DOC, 'a1.status=done').html).toContain('id="a1" status="done"');
+    expect(planr.planRead(planr.planSetBody(DOC, 'a1', '<p>x</p>', {}).html, 'a.a1', { body: true })).toBe('<p>x</p>');
+  });
+  it('add-section accepts a bare ref and a bare --parent that agree', () => {
+    const out = planr.planAddSection(DOC, { id: 'a2', parent: 'a', after: 'a1' }, null).html;
+    expect(childIds(out, 'a')).toEqual(['a1', 'a2']);
+  });
+  it('add-section still refuses a --parent that contradicts a bare ref', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', parent: 'b', after: 'a1' }, null))
+      .toThrow(/--parent 'b' contradicts --after 'a1' \(which sits in 'a'\)/);
+  });
+  it('move-section sees a bare id and its full path as the same section', () => {
+    expect(() => planr.planMoveSection(DOC, 'a.a1', { after: 'a1' })).toThrow(/relative to itself/);
+  });
+});
+
+describe('TEXT_RULES', () => {
+  it('declares a read --text rule for every registered component', () => {
+    // A component whose content lives in an attribute (a card's value, a
+    // diagram's caption) is dropped from text output unless its rule says so.
+    const missing = planr.PLAN_TAGS.filter(t => !planr.TEXT_RULES[t]);
+    expect(missing).toEqual([]);
+    for (const t of planr.PLAN_TAGS) expect(['block', 'inline', 'code'], t).toContain(planr.TEXT_RULES[t].kind);
+  });
+});
+
+// Prose, lists, a struck line, a code block and a NESTED section repeating the
+// parent's phrases — the shapes text-addressed writes (rm-item, strike,
+// replace) target, and the decoys they must not reach.
+const PROSE = [
+  '<plan-header title="Ticket" status="draft"></plan-header>',
+  '<main>',
+  '  <plan-section id="resolution" title="Resolution">',
+  '    <p>We keep the legacy queue &amp; retry',
+  '      every hour.</p>',
+  '    <p>Alerts go to <code>ops</code> on failure.</p>',
+  '    <ul>',
+  '      <li>Retry hourly.</li>',
+  '      <li>Page on-call.</li>',
+  '      <li>Retry daily<ul><li>Backoff doubles.</li></ul></li>',
+  '    </ul>',
+  '    <p><s>Old plan retired.</s></p>',
+  '    <plan-file path="retry.py">',
+  'RETRY = &quot;hourly&quot;',
+  '    </plan-file>',
+  '    <plan-section id="history" title="History">',
+  '      <p>We keep the legacy queue for now.</p>',
+  '      <ul><li>Retry hourly in history.</li></ul>',
+  '    </plan-section>',
+  '  </plan-section>',
+  '</main>',
+].join('\n');
+
+describe('planRmItem', () => {
+  it('removes the matching <li> with its whole line', () => {
+    const { html, message } = planr.planRmItem(PROSE, 'resolution', { match: 'page ON-CALL' });
+    expect(html).not.toContain('Page on-call');
+    expect(html).toContain('      <li>Retry hourly.</li>\n      <li>Retry daily');
+    expect(message).toBe(`removed <li> "Page on-call." from 'resolution'`);
+  });
+  it('matches across inline markup the way it renders — no space where <code> sat', () => {
+    const html = '<plan-section id="s">\n  <ul>\n    <li>Alerts to <code>ops</code>.</li>\n    <li>Page on-call.</li>\n  </ul>\n</plan-section>';
+    const { html: out } = planr.planRmItem(html, 's', { match: 'ops.' });
+    expect(out).toBe('<plan-section id="s">\n  <ul>\n    <li>Page on-call.</li>\n  </ul>\n</plan-section>');
+  });
+  it('removes the innermost item the text belongs to, not its parent', () => {
+    const { html } = planr.planRmItem(PROSE, 'resolution', { match: 'backoff' });
+    expect(html).toContain('<li>Retry daily<ul></ul></li>');
+  });
+  it('refuses an ambiguous match with numbered candidates, and takes --nth or --all', () => {
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry' }))
+      .toThrow(/"retry" matches 2 items in 'resolution' — narrow it, pick one with --nth <n>, or pass --all:\n {2}1\. <li> Retry hourly\.\n {2}2\. <li> Retry daily Backoff doubles\./);
+    expect(planr.planRmItem(PROSE, 'resolution', { match: 'retry', nth: '2' }).html).not.toContain('Retry daily');
+    const both = planr.planRmItem(PROSE, 'resolution', { match: 'retry', all: true });
+    expect(both.html).toContain('    <ul>\n      <li>Page on-call.</li>\n    </ul>');
+    expect(both.message.split('\n')).toHaveLength(2);
+  });
+  it('never reaches an item owned by a nested section — address the child for that', () => {
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'in history' }))
+      .toThrow(/^no item matching "in history" in 'resolution'$/);
+    expect(planr.planRmItem(PROSE, 'history', { match: 'in history' }).html).not.toContain('in history');
+  });
+  it('removes a table row, scoped by --into', () => {
+    const { html, message } = planr.planRmItem(RICH, 'map', { match: 'q16', into: 'tbody' });
+    expect(html).not.toContain('q16');
+    expect(html).toContain('        <tbody>\n          <tr><td>q18 signals</td>');
+    expect(message).toBe(`removed <tr> "q16 staging" from 'map' → tbody`);
+    expect(planr.planCheck(html).ok).toBe(true);
+  });
+  it('validates its arguments', () => {
+    expect(() => planr.planRmItem(PROSE, '', { match: 'x' })).toThrow(/rm-item requires an address/);
+    expect(() => planr.planRmItem(PROSE, 'header', { match: 'x' })).toThrow(/the header holds no body/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', {})).toThrow(/rm-item requires --match <text>/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry', nth: 'x' })).toThrow(/--nth expects a 1-based number/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry', nth: '3' })).toThrow(/--nth 3: "retry" matches 2 items/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry', into: 'ol' })).toThrow(/--into 'ol'/);
+  });
+});
+
+describe('planStrike', () => {
+  it('wraps a run that wraps across source lines, matching its decoded text', () => {
+    const { html, message } = planr.planStrike(PROSE, 'resolution', { match: 'legacy queue & retry every hour' });
+    expect(html).toContain('<p>We keep the <s>legacy queue &amp; retry\n      every hour</s>.</p>');
+    expect(message).toBe(`struck "legacy queue & retry every hour" at line 4 of 'resolution'`);
+    // The nested section's identical phrase is not the parent's to strike.
+    expect(html).toContain('<p>We keep the legacy queue for now.</p>');
+  });
+  it('accepts an entity in --match as the character it renders', () => {
+    expect(planr.planStrike(PROSE, 'resolution', { match: 'queue &amp; retry' }).html)
+      .toContain('<s>queue &amp; retry</s>');
+  });
+  it('refuses an ambiguous run with numbered, located candidates, and takes --nth or --all', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'retry' }))
+      .toThrow(/"retry" matches 4 text runs in 'resolution' — narrow it, pick one with --nth <n>, or pass --all:\n {2}1\. line 4: We keep the legacy queue & \[retry\]\n {2}2\. line 8: \[Retry\] hourly\.\n {2}3\. line 10: \[Retry\] daily Backoff doubles\.\n {2}4\. line 14: \[RETRY\] = "hourly"/);
+    expect(planr.planStrike(PROSE, 'resolution', { match: 'retry', nth: '2' }).html).toContain('<li><s>Retry</s> hourly.</li>');
+    // --all refuses the whole write when any one run is unstrikeable (the fourth sits in code).
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'retry', all: true })).toThrow(/inside <plan-file>/);
+    const list = planr.planStrike(PROSE, 'resolution', { match: 'retry', all: true, into: 'ul:1' }).html;
+    expect(list.match(/<s>retry<\/s>/gi)).toHaveLength(2);
+  });
+  it('scopes to an --into container', () => {
+    expect(planr.planStrike(PROSE, 'resolution', { match: 'page', into: 'ul:1' }).html).toContain('<li><s>Page</s> on-call.</li>');
+  });
+  it('refuses a run that crosses an element boundary', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'go to ops' }))
+      .toThrow(/"go to ops" crosses an element boundary — strike acts on text inside one element; narrow the match \(line 6: /);
+  });
+  it('refuses a run already struck, and one inside a code component', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'old plan' })).toThrow(/"old plan" is already struck/);
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'RETRY = "hourly"' }))
+      .toThrow(/"RETRY = "hourly"" is inside <plan-file>, and markup there corrupts the code/);
+  });
+  it('validates its arguments', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', {})).toThrow(/strike requires --match <text>/);
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'nowhere' })).toThrow(/^no text run matching "nowhere" in 'resolution'$/);
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'retry', nth: '1', all: true })).toThrow(/use only one of --nth \/ --all/);
+    expect(() => planr.planStrike(PROSE, 'header', { match: 'x' })).toThrow(/the header holds no body/);
+  });
+});
+
+describe('planReplace', () => {
+  it('replaces a run with --with, spliced verbatim as markup', () => {
+    const { html, message } = planr.planReplace(PROSE, 'resolution', null, { match: 'every hour', with: 'every <em>day</em>' });
+    expect(html).toContain('retry\n      every <em>day</em>.</p>');
+    expect(message).toBe(`replaced "every hour" at line 5 of 'resolution'`);
+  });
+  it('takes the replacement from a body, dropping its trailing newline', () => {
+    const { html } = planr.planReplace(PROSE, 'resolution', 'on-call lead\n', { match: 'on-call' });
+    expect(html).toContain('<li>Page on-call lead.</li>');
+  });
+  it('deletes the run with --with "", and rewrites struck text (the one-element rule is all it enforces)', () => {
+    expect(planr.planReplace(PROSE, 'resolution', null, { match: 'old plan', with: '' }).html).toContain('<p><s> retired.</s></p>');
+  });
+  it('applies --all to every run, code components included', () => {
+    const { html } = planr.planReplace(PROSE, 'resolution', null, { match: 'retry', with: 'Resend', all: true });
+    expect(html.match(/Resend/g)).toHaveLength(4);
+    expect(html).toContain('Resend = &quot;hourly&quot;');
+    expect(html).toContain('<li>Retry hourly in history.</li>');   // nested section untouched
+  });
+  it('refuses a run that crosses an element boundary, and a replacement that breaks the plan', () => {
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'go to ops', with: 'x' }))
+      .toThrow(/"go to ops" crosses an element boundary — replace acts on text inside one element/);
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: '<plan-callout>' }))
+      .toThrow(/would break the plan/);
+  });
+  it('validates where the replacement comes from', () => {
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: true }))
+      .toThrow(/--with needs a value — pass --with "" to delete the matched text/);
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: 'x', file: 'f.html' }))
+      .toThrow(/use only one of --with \/ --file/);
+    expect(() => planr.planReplace(PROSE, 'resolution', '\n', { match: 'on-call' }))
+      .toThrow(/the replacement is empty — pass --with "" to delete the matched text/);
+    expect(() => planr.planReplace(PROSE, 'resolution', 'x', {})).toThrow(/replace requires --match <text>/);
+  });
+});
+
+describe('planRead --text', () => {
+  const TEXTY = [
+    '<plan-section id="t" title="Scope &amp; Text">',
+    '  <p>First   paragraph,',
+    '     wrapped &amp; <code>inline</code> &mdash; done &rarr; next.</p>',
+    '  <plan-callout type="warn">Mind the <strong>gap</strong>.</plan-callout>',
+    '  <ul>',
+    '    <li>Outer',
+    '      <ul><li>Inner</li></ul>',
+    '    </li>',
+    '  </ul>',
+    '  <plan-file path="app.py">',
+    '    if a &lt; b:',
+    '        return &quot;x&quot;',
+    '  </plan-file>',
+    '  <plan-table><table><thead><tr><th>#</th><th>Decision</th></tr></thead>',
+    '  <tbody><tr><td>1</td><td>Keep <b>it</b><br>whole</td></tr></tbody></table></plan-table>',
+    '  <!-- <p>commented out</p> -->',
+    '</plan-section>',
+  ].join('\n');
+  it('renders one block per line: title, prose, callout, nested list, fenced code, table rows', () => {
+    expect(planr.planRead(TEXTY, 't', { text: true })).toBe([
+      '## 1. Scope & Text',
+      'First paragraph, wrapped & inline — done → next.',
+      '[warn] Mind the gap.',
+      '- Outer',
+      '  - Inner',
+      '```app.py',
+      '    if a < b:',
+      '        return "x"',
+      '```',
+      '# | Decision',
+      '1 | Keep it whole',
+      '',
+    ].join('\n'));
+  });
+  it('--body drops the node\'s own title line and keeps the rest', () => {
+    const body = planr.planRead(TEXTY, 't', { text: true, body: true });
+    expect(body.startsWith('First paragraph, wrapped & inline — done → next.\n')).toBe(true);
+    expect(body).not.toContain('## 1.');
+  });
+  it('includes nested sections under their own numbered titles, and badges by label', () => {
+    expect(planr.planRead(RICH, 'map', { text: true })).toBe([
+      '## 1. Map',
+      '### Decisions so far',
+      '- First.',
+      '### Tickets',
+      'q16 staging | [open]',
+      'q18 signals | [open]',
+      '',
+      '### 1.1. Vocabulary',
+      '### Nested heading',
+      '- Nested list.',
+      '',
+    ].join('\n'));
+  });
+  it('reads a nested section by address, and the header as its title', () => {
+    expect(planr.planRead(RICH, 'map.vocab', { text: true })).toBe('### 1.1. Vocabulary\n### Nested heading\n- Nested list.\n');
+    expect(planr.planRead(RICH, 'header', { text: true })).toBe('# Map\n');
+  });
+  it('prints a badge\'s own label when it carries one', () => {
+    const html = '<plan-section id="s"><table><tr><td>q1</td><td><plan-badge type="decided">Shipped</plan-badge></td></tr></table></plan-section>';
+    expect(planr.planRead(html, 's', { text: true, body: true })).toBe('q1 | [Shipped]\n');
+  });
+  it('prints the attributes that carry a component\'s content', () => {
+    const html = [
+      '<plan-section id="c" title="C">',
+      '<plan-cards><plan-card label="Cost" value="$780" subtitle="per month"><p>Detail.</p></plan-card></plan-cards>',
+      '<plan-tabs><plan-tab label="Summary"><p>Inside.</p></plan-tab></plan-tabs>',
+      '<plan-timeline><plan-phase num="1" title="Foundation" weeks="Weeks 1-2"><ul><li>Models</li></ul></plan-phase></plan-timeline>',
+      '<plan-formula expr="Total = Sub &times; Rate" note="at checkout"></plan-formula>',
+      '<plan-principles><plan-principle label="Idempotent">Safe to retry.</plan-principle></plan-principles>',
+      '<plan-diagram caption="Write path">',
+      'flowchart LR',
+      '  A --&gt; B',
+      '</plan-diagram>',
+      '</plan-section>',
+    ].join('\n');
+    expect(planr.planRead(html, 'c', { text: true, body: true })).toBe([
+      'Cost: $780', 'per month', 'Detail.', '[Summary]', 'Inside.', 'Foundation (Weeks 1-2)', '- Models',
+      'Total = Sub × Rate — at checkout', 'Idempotent: Safe to retry.',
+      '```mermaid', 'flowchart LR', '  A --> B', '```', 'Write path', '',
+    ].join('\n'));
+    const header = '<plan-header title="Plan" subtitle="What it covers"></plan-header>';
+    expect(planr.planRead(header, 'header', { text: true })).toBe('# Plan\nWhat it covers\n');
+  });
+  it('prints only the title line for an empty section, and nothing for its empty body', () => {
+    const empty = '<plan-section id="e" title="Empty"></plan-section>';
+    expect(planr.planRead(empty, 'e', { text: true })).toBe('## 1. Empty\n');
+    expect(planr.planRead(empty, 'e', { text: true, body: true })).toBe('');
   });
 });

@@ -356,11 +356,11 @@ One grammar for every address argument — the positional `<address>`, `--parent
 
 ```
 header                    the <plan-header>
-<sectionId>               a top-level section
+<sectionId>               the section carrying that id, at any depth
 <sectionId>.<child>…      a descendant, to any depth
 ```
 
-Each segment after the first is a child's `id` or its **1-based ordinal** among siblings: `steps.step-3`, `steps.3`, `steps.3.detail`. A bare id only resolves at the top level — a nested section always needs its full path (`steps.step-1`, never `step-1`).
+Each segment after the first is a child's `id` or its **1-based ordinal** among siblings: `steps.step-3`, `steps.3`, `steps.3.detail`. A bare id resolves at **any depth** — `step-1` finds `steps.step-1` — because ids are unique document-wide. A document where two sections carry the id is refused, naming each one's full path and line. The full path is what `list` and `tasks` print, and an ordinal segment still needs its parent in front of it.
 
 `set` is the one exception: its **last** segment is an attribute name, not a node (`steps.3.status=done`).
 
@@ -385,35 +385,42 @@ tr:2          the 2nd <tr>, 1-based
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
 | `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`. Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
-| `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content. |
+| `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
 | `append` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **end** of that body / container, just above its closing tag. |
 | `insert` | `<file> <address>` | `--before-heading <T>` \| `--after-heading <T>` **(one required)** · `--file <f>` · `--into <sel>` | Insert a hunk relative to an authored heading, matched on visible text (case-insensitive substring). |
 | `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. A label that is just the old type's own label is cleared; any other label is refused unless `--text` says what to do with it. |
+| `rm-item` | `<file> <address>` | `--match <text>` **(required)** · `--into <sel>` · `--nth <n>` \| `--all` | Remove the `<li>` or `<tr>` whose visible text contains `--match` — among the section's own items, or those inside the `--into` container. The innermost matching item is the one taken, and an item alone on its line takes the whole line with it. |
+| `strike` | `<file> <address>` | `--match <text>` **(required)** · `--into <sel>` · `--nth <n>` \| `--all` | Wrap the matched text run in `<s>…</s>` — the amendment convention's strike. Refuses a run that crosses an element boundary, one already struck, and one inside a code component. |
+| `replace` | `<file> <address>` | `--match <text>` **(required)** · `--with <T>` \| `--file <f>` (else stdin) · `--into <sel>` · `--nth <n>` \| `--all` | Replace the matched text run with the given markup, spliced verbatim. `--with ""` deletes the run. Refuses a run that crosses an element boundary. |
 | `add-section` | `<file>` | `--id <id>` **(required)** · `--title <T>` · `--status <S>` · `--num <N>` · `--after <addr>` \| `--before <addr>` · `--parent <addr>` · `--body-file <f>` | Insert a section, empty or filled from `--body-file`. |
 | `rm-section` | `<file> <address>` | *(none)* | Remove the section at that address, at any depth. |
 | `move-section` | `<file> <address>` | `--after <addr>` \| `--before <addr>` **(one required)** | Move the addressed section beside a sibling. |
 
 **Rules & gotchas:**
 
-- **Placing a section:** `--after`/`--before` name a **sibling by full address**, which fixes the new section's nesting depth too — so `add-section --id step-2 --after steps.step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
+- **Placing a section:** `--after`/`--before` name a **sibling** — by full path or bare id — which fixes the new section's nesting depth too — so `add-section --id step-2 --after step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
 - **Numbers are automatic.** `1`, `1.1`, `1.1.2` derive from document position and re-derive after every add/move/remove — never write a `num` to keep a plan in order, and never renumber by hand. `num` is a label **override** only: a bare value (`"Part 1"`) replaces that one level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is the complete number, used as-is.
 - **`status` values:** sections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `review` / `approved` / `implemented` / `rejected`. `set` validates each against **its own** enum, and **rejects** an out-of-set status or a misspelled attribute (`staus`) — it never silently no-ops. That holds for `new --set header.status=…` too, which is the same code path.
 - **Nothing is dropped in silence.** `set` applies every assignment it is given; `new --set` errors on a key that addresses nothing. If a command exits 0, every argument you passed took effect.
 - **Ids are unique document-wide.** `add-section` rejects an id already used at any depth, and `check` reports a duplicate that got in another way.
 - **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render.
-- **Body input:** `set-body`, `prepend`, `append`, and `insert` read `--file <f>` if given, otherwise **stdin**. `add-section` takes `--body-file <f>` (no stdin).
+- **Body input:** `set-body`, `prepend`, `append`, and `insert` read `--file <f>` if given, otherwise **stdin**. `replace` takes `--with <T>` first, then `--file <f>`, then stdin, and drops a body's trailing newline. `add-section` takes `--body-file <f>` (no stdin).
 - **`set-body` is verbatim; the hunk commands fit the seam.** A `set-body` body owns its whitespace byte-for-byte (that is what makes the round-trip lossless). A `prepend`/`append`/`insert` hunk is placed at one point instead, so blank edge lines are dropped and the anchor's indentation is applied **only when the hunk carries none of its own**. Escaping is yours either way.
 - **Round-trip:** `read --body <addr>` → edit the hunk → `set-body <addr>` is byte-for-byte lossless.
-- **Ambiguity is an error, not a guess.** `insert --before-heading` refuses a text that matches two headings, and `badge --match` refuses a text that matches two rows (pass `--all` if you mean both). Both list the candidates so you can narrow it.
+- **Ambiguity is an error, not a guess.** `insert --before-heading` refuses a text that matches two headings, and `badge --match` refuses a text that matches two rows (pass `--all` if you mean both). A text-addressed write numbers its candidates so `--nth <n>` can pick one, and takes every one only with `--all`. All of them list the candidates so you can narrow it.
+- **Text-addressed writes match visible text.** These commands — `rm-item`, `strike`, `replace` — match `--match` as a case-insensitive substring of the **visible** text: entities decoded (`&amp;` and `&` in `--match` hit the same text), whitespace collapsed so a sentence wrapped across source lines still matches, inline markup adding nothing (`Alerts to <code>ops</code>.` reads `Alerts to ops.`), and a block boundary reading as one space. `badge --match` is looser: it reads every tag as a space. Each sees only what the addressed section **owns** — never a nested section's content (address the child) — and `--into <sel>` narrows that further. List items and table rows need explicit closing tags.
+- **A text run stays inside one element.** `strike` and `replace` refuse a match whose ends sit in different elements — `to <code>ops</code>` is not one run — so narrow `--match` to text inside one. `strike` also refuses a run already inside `<s>`, and one inside `pre`, `plan-file`, `plan-diff` or `plan-diagram`, where markup corrupts the code; `replace` reaches both. Every refusal names the line.
+- **`replace` rewrites; `insert` only adds.** A `prepend`/`append`/`insert` hunk never displaces anything, so using one to swap a sentence leaves both copies and `check` stays green. Rewrite text in place with `replace --match "…" --with "…"`. The replacement is markup, spliced verbatim — escape `<` `>` `&` as in any body. A rewrite spanning several elements is `read --body` → edit → `set-body`.
 - **`badge --set` never leaves a label naming the old state.** An empty badge derives its label from `type`, so it follows every flip. A badge whose text is only its current type's label (`Open` on `type="open"`, compared case-insensitively) is cleared, so the new type names it. A badge carrying any other text is **refused** unless you pass `--text`: `--text "<label>"` keeps or rewrites it, `--text ""` clears it. With `--all`, one refusal writes nothing.
 - **Every attribute write is validated the same way.** `set`, `add-section` and `new` all reject a `status` outside its tag's enum and a `title` containing an HTML tag (titles are plain text). `set header.title=…` also rewrites the document's `<title>`, so the browser tab and the header never disagree.
 - **`check` warns; `--strict` gates.** A warning never changes `check`'s exit code and never blocks a write — every writing command still aborts on a structure break alone. Pass `--strict` where a warning should fail the run.
-- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. Every body-writing command — `set-body`, `prepend`, `append`, `insert`, `add-section`, `badge` — **aborts without writing** if the splice would break the plan's structure.
+- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. Every body-writing command — `set-body`, `prepend`, `append`, `insert`, `add-section`, `badge`, `rm-item`, `strike`, `replace` — **aborts without writing** if the splice would break the plan's structure.
 - **`list` and `check` are the authoritative counts. Never `grep`.** `grep -c '<plan-section'` counts literal strings, so a commented example inflates the total — and the over-count stays *balanced*, so it never reads as a failure. Use `check` for balance, `list` for the count.
 - **`read <addr> --body` is byte-faithful.** Indentation is preserved exactly; it prepends one leading newline and nothing else, so an `Edit` `old_string` can be lifted from its output directly.
+- **Read for content with `--text`, for editing with `--body`.** `read --text` is for understanding a section without paying for its tags; it is lossy by design (attributes, inline markup and escaping are gone), so never lift an `Edit` `old_string` or a `set-body` hunk from it.
 - **`planr` handles plans written before the CLI existed.** `list`, `read`, `set` and `set-body` address hand-authored files unchanged — no migration step.
 - **A literal `sed -i` substitution is safe for text-content-only changes** (repointing a moved path): the file still parses and every tag pair stays balanced. It is not a substitute for `set-body` on a structural change. Run `check` either way.
 - **Windows paths with forward slashes work from a POSIX shell** (`--file "C:/Users/.../hunk.html"`) with no `MSYS_NO_PATHCONV=1` prefix, because the path sits inside a quoted argument.
@@ -432,6 +439,9 @@ node .../planr.js append plan.html decisions --into ul --file gist.html        #
 node .../planr.js append plan.html vocab --into tbody --file rows.html         # rows onto a table
 node .../planr.js insert plan.html resolution --before-heading "The six decisions" --file note.html
 node .../planr.js badge plan.html --match "q16" --set decided         # flip a badge in a tickets table
+node .../planr.js rm-item plan.html fog --match "graduated patch"     # the inverse of append --into
+node .../planr.js strike plan.html resolution --match "retry hourly"  # strike superseded text in place
+node .../planr.js replace plan.html resolution --match "hourly" --with "daily"   # rewrite text in place
 node .../planr.js add-section plan.html --id risks --title "Risks" --after overview
 node .../planr.js add-section plan.html --id step-2 --title "Wire it up" \
                   --status todo --after steps.step-1                  # nests under steps
@@ -448,11 +458,22 @@ The characteristic write on a long-lived plan is **small and deep**: an amendmen
 | More rows on a table | `append <section> --into tbody --file` |
 | Something next to a known heading | `insert <section> --before-heading "…" --file` |
 | A status/badge transition | `set <addr>.status=…` · `badge --match … --set …` |
+| Removing a list item or a table row | `rm-item <section> --match "…"` · `--into <sel>` to scope it |
+| Striking a superseded sentence | `strike <section> --match "…"` |
+| Rewriting a phrase or sentence in place | `replace <section> --match "…" --with "…"` |
 | Replacing a whole section's content | `set-body <section> --file` |
 
 **Prefer these over `Edit` for anything structural.** An `Edit` on a plan means hand-lifting an `old_string` out of a large file, which is where this toolchain's worst failure mode lives — and a `<plan-badge>` in a table row is usually an *empty* tag (`<plan-badge type="open"></plan-badge>`), so an `old_string` written assuming inner text matches nothing at all.
 
 **Never reconstruct an `old_string` from a byte-truncated view of it.** `tail -c N` / `cut -c` cut mid-line, which makes wrapped prose look like it starts at a line boundary when it does not, and the `Edit` fails with "String to replace not found." Use `grep -n` plus `Read` with an offset for line-accurate text — or better, `prepend`/`append`/`insert` and skip the `old_string` entirely.
+
+**To read a large plan for its content rather than to edit it, use `read --text`:**
+
+```
+planr.js read <f>.html <sec> --text
+```
+
+It keeps the structure a tag strip loses — a table row stays one line with its cells separated, a list item stays its own line, code stays verbatim inside a fence — and costs a fraction of the markup. Use `read --body` whenever you need the markup itself.
 
 ### Templates
 

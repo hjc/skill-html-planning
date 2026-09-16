@@ -11,13 +11,17 @@
      node planr.js list        <file> [--no-outline]
      node planr.js check       <file> [--strict]
      node planr.js tasks       <file> [--all | --status <s>]
-     node planr.js read        <file> <address> [--body]
+     node planr.js read        <file> <address> [--body] [--text]
      node planr.js set         <file> <path>=<value> [<path>=<value> ...]
      node planr.js set-body    <file> <address> [--file <f>] [--append]
      node planr.js prepend     <file> <address> [--file <f>] [--into <sel>]
      node planr.js append      <file> <address> [--file <f>] [--into <sel>]
      node planr.js insert      <file> <address> (--before-heading T | --after-heading T) [--file <f>]
      node planr.js badge       <file> --match <text> --set <type> [--in <addr>] [--nth N] [--all] [--text T]
+     node planr.js rm-item     <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+     node planr.js strike      <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+     node planr.js replace     <file> <address> --match <text> (--with <T> | --file <f> | stdin)
+                               [--into <sel>] [--nth N | --all]
      node planr.js add-section <file> --id <id> [--num N] [--title T] [--status S]
                                [--parent <addr>] [--after <addr> | --before <addr>] [--body-file <f>]
      node planr.js rm-section  <file> <address>
@@ -25,7 +29,7 @@
 
    Addressing (dot-paths, any depth):
      header                     → the <plan-header>
-     <sectionId>                → a top-level <plan-section id="…">
+     <sectionId>                → the section carrying that id, at any depth
      <sectionId>.<child>[.…]    → a descendant, each segment an id or a 1-based
                                   ordinal among its siblings
    EVERY address argument uses this one grammar — the positional <address>,
@@ -403,6 +407,133 @@ function walkTags(html, keep, visit) {
   }
 }
 
+/* ── node walk (backs `read --text` and text-run matching) ──
+   walkTags reports tags only; these two readers also need the TEXT between
+   them, with offsets. Visits text chunks and tags in document order within
+   [from, to), skipping comments entirely. A tag token's `name` is lower-cased.
+   `visit` may return an offset to resume from — how a caller steps over a
+   whole element (a nested section, a badge, a code block) in one move. */
+function walkNodes(html, from, to, visit) {
+  const comments = commentRanges(html);
+  let i = from, text = from;
+  const emit = (tok, resume) => {
+    const r = visit(tok);
+    i = text = typeof r === 'number' ? r : resume;
+  };
+  while (i < to) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1 || lt >= to) break;
+    const comment = comments.find(([s, e]) => s <= lt && lt < e);
+    if (comment) {
+      if (lt > text) visit({ kind: 'text', start: text, end: lt });
+      i = text = Math.min(comment[1], to);
+      continue;
+    }
+    const isClose = html.charCodeAt(lt + 1) === 47;   // /
+    const nameStart = lt + (isClose ? 2 : 1);
+    const j = tagNameEnd(html, nameStart);
+    const name = html.slice(nameStart, j).toLowerCase();
+    if (!name) { i = lt + 1; continue; }            // a bare '<' in prose is text
+    const open = isClose ? null : readAttrSpan(html, lt, j);
+    if (!isClose && !open) { i = lt + 1; continue; }
+    if (lt > text) visit({ kind: 'text', start: text, end: lt });
+    if (isClose) {
+      const gt = html.indexOf('>', j);
+      const end = gt === -1 ? to : gt + 1;
+      emit({ kind: 'close', name, start: lt, end }, end);
+    } else {
+      emit({ kind: open.selfClose ? 'self' : 'open', name, start: lt, end: open.openEnd,
+             attrsRaw: html.slice(open.attrStart, open.attrEnd) }, open.openEnd);
+    }
+  }
+  if (to > text) visit({ kind: 'text', start: text, end: to });
+}
+
+/* ── text rules (back read --text and every text match) ──
+   How each tag reads as text, declared once. `kind` is `block` (a boundary:
+   reads as one space, and starts a line in `read --text`), `inline` (adds no
+   text of its own) or `code` (a boundary whose lines `read --text` keeps
+   verbatim). The rest is what `read --text` prints for the tag: `role` gives
+   plain-HTML structure (list, item, row, cell, heading, section); `lines`
+   prints attribute text on lines of its own; `lead` prefixes the next line;
+   `print` replaces an inline element's content; `info` / `after` frame a code
+   block. A tag with no entry is inline. Every PLAN_TAGS entry declares one
+   (asserted), so content that lives only in an attribute is never dropped. */
+function attrText(attrsRaw, name) {
+  const v = getAttr(attrsRaw, name);
+  return typeof v === 'string' ? decodeEntities(v) : '';
+}
+const BLOCK = { kind: 'block' };
+const TEXT_RULES = {
+  'plan-header':     { kind: 'block', lines: r => [`# ${attrText(r, 'title')}`, attrText(r, 'subtitle')] },
+  'plan-nav':        BLOCK,
+  'plan-section':    { kind: 'block', role: 'section' },
+  'plan-subsection': { kind: 'block', role: 'section' },
+  'plan-tabs':       BLOCK,
+  'plan-tab':        { kind: 'block', lines: r => [attrText(r, 'label') && `[${attrText(r, 'label')}]`] },
+  'plan-cards':      BLOCK,
+  'plan-card':       { kind: 'block', lines: r => [[attrText(r, 'label'), attrText(r, 'value')].filter(Boolean).join(': '), attrText(r, 'subtitle')] },
+  'plan-callout':    { kind: 'block', lead: r => `[${attrText(r, 'type') || 'info'}] ` },
+  'plan-formula':    { kind: 'block', lines: r => [[attrText(r, 'expr'), attrText(r, 'note')].filter(Boolean).join(' — ')] },
+  'plan-principles': BLOCK,
+  'plan-principle':  { kind: 'block', lead: r => (attrText(r, 'label') ? `${attrText(r, 'label')}: ` : '') },
+  'plan-timeline':   BLOCK,
+  'plan-phase':      { kind: 'block', lines: r => [[attrText(r, 'title'), attrText(r, 'weeks') && `(${attrText(r, 'weeks')})`].filter(Boolean).join(' ')] },
+  'plan-badge':      { kind: 'inline', print: (r, text) => `[${text || attrText(r, 'type')}]` },
+  'plan-table':      BLOCK,
+  'plan-file':       { kind: 'code', info: r => attrText(r, 'path') },
+  'plan-diff':       { kind: 'code', info: r => attrText(r, 'path') },
+  'plan-diagram':    { kind: 'code', info: () => 'mermaid', after: r => [attrText(r, 'caption')] },
+  pre:               { kind: 'code', info: () => '' },
+  ul: { kind: 'block', role: 'list' }, ol: { kind: 'block', role: 'list' }, li: { kind: 'block', role: 'item' },
+  tr: { kind: 'block', role: 'row' }, td: { kind: 'block', role: 'cell' }, th: { kind: 'block', role: 'cell' },
+  ...Object.fromEntries(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].map(t => [t, { kind: 'block', role: 'heading' }])),
+  ...Object.fromEntries(['p', 'div', 'table', 'thead', 'tbody', 'tfoot', 'blockquote', 'dl', 'dt', 'dd', 'details',
+    'summary', 'section', 'article', 'header', 'footer', 'main', 'figure', 'figcaption', 'hr', 'br'].map(t => [t, BLOCK])),
+};
+const INLINE = { kind: 'inline' };
+function textRule(tag) { return TEXT_RULES[tag] || INLINE; }
+
+// The visible text of [from, to) as units, one per rendered character, each
+// keeping the source span it came from: an entity decodes to its characters, a
+// whitespace run collapses to one space, a block or code tag reads as one space,
+// an inline tag adds nothing. `seg` counts the tags passed, so two units with
+// different `seg` sit on opposite sides of an element boundary. A `skip` range
+// (a nested section) reads as a block. The ONE tag-to-text rule for matching
+// and for `read --text`; `textOf` stays as it is for badge and insert.
+const ENTITY_AT = /&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);/y;
+function visibleUnits(html, from, to, skip = []) {
+  const units = [];
+  let seg = 0;
+  const space = (start, end) => {
+    if (units.length && units[units.length - 1].ch !== ' ') units.push({ ch: ' ', start, end, seg });
+  };
+  walkNodes(html, from, to, tok => {
+    if (tok.kind !== 'text') {
+      seg++;
+      const skipped = tok.kind === 'open' && skip.find(([s]) => s === tok.start);
+      if (skipped) { space(skipped[0], skipped[1]); return skipped[1]; }
+      if (textRule(tok.name).kind !== 'inline') space(tok.start, tok.end);
+      return;
+    }
+    for (let i = tok.start; i < tok.end;) {
+      let ch = html[i], next = i + 1;
+      if (ch === '&') {
+        ENTITY_AT.lastIndex = i;
+        const m = ENTITY_AT.exec(html);
+        if (m && ENTITY_AT.lastIndex <= tok.end) { ch = decodeEntities(m[0]); next = ENTITY_AT.lastIndex; }
+      }
+      if (/^\s+$/.test(ch)) space(i, next);
+      else units.push({ ch, start: i, end: next, seg });
+      i = next;
+    }
+  });
+  return units;
+}
+function visibleText(html, from, to, skip) {
+  return visibleUnits(html, from, to, skip).map(u => u.ch).join('');
+}
+
 /* ── attribute scanner / mutator ──────────────────────────
    scanAttrs walks a raw attribute span into {name, value, positions},
    quote-aware, handling boolean attributes (no value). All positions are
@@ -577,7 +708,14 @@ function findElementById(html, id, from, to) {
 // Attribute values live in the file HTML-escaped (that is what the browser
 // decodes on render), so terminal output must decode them or a title reads
 // `Scope &amp; Prerequisites`.
-const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+// Beyond the escaping five, the typographic entities plans actually use, so
+// `read --text` and --match see the characters a reader sees.
+const NAMED_ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  mdash: '—', ndash: '–', rarr: '→', larr: '←', harr: '↔', sect: '§', times: '×', minus: '−',
+  middot: '·', bull: '•', hellip: '…', ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’',
+  ge: '≥', le: '≤', ne: '≠', deg: '°', copy: '©', emsp: ' ', ensp: ' ', thinsp: ' ',
+};
 function decodeEntities(s) {
   return String(s).replace(/&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);/g, (m, k) => {
     if (k[0] !== '#') return NAMED_ENTITIES[k.toLowerCase()] ?? m;
@@ -620,7 +758,9 @@ function resolveNode(html, segs) {
     return el;
   }
   // Walk the dot-path to any depth: each segment selects a child of the previous.
-  let node = findSectionById(html, segs[0]);
+  // A first segment that is not a top-level id falls back to a deep scan, so a
+  // bare id resolves wherever it sits.
+  let node = findSectionById(html, segs[0]) || findSectionDeep(html, segs[0]);
   if (!node) throw new PlanError(`section '${segs[0]}' not found`);
   for (let i = 1; i < segs.length; i++) {
     const child = findChildSection(html, node, segs[i]);
@@ -628,6 +768,24 @@ function resolveNode(html, segs) {
     node = child;
   }
   return node;
+}
+// The section-like node carrying `id` at ANY depth, either tag. Ids are unique
+// document-wide, so a bare id names one node in a valid plan; when two carry it
+// the plan is already invalid, and this refuses rather than picking one.
+function findSectionDeep(html, id) {
+  const hits = [];
+  walkSections(html, ({ el, id: got, addr }) => { if (got === id) hits.push({ el, addr }); });
+  if (hits.length > 1)
+    throw new PlanError(`section id '${id}' is used ${hits.length} times — address one by its full path: ${hits.map(h => `${h.addr} (line ${lineOf(html, h.el.outerStart)})`).join(', ')}`);
+  return hits.length ? hits[0].el : null;
+}
+// The full dot-path of a resolved node — what `list` and `tasks` print for it.
+// Lets a caller compare two addresses written in different forms (`a1` vs `a.a1`).
+function canonicalAddress(html, node) {
+  if (node.tag === 'plan-header') return 'header';
+  let found = null;
+  walkSections(html, ({ el, addr }) => { if (el.outerStart === node.outerStart) found = addr; });
+  return found;
 }
 
 /* ── validation + structural safety ───────────────────────
@@ -853,6 +1011,200 @@ function spliceAfter(html, idx, block) {
 // A newline to close the block's line, unless whatever follows already starts
 // one — so a hunk never ends up sharing a line with the markup it displaced.
 function breakAfter(html, idx) { return html[idx] === '\n' ? '' : '\n'; }
+
+/* ── plain text (backs `read --text`) ─────────────────────
+   Structure-preserving text, driven by TEXT_RULES: one block per line,
+   headings and section titles as `#` lines at the level the runtime renders
+   them, list items as `- ` lines indented by list depth, table rows as cells
+   joined with ` | `, and code fenced with its lines verbatim. Text between
+   structural tags is read through visibleText, never re-derived here. */
+function nodeText(html, el, { body = false } = {}) {
+  const sections = new Map();
+  walkSections(html, ({ el: s, num, depth }) => sections.set(s.outerStart, { num, depth }));
+  const from = body ? el.innerStart : el.outerStart;
+  const to = body ? el.innerEnd : el.outerEnd;
+  const lines = [];
+  let parts = [], mark = from, lead = '', lists = 0, row = null, inCell = false;
+  const collapse = s => s.replace(/\s+/g, ' ').trim();
+  const take = end => { if (end > mark) parts.push(visibleText(html, mark, end)); mark = end; };
+  const emit = more => { for (const l of more || []) if (l) lines.push(l); };
+  const flush = () => {
+    const t = collapse(parts.join(''));
+    parts = [];
+    if (t) { lines.push((lead || '  '.repeat(lists)) + t); lead = ''; }
+  };
+  walkNodes(html, from, to, tok => {
+    if (tok.kind === 'text') return;
+    const rule = textRule(tok.name);
+    const open = tok.kind !== 'close';
+    if (rule.print && open) {                                  // inline with its own rendering
+      const inner = findElement(html, tok.name, tok.start);
+      if (!inner) return;
+      take(tok.start);
+      parts.push(` ${rule.print(tok.attrsRaw, collapse(visibleText(html, inner.innerStart, inner.innerEnd)))} `);
+      mark = inner.outerEnd;
+      return inner.outerEnd;
+    }
+    if (rule.kind === 'inline') return;                        // its text flows on
+    if (inCell && !(rule.role === 'cell' && !open)) return;    // a cell reads as one string
+    take(tok.start);
+    mark = tok.end;
+    if (rule.kind === 'code' && open) {
+      const code = findElement(html, tok.name, tok.start);
+      if (!code) return;
+      flush();
+      const src = decodeEntities(html.slice(code.innerStart, code.innerEnd).replace(/<[^>]*>/g, ''))
+        .replace(/^(?:[ \t]*\r?\n)+/, '').replace(/(?:\r?\n[ \t]*)+$/, '');
+      lines.push('```' + rule.info(tok.attrsRaw));
+      if (src) lines.push(...src.split(/\r?\n/));
+      lines.push('```');
+      emit(rule.after && rule.after(tok.attrsRaw));
+      mark = code.outerEnd;
+      return code.outerEnd;
+    }
+    switch (rule.role) {
+      case 'cell':
+        if (open) { parts = []; inCell = !!row; }
+        else { row.push(collapse(parts.join(''))); parts = []; inCell = false; }
+        return;
+      case 'heading':
+        if (open) { flush(); return; }
+        { const t = collapse(parts.join('')); parts = []; lead = ''; if (t) lines.push('#'.repeat(Number(tok.name[1])) + ' ' + t); }
+        return;
+    }
+    flush();
+    if (!open) {
+      if (rule.role === 'list') lists = Math.max(lists - 1, 0);
+      if (rule.role === 'row' && row) { if (row.some(Boolean)) lines.push('  '.repeat(lists) + row.join(' | ')); row = null; }
+      if (rule.role === 'item') lead = '';
+      return;
+    }
+    if (rule.role === 'list') lists++;
+    if (rule.role === 'item') lead = '  '.repeat(Math.max(lists - 1, 0)) + '- ';
+    if (rule.role === 'row') { row = []; parts = []; }
+    if (rule.role === 'section') {
+      const s = sections.get(tok.start);
+      if (lines.length) lines.push('');
+      lines.push(`${'#'.repeat(s ? s.depth + 2 : 2)} ${s ? s.num + '. ' : ''}${attrText(tok.attrsRaw, 'title')}`.trimEnd());
+    }
+    emit(rule.lines && rule.lines(tok.attrsRaw));
+    if (rule.lead) lead = rule.lead(tok.attrsRaw);
+  });
+  take(to);
+  flush();
+  return lines.length ? lines.join('\n') + '\n' : '';
+}
+
+/* ── matching by visible text (rm-item, strike, replace) ──
+   One contract for every text-addressed write: --match is a case-insensitive
+   substring of the visible text (visibleUnits — entities decoded, whitespace
+   collapsed, inline markup adding nothing); a miss and an unasked-for second
+   match are errors that list what is there, as `badge --match` does. */
+// The addressed section, and the --into container inside it when given.
+function resolveScope(html, address, into, verb) {
+  if (!address) throw new PlanError(`${verb} requires an address, e.g. \`${verb} plan.html decisions --match "…"\``);
+  const node = resolveNode(html, address.split('.'));
+  if (node.tag === 'plan-header')
+    throw new PlanError('the header holds no body — set its attributes with `set header.<attr>=<value>`');
+  if (!into) return { node, target: node, where: `'${address}'` };
+  const c = resolveContainer(html, node, into);
+  return { node, target: c.el, where: `'${address}' → ${c.label}` };
+}
+// --match as given (for messages) and as compared (decoded, collapsed, lower).
+function matchNeedle(flags, verb) {
+  const raw = flagValue(flags, 'match');
+  if (raw == null) throw new PlanError(`${verb} requires --match <text> — a substring of the visible text`);
+  const needle = decodeEntities(raw).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!needle) throw new PlanError('--match needs visible text — it is empty once whitespace is trimmed');
+  return { raw, needle };
+}
+// --nth / --all, validated identically for every text-addressed write.
+function matchSelection(flags) {
+  if (flags.nth === true) throw new PlanError('--nth expects a 1-based number');
+  const nthRaw = flagValue(flags, 'nth');
+  if (nthRaw != null && !/^[1-9]\d*$/.test(nthRaw)) throw new PlanError(`--nth expects a 1-based number, got "${nthRaw}"`);
+  if (nthRaw != null && flags.all) throw new PlanError('use only one of --nth / --all');
+  return { nth: nthRaw == null ? null : parseInt(nthRaw, 10), all: !!flags.all };
+}
+function pickMatches(hits, { raw, sel, noun, where, describe }) {
+  const count = n => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  if (!hits.length) throw new PlanError(`no ${noun} matching "${raw}" in ${where}`);
+  if (sel.nth != null) {
+    if (sel.nth > hits.length) throw new PlanError(`--nth ${sel.nth}: "${raw}" matches ${count(hits.length)} in ${where}`);
+    return [hits[sel.nth - 1]];
+  }
+  if (hits.length > 1 && !sel.all)
+    throw new PlanError(`"${raw}" matches ${count(hits.length)} in ${where} — narrow it, pick one with --nth <n>, or pass --all:\n` +
+      hits.map((h, i) => `  ${i + 1}. ${describe(h)}`).join('\n'));
+  return hits;
+}
+// An item's visible text, as matched and as listed.
+function itemText(html, el) {
+  return visibleText(html, el.innerStart, el.innerEnd).trim();
+}
+// Every <li> and <tr> in the target that the section owns, whose visible text
+// holds the needle. The innermost wins: an outer <li> that matches only through
+// its nested list is not itself a match.
+const ITEM_TAGS = ['li', 'tr'];
+function findItems(html, node, target, needle) {
+  const kids = childSections(html, node.innerStart, node.innerEnd);
+  const matching = ITEM_TAGS.flatMap(t => findElementsDeep(html, t, target.innerStart, target.innerEnd))
+    .filter(el => !kids.some(k => k.outerStart <= el.outerStart && el.outerEnd <= k.outerEnd))
+    .filter(el => itemText(html, el).toLowerCase().includes(needle))
+    .sort((a, b) => a.outerStart - b.outerStart);
+  return matching.filter(el => !matching.some(o => o !== el && el.innerStart <= o.outerStart && o.outerEnd <= el.innerEnd));
+}
+
+// Every occurrence of the needle in the visible text the section owns, as a
+// source range. `crosses` marks a run whose ends sit in different elements.
+function findTextRuns(html, node, target, needle) {
+  const kids = childSections(html, node.innerStart, node.innerEnd).map(k => [k.outerStart, k.outerEnd]);
+  const units = visibleUnits(html, target.innerStart, target.innerEnd, kids);
+  // Lower-case per unit, keeping an index from each character back to its unit.
+  let hay = '';
+  const owner = [];
+  for (const u of units) for (const c of u.ch.toLowerCase()) { hay += c; for (let k = 0; k < c.length; k++) owner.push(u); }
+  const runs = [];
+  for (let k = hay.indexOf(needle); k !== -1; k = hay.indexOf(needle, k + needle.length)) {
+    const first = owner[k], last = owner[k + needle.length - 1];
+    runs.push({ start: first.start, end: last.end, crosses: first.seg !== last.seg });
+  }
+  return runs;
+}
+// `line N: …before[run]after…`, from the visible text of the run's own lines.
+function runContext(html, run) {
+  const nl = html.indexOf('\n', run.end);
+  const units = visibleUnits(html, lineStart(html, run.start), nl === -1 ? html.length : nl);
+  const part = keep => units.filter(keep).map(u => u.ch).join('');
+  const before = part(u => u.end <= run.start).trimStart();
+  const after = part(u => u.start >= run.end).trimEnd();
+  const b = before.length > 32 ? '…' + before.slice(-32) : before;
+  const a = after.length > 32 ? after.slice(0, 32) + '…' : after;
+  return `line ${lineOf(html, run.start)}: ${b}[${part(u => u.start >= run.start && u.end <= run.end)}]${a}`;
+}
+// The first of `tags` whose body holds `idx`, within the section; else null.
+function enclosingTag(html, node, idx, tags) {
+  return tags.find(t => findElementsDeep(html, t, node.innerStart, node.innerEnd)
+    .some(el => el.innerStart <= idx && idx < el.innerEnd)) || null;
+}
+// A text run rewrite acts inside one element; a run that crosses into another
+// would split a tag pair.
+function assertOneElement(html, runs, raw, verb) {
+  const bad = runs.find(r => r.crosses);
+  if (bad) throw new PlanError(`"${raw}" crosses an element boundary — ${verb} acts on text inside one element; ` +
+    `narrow the match (${runContext(html, bad)})`);
+}
+
+// Remove an item element. Alone on its line(s), the whole line goes with it —
+// indentation and newline included; sharing a line, only the element does.
+function removeItem(html, el) {
+  const ls = lineStart(html, el.outerStart);
+  const nl = html.indexOf('\n', el.outerEnd);
+  const eol = nl === -1 ? html.length : nl;
+  if (/^[ \t]*$/.test(html.slice(ls, el.outerStart)) && /^[ \t\r]*$/.test(html.slice(el.outerEnd, eol)))
+    return html.slice(0, ls) + html.slice(nl === -1 ? eol : nl + 1);
+  return html.slice(0, el.outerStart) + html.slice(el.outerEnd);
+}
 
 /* ── pure cores (strings in → strings / structured result out) ──
    Each core is pure: it takes plan text (and args) and RETURNS a value —
@@ -1168,6 +1520,7 @@ function planTasks(html, flags) {
 function planRead(html, address, flags) {
   if (!address) throw new PlanError('read requires an address, e.g. `read plan.html steps`');
   const el = resolveNode(html, address.split('.'));
+  if (flags && flags.text) return nodeText(html, el, { body: !!flags.body });
   return (flags && flags.body)
     ? html.slice(el.innerStart, el.innerEnd)
     : html.slice(el.outerStart, el.outerEnd) + '\n';
@@ -1394,6 +1747,84 @@ function planBadge(html, flags) {
   };
 }
 
+/* Pure: (html, address, flags) -> { html, message }.
+   The inverse of `append --into`: removes the <li> / <tr> whose visible text
+   matches --match, in the section or its --into container. */
+function planRmItem(html, address, flags = {}) {
+  const { node, target, where } = resolveScope(html, address, flagValue(flags, 'into'), 'rm-item');
+  const { raw, needle } = matchNeedle(flags, 'rm-item');
+  const sel = matchSelection(flags);
+  const picked = pickMatches(findItems(html, node, target, needle), {
+    raw, sel, noun: 'item', where, describe: el => `<${el.tag}> ${itemText(html, el).slice(0, 72)}`,
+  });
+  let out = html;
+  // Descending document order: a later removal never shifts an earlier offset.
+  for (const el of [...picked].sort((a, b) => b.outerStart - a.outerStart)) out = removeItem(out, el);
+  assertIntact(html, out, 'rm-item');
+  return {
+    html: out,
+    message: picked.map(el => `removed <${el.tag}> "${itemText(html, el).slice(0, 60)}" from ${where}`).join('\n'),
+  };
+}
+
+/* Pure: (html, address, flags) -> { html, message }.
+   Wraps the matched text run in <s>…</s> — the amendment convention's strike.
+   Refuses a run that crosses an element boundary, one already struck, and one
+   inside a code component (where markup would corrupt the code). */
+function planStrike(html, address, flags = {}) {
+  const { node, target, where } = resolveScope(html, address, flagValue(flags, 'into'), 'strike');
+  const { raw, needle } = matchNeedle(flags, 'strike');
+  const sel = matchSelection(flags);
+  const picked = pickMatches(findTextRuns(html, node, target, needle), {
+    raw, sel, noun: 'text run', where, describe: r => runContext(html, r),
+  });
+  assertOneElement(html, picked, raw, 'strike');
+  for (const r of picked) {
+    const inside = enclosingTag(html, node, r.start, ['s', ...Object.keys(TEXT_RULES).filter(t => TEXT_RULES[t].kind === 'code')]);
+    if (inside === 's') throw new PlanError(`"${raw}" is already struck — ${runContext(html, r)}`);
+    if (inside) throw new PlanError(`"${raw}" is inside <${inside}>, and markup there corrupts the code — ${runContext(html, r)}`);
+  }
+  let out = html;
+  for (const r of [...picked].sort((a, b) => b.start - a.start))
+    out = out.slice(0, r.start) + '<s>' + out.slice(r.start, r.end) + '</s>' + out.slice(r.end);
+  assertIntact(html, out, 'strike');
+  return {
+    html: out,
+    message: picked.map(r => `struck "${visibleText(html, r.start, r.end)}" at line ${lineOf(html, r.start)} of ${where}`).join('\n'),
+  };
+}
+
+/* Pure: (html, address, body, flags) -> { html, message }.
+   Replaces the matched text run with --with, else with `body` (the shell reads
+   --file / stdin). The replacement is markup, spliced verbatim like every other
+   body; same one-element rule as strike. */
+function planReplace(html, address, body, flags = {}) {
+  const { node, target, where } = resolveScope(html, address, flagValue(flags, 'into'), 'replace');
+  const { raw, needle } = matchNeedle(flags, 'replace');
+  const sel = matchSelection(flags);
+  let replacement;
+  if ('with' in flags) {
+    if (flags.with === true) throw new PlanError('--with needs a value — pass --with "" to delete the matched text');
+    if ('file' in flags) throw new PlanError('use only one of --with / --file');
+    replacement = flagValue(flags, 'with');
+  } else {
+    replacement = String(body == null ? '' : body).replace(/(?:\r?\n)+$/, '');
+    if (!replacement) throw new PlanError('the replacement is empty — pass --with "" to delete the matched text');
+  }
+  const picked = pickMatches(findTextRuns(html, node, target, needle), {
+    raw, sel, noun: 'text run', where, describe: r => runContext(html, r),
+  });
+  assertOneElement(html, picked, raw, 'replace');
+  let out = html;
+  for (const r of [...picked].sort((a, b) => b.start - a.start))
+    out = out.slice(0, r.start) + replacement + out.slice(r.end);
+  assertIntact(html, out, 'replace');
+  return {
+    html: out,
+    message: picked.map(r => `replaced "${visibleText(html, r.start, r.end)}" at line ${lineOf(html, r.start)} of ${where}`).join('\n'),
+  };
+}
+
 // Pure: (html, flags, body) -> { html, message }; throws on dup / missing id / bad ref.
 // Body is passed in (the shell reads --body-file); the core never touches fs.
 function planAddSection(html, flags, body /* string | null */) {
@@ -1412,8 +1843,9 @@ function planAddSection(html, flags, body /* string | null */) {
     // rather than a silently ignored flag.
     const ref = resolveNode(html, refAddr.split('.'));
     if (ref.tag === 'plan-header') throw new PlanError('cannot place a section relative to the header');
-    const refParent = refAddr.split('.').slice(0, -1).join('.');
-    if (parentAddr && parentAddr !== refParent)
+    // Compared as canonical paths: either flag may be a bare id.
+    const refParent = canonicalAddress(html, ref).split('.').slice(0, -1).join('.');
+    if (parentAddr && canonicalAddress(html, resolveNode(html, parentAddr.split('.'))) !== refParent)
       throw new PlanError(`--parent '${parentAddr}' contradicts --${position} '${refAddr}' ` +
         `(which sits in '${refParent || 'the top level'}') — the ref alone determines placement`);
     // Match the ref's own indentation: the new section is its sibling.
@@ -1447,9 +1879,11 @@ function planMoveSection(html, address, flags) {
   if (flags.after && flags.before) throw new PlanError('use only one of --after / --before');
   const refAddr = flagValue(flags, position);
   if (!refAddr) throw new PlanError(`--${position} requires a section address`);
-  if (address === refAddr) throw new PlanError('cannot move a section relative to itself');
   const el = resolveNode(html, address.split('.'));
   if (el.tag === 'plan-header') throw new PlanError('cannot move the header');
+  // By node, not by string: `a1` and `a.a1` are the same section.
+  if (resolveNode(html, String(refAddr).split('.')).outerStart === el.outerStart)
+    throw new PlanError('cannot move a section relative to itself');
   const from = lineStart(html, el.outerStart);
   const to = lineEndAfterNewline(html, el.outerEnd);
   const block = html.slice(from, to).replace(/\n$/, '');
@@ -1528,6 +1962,20 @@ function cmdBadge(file, flags) {
   const { html, message } = planBadge(read(file), flags);
   write(file, html); process.stdout.write(message + '\n');
 }
+function cmdRmItem(file, address, flags) {
+  const { html, message } = planRmItem(read(file), address, flags);
+  write(file, html); process.stdout.write(message + '\n');
+}
+function cmdStrike(file, address, flags) {
+  const { html, message } = planStrike(read(file), address, flags);
+  write(file, html); process.stdout.write(message + '\n');
+}
+// --with carries the replacement inline; only without it is a body read.
+function cmdReplace(file, address, flags) {
+  const body = 'with' in flags ? null : hunkBody(flags);
+  const { html, message } = planReplace(read(file), address, body, flags);
+  write(file, html); process.stdout.write(message + '\n');
+}
 function cmdAddSection(file, flags) {
   const src = flagValue(flags, 'body-file');
   const { html, message } = planAddSection(read(file), flags, src ? read(src) : null);
@@ -1547,8 +1995,16 @@ function cmdMoveSection(file, address, flags) {
 // from one whose value follows, so `tasks --all plan.html` consumed the FILENAME
 // as --all's value and then reported a missing <file> — with the file right
 // there on the line. Declaring them keeps flag order free.
-const BOOLEAN_FLAGS = new Set(['all', 'body', 'append', 'outline', 'no-outline', 'help', 'strict']);
-function parseFlags(argv) {
+const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict']);
+// `--text` is the one flag name two commands share with different shapes:
+// `read --text` is a boolean (structure-preserving plain text), `badge --text
+// <T>` takes the replacement label, including `--text ""` to clear one. Scope
+// the exception to `badge` rather than splitting BOOLEAN_FLAGS into two sets.
+function isBooleanFlag(cmd, key) {
+  if (key === 'text' && cmd === 'badge') return false;
+  return BOOLEAN_FLAGS.has(key);
+}
+function parseFlags(argv, cmd) {
   const flags = {};
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -1556,7 +2012,7 @@ function parseFlags(argv) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (!BOOLEAN_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) {
+      if (!isBooleanFlag(cmd, key) && next !== undefined && !next.startsWith('--')) {
         flags[key] = key in flags ? [].concat(flags[key], next) : next; // repeats accumulate
         i++;
       } else {
@@ -1577,20 +2033,24 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   list         <file> [--no-outline]
   check        <file> [--strict]                          (exit 1 on a structure break; warnings exit 1 only with --strict)
   tasks        <file> [--all | --status <s>]
-  read         <file> <address> [--body]
+  read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   set          <file> <path>=<value> [<path>=<value> ...]
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   prepend      <file> <address> [--file <f>] [--into <sel>]
   append       <file> <address> [--file <f>] [--into <sel>]
   insert       <file> <address> (--before-heading T | --after-heading T) [--file <f>] [--into <sel>]
   badge        <file> --match <text> --set <type> [--in <addr>] [--nth N] [--all] [--text T]
+  rm-item      <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+  strike       <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+  replace      <file> <address> --match <text> (--with <T> | --file <f> | stdin) [--into <sel>] [--nth N | --all]
   add-section  <file> --id <id> [--num N] [--title T] [--status S]
                       [--parent <addr>] [--after <addr> | --before <addr>] [--body-file <f>]
   rm-section   <file> <address>
   move-section <file> <address> (--after <addr> | --before <addr>)
 
 address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth; a
-         child is an id or a 1-based ordinal). Every address argument — the
+         child is an id or a 1-based ordinal; a bare <sectionId> is found at
+         any depth). Every address argument — the
          positional one, --parent, --after, --before, --in, and a DOTTED
          \`new --set\` key — uses this grammar. --after/--before name a SIBLING,
          which also fixes the nesting depth, so --parent is only needed to
@@ -1605,12 +2065,12 @@ round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { process.stdout.write(USAGE + '\n'); return; }
-  const { flags, positional } = parseFlags(rest);
+  const { flags, positional } = parseFlags(rest, cmd);
   const file = positional[0];
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
   const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'set', 'set-body', 'prepend', 'append',
-    'insert', 'badge', 'add-section', 'rm-section', 'move-section'];
+    'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
   try {
     if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
@@ -1629,6 +2089,9 @@ function main() {
       case 'append':       return cmdInsert(file, positional[1], flags, { where: 'end' });
       case 'insert':       return cmdInsert(file, positional[1], flags, { anchored: true });
       case 'badge':        return cmdBadge(file, flags);
+      case 'rm-item':      return cmdRmItem(file, positional[1], flags);
+      case 'strike':       return cmdStrike(file, positional[1], flags);
+      case 'replace':      return cmdReplace(file, positional[1], flags);
       case 'add-section':  return cmdAddSection(file, flags);
       case 'rm-section':   return cmdRmSection(file, positional[1]);
       case 'move-section': return cmdMoveSection(file, positional[1], flags);
@@ -1646,10 +2109,12 @@ module.exports = {
   render, templateVars, templateDoc, templateSummary, resolveSkillSubpath,
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
-  childSections, resolveNode, ownElements, ownHeadings, resolveContainer, textOf,
+  childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,
   buildSection, sectionIds, allSectionIds, walkSections, walkTags, sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
+  walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
+  findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS,
   planNew, planTemplates, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
-  planSet, planSetBody, planInsert, planBadge, planAddSection, planRmSection, planMoveSection,
+  planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };

@@ -217,9 +217,12 @@ planr set plan.html steps.3.status=done header.status=review
 # pull one section's hunk out, edit it, push it back
 planr read plan.html caching --body > hunk.html
 planr set-body plan.html caching --file hunk.html
+
+# read a section for its content: structure kept, markup gone
+planr read plan.html caching --text
 ```
 
-Addresses are dot-paths, so the same commands reach any depth: `steps.step-3.detail`.
+Addresses are dot-paths, so the same commands reach any depth: `steps.step-3.detail`. A bare id reaches it too: `detail`.
 
 On a long-lived plan the common edit is smaller still — an amendment above a section, one item onto a running list, four rows onto a table, one badge flipped — and none should cost a whole-section rewrite. Those go in at a point:
 
@@ -229,6 +232,9 @@ planr insert  plan.html resolution --before-heading "Decisions" --file note.html
 planr append  plan.html decisions --into ul --file gist.html        # one <li> onto the running list
 planr append  plan.html vocab --into tbody --file rows.html         # rows onto a table
 planr badge   plan.html --match "q16" --set decided                 # flip a badge in a table row
+planr rm-item plan.html fog --match "graduated patch"               # take one item back off a list
+planr strike  plan.html resolution --match "retry hourly"           # strike superseded text in place
+planr replace plan.html resolution --match "hourly" --with "daily"  # rewrite text in place
 ```
 
 Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it. It also warns, by line, on markup that balances but will not render as written (an unescaped tag in a code block, a diff line with no gutter, a stale `<title>`); `planr check --strict` makes those fatal too.
