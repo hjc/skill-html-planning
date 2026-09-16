@@ -9,9 +9,13 @@
        section names, and delete a section you genuinely do not need.
 
        Conventions this template encodes:
-         · Reconnaissance, Design Decisions, Callsite Audit and Anti-Patterns
-           are each a table, not prose. The column headers are the convention;
-           keep them so the corpus stays uniform.
+         · Reconnaissance, Design Decisions, both Callsite tables and
+           Anti-Patterns are each a table, not prose. The column headers are
+           the convention; keep them so the corpus stays uniform.
+         · Callsite Audit is the complete inventory (including "no change"
+           rows); Callsite Migration List is the changing subset, each row
+           naming the step that performs the swap. Two tables, because they
+           answer different questions and drift apart if merged.
          · One nested section per implementation step, each carrying a status,
            each with the Red Phase / Green Phase rhythm.
          · Encode code changes as diff and file components, never as prose
@@ -73,12 +77,39 @@
   </plan-section>
 
   <plan-section id="callsites" title="Callsite Audit">
-    <p>Every place that references the changed symbol or behavior, and its disposition. Convention: a table.</p>
+    <p>
+      <strong>Every</strong> place that references the changed symbol or behavior, and its disposition —
+      including the ones that do not change. A <code>no change — why</code> row is the only evidence a
+      site was considered rather than missed.
+    </p>
     <plan-table>
       <table>
         <thead><tr><th>#</th><th>Callsite</th><th>Change</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td class="mono">path/to/caller.py:120</td><td>What must change here (or "no change — why")</td></tr>
+          <tr><td>1</td><td class="mono">path/to/caller.py:120</td><td>What must change here</td></tr>
+          <tr><td>2</td><td class="mono">path/to/other.py:88</td><td>no change — why it is unaffected</td></tr>
+        </tbody>
+      </table>
+    </plan-table>
+  </plan-section>
+
+  <plan-section id="migration" title="Callsite Migration List">
+    <p>
+      The subset of the audit that actually changes, in execution order. <strong>Every row names the step
+      that performs the swap</strong> — a changing callsite with no step is an unwired change, which is
+      what this table exists to make visible. Delete this section only if the audit is entirely
+      <code>no change</code>.
+    </p>
+    <plan-table>
+      <table>
+        <thead><tr><th>#</th><th>Callsite</th><th>Step</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td class="mono">path/to/caller.py:120</td>
+            <td><code>steps.step-3</code></td>
+            <td>Test patch target moves with it</td>
+          </tr>
         </tbody>
       </table>
     </plan-table>

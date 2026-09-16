@@ -142,8 +142,8 @@ Then start adding any relevant components, open in your browser and enjoy!
 | Template | Use it for |
 |----------|------------|
 | `basic` | A minimal starting point — a single section, ready to fill in. |
-| `tdd` | An opinionated software implementation plan with the canonical spine: Overview, Scope, Reconnaissance, Design Decisions, Implementation Steps, Callsite Audit, Verification, Anti-Patterns. |
-| `issue` | A defect write-up: a danger callout stating the blast radius, root cause, impact table, remediation table, what is *not* affected, and open questions. |
+| `tdd` | An opinionated software implementation plan with the canonical spine: Overview, Scope, Reconnaissance, Design Decisions, Implementation Steps, Callsite Audit, Callsite Migration List, Verification, Anti-Patterns. |
+| `issue` | A defect write-up, one addressable section each: an overview whose danger callout states the blast radius, root cause, impact table, remediation table, what is *not* affected, and open questions. |
 
 After installing, delete or add templates as you see fit.
 
@@ -162,7 +162,7 @@ A template body is just the markup that goes inside `<main>`. Typically, this is
 
 Adding a new file into `templates/` immediately makes it available to the CLI.
 
-**Open it with a comment saying what the template is for.** That leading comment is the template's documentation — `templates` shows its first sentence as a gist, `templates <name>` prints all of it, and it ships inside every generated plan so the guidance reaches whoever fills the scaffold in.
+**Open it with a comment saying what the template is for.** That leading comment is the template's documentation — `templates` shows its first sentence as a gist, `templates <name>` prints all of it, and `new` leaves it out of the document it scaffolds so a plan never opens with instructions to itself.
 
 For example, a lightweight PRD template with a custom `{{owner}}` field:
 
@@ -253,7 +253,7 @@ Relative to `skills/html-planning/`:
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
 | `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
 | `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). |
-| `references/` | Deep-dive docs the skill points at rather than inlining — currently `template-authoring.md`. |
+| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md` and `authoring-traps.md`. |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |

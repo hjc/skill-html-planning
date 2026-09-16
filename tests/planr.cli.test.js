@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
 // This is the WIRING suite: it proves what only a real subprocess can — argv
@@ -102,10 +102,10 @@ describe('check', () => {
     // `check` and `list` must agree on the section count. A commented plan tag
     // in a template inflated `grep -c` — balanced, so it never read as a
     // failure — and sent readers hunting a splice bug that did not exist.
-    expect(ok.stdout).toMatch(/sections: 9 \(1 nested\)/);
-    expect(ok.stdout).toContain('plan-section 9');
+    expect(ok.stdout).toMatch(/sections: 10 \(1 nested\)/);
+    expect(ok.stdout).toContain('plan-section 10');
     const listed = run(['list', P(), '--no-outline']).stdout.trim().split('\n').length - 1;  // minus the title line
-    expect(listed).toBe(9);
+    expect(listed).toBe(10);
 
     writeFileSync(P(), readPlan().replace('</plan-section>', ''));
     const bad = run(['check', P()]);
@@ -122,8 +122,21 @@ describe('templates', () => {
     const one = run(['templates', 'tdd']);
     expect(one.code, one.stderr).toBe(0);
     expect(one.stdout).toContain('# tdd');
-    expect(one.stdout).toContain('Scaffolds 9 sections:');
+    expect(one.stdout).toContain('Scaffolds 10 sections:');
     expect(run(['templates', 'nope']).code).toBe(1);
+  });
+  it('tdd and issue scaffold their fixed section ids, in order', () => {
+    const ids = (name) => [...run(['templates', name]).stdout.matchAll(/^\s+[\d.]+\. (\S+)$/gm)].map(m => m[1]);
+    expect(ids('issue')).toEqual(['overview', 'root-cause', 'impact', 'remediation', 'not-affected', 'open']);
+    expect(ids('tdd')).toEqual(['overview', 'scope', 'recon', 'decisions', 'steps', 'step-1',
+      'callsites', 'migration', 'verification', 'anti-patterns']);
+  });
+  it('new writes none of a shipped template\'s guidance comment into the document', () => {
+    for (const name of templateNames()) {
+      const out = join(dir, `${name}.html`);
+      expect(run(['new', out, '--template', name]).code, name).toBe(0);
+      expect(readFileSync(out, 'utf8').split('<main>')[1], name).not.toContain('<!--');
+    }
   });
   it('every shipped template documents itself, with no literal plan tag in the comment', () => {
     // The convention this enforces: a template's leading comment IS its docs.
@@ -143,18 +156,21 @@ describe('shipped docs stand alone', () => {
   // Only skills/html-planning/ is installed. A shipped doc that links outside
   // it, or points at repo-only tooling, is a broken reference for every reader
   // who did not clone the repo.
-  const docs = ['SKILL.md', 'references/template-authoring.md'];
-  it('link only to files that ship, and never cite repo-only tooling', () => {
+  // They are read by an LLM, never clicked, so a reference is a bare backtick
+  // path: a relative Markdown link only repeats the path it wraps.
+  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md'];
+  it('cite only references that ship, as bare paths, and never repo-only tooling', () => {
     let checked = 0;
     for (const doc of docs) {
       const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
       expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
-      for (const rel of new Set([...text.matchAll(/\]\((?!https?:|#)([^)]+)\)/g)].map(m => m[1]))) {
-        expect(existsSync(join(SKILL_DIR, dirname(doc), rel)), `${doc} → ${rel}`).toBe(true);
+      expect(text, doc).not.toMatch(/\]\((?!https?:|#)[^)]+\)/);
+      for (const rel of new Set([...text.matchAll(/`(references\/[\w.-]+\.md)`/g)].map(m => m[1]))) {
+        expect(existsSync(join(SKILL_DIR, rel)), `${doc} → ${rel}`).toBe(true);
         checked++;
       }
     }
-    expect(checked, 'no relative links found — has the pattern gone stale?').toBeGreaterThan(0);
+    expect(checked, 'no cited references found — has the pattern gone stale?').toBeGreaterThan(0);
   });
 });
 

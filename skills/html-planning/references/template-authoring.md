@@ -60,7 +60,7 @@ Both are validated identically. If you add a placeholder whose value has a const
 
 - its **first sentence** becomes the template's one-line gist in `planr templates`;
 - the **whole comment** is what `planr templates <name>` prints;
-- it **ships inside every generated plan**, so the guidance reaches whoever fills the scaffold in — months later, in another repo, without this file.
+- it is **left out of the document `planr new` writes**, so a scaffolded plan never opens with instructions to itself. `new` strips it with the same match `templates` reads it with, so the two never disagree about which comment is the guidance.
 
 Write it for that person: what the document type is for, what each section is meant to contain, and the judgement calls the shape encodes. The `issue` template's comment is a good model — it explains *why* root cause and impact are separate sections, not just that they are.
 

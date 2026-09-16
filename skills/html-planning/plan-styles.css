@@ -761,7 +761,7 @@ plan-diagram .diagram-render[aria-busy="true"]::before {
   content: 'Rendering diagram…';
 }
 plan-diagram .diagram-render svg {
-  max-width: 100%;
+  max-width: none;
   height: auto;
 }
 plan-diagram .diagram-caption {

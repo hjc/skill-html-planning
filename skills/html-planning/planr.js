@@ -127,6 +127,15 @@ function templateDoc(tpl) {
   const text = lines.map(l => l.slice(cut)).join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, '');
   return text || null;
 }
+// The leading comment is guidance for whoever is filling the template in, and
+// `planr templates <name>` is where they read it. Stripped from what `new`
+// writes, so a scaffolded document does not open with instructions to itself.
+function stripTemplateDoc(tpl) {
+  // Same leading-comment match templateDoc uses, so the two never disagree
+  // about which comment is the guidance.
+  const stripped = tpl.replace(/^\s*<!--[\s\S]*?-->/, '');
+  return stripped === tpl ? tpl : stripped.replace(/^(?:[ \t]*\r?\n)+/, '');
+}
 // One-line gist for the `templates` table: the doc's first sentence, or its
 // first paragraph when it has no sentence break.
 function templateSummary(tpl) {
@@ -799,7 +808,7 @@ function breakAfter(html, idx) { return html[idx] === '\n' ? '' : '\n'; }
        actually offers, or it throws (it used to be written into the var map and
        never read). */
 function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {}) {
-  const composed = shellTpl.split('{{body}}').join(bodyTpl);
+  const composed = shellTpl.split('{{body}}').join(stripTemplateDoc(bodyTpl));
   const vars = { title: title || 'Untitled Plan', date, skillSubpath };
   const nodeSets = [];
   for (const pair of sets) {

@@ -151,6 +151,21 @@ describe('planNew', () => {
   it('never lets --set reach {{body}}', () => {
     expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['body=<p>x</p>'] })).toThrow(/matches no \{\{placeholder\}\}/);
   });
+  it('leaves the template\'s leading guidance comment out of the document, and only that comment', () => {
+    const body = [
+      '  <!-- ════════════════════════════════════════',
+      '       Probe template — guidance for whoever fills it in.',
+      '       ════════════════════════════════════════ -->',
+      '',
+      '  <plan-section id="overview" title="Overview"></plan-section>',
+      '  <!-- an inline note the author kept -->',
+    ].join('\n');
+    const html = planr.planNew(SHELL, body, base);
+    expect(html).not.toContain('Probe template');
+    // The blank lines between the comment and the first element go with it.
+    expect(html).toContain('<main>\n  <plan-section id="overview"');
+    expect(html).toContain('  <!-- an inline note the author kept -->');
+  });
 });
 
 describe('planSet', () => {

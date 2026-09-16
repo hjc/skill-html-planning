@@ -397,6 +397,21 @@ sequenceDiagram
     DB-->>V: ok
     V-->>C: 201 Created
   </plan-diagram>
+
+  <h3>Line breaks in labels</h3>
+  <p>A <code>&lt;br/&gt;</code> written literally inside a node label renders as a line break.</p>
+  <plan-diagram caption="Slices with two-line labels">
+flowchart LR
+    S1["S1 · Staging environment<br/>infra + portals"] --> S2["S2 · Sync worker<br/>queue + retries"]
+    S2 --> S3["S3 · Reporting &amp; exports"]
+  </plan-diagram>
+
+  <h3>Wide diagram</h3>
+  <p>A diagram wider than the content column renders at its natural size and scrolls horizontally instead of shrinking.</p>
+  <plan-diagram caption="A long pipeline keeps legible labels and scrolls">
+flowchart LR
+    A[Receive upload] --> B[Scan for malware] --> C[Decrypt envelope] --> D[Extract metadata] --> E[Classify document] --> F[Match request item] --> G[Notify requester] --> H[Archive original] --> I[Emit webhook] --> J[Update audit log] --> K[Close request]
+  </plan-diagram>
 </plan-section>
 
 </main>
