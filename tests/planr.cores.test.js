@@ -354,6 +354,194 @@ describe('planCheck', () => {
   });
 });
 
+// A plan body placed inside <main>, below a header: the body's first line is line 3.
+const inMain = (body) => ['<plan-header title="T" status="draft"></plan-header>', '<main>', body, '</main>'].join('\n');
+
+describe('planCheck warnings', () => {
+  it('returns an empty warning list for a clean document', () => {
+    expect(planr.planCheck(RICH).warnings).toEqual([]);
+  });
+  it('warns when <main> opens with a text-carrying comment — a scaffold banner — at its line', () => {
+    const html = inMain('  <!-- ════════════\n       TDD plan — the spine.\n       ════════════ -->\n  <plan-section id="a"></plan-section>');
+    const { ok, warnings } = planr.planCheck(html);
+    expect(ok).toBe(true);
+    expect(warnings).toEqual([{ line: 3, text: expect.stringMatching(/^<main> opens with a comment carrying text/) }]);
+  });
+  it('ignores a rule-only comment, and a comment after the first element', () => {
+    expect(planr.planCheck(inMain('<!-- ═══════════════ -->\n<plan-section id="a"></plan-section>')).warnings).toEqual([]);
+    expect(planr.planCheck(inMain('<plan-section id="a"></plan-section>\n<!-- a real note -->')).warnings).toEqual([]);
+  });
+  it('gathers no warnings on a document that fails the structure check', () => {
+    expect(planr.planCheck(inMain('<!-- banner text -->\n<plan-callout type="info">oops'))).toMatchObject({ ok: false, warnings: [] });
+  });
+  it('warningReport prints one line per warning, and nothing when there are none', () => {
+    expect(planr.warningReport([])).toBe('');
+    expect(planr.warningReport([{ line: 3, text: 'a' }, { line: 9, text: 'b' }]))
+      .toBe('2 warning(s) — the document balances, but will not render as written:\n  line 3: a\n  line 9: b');
+  });
+});
+
+describe('planCheck warnings — code components', () => {
+  it('warns on an unescaped tag inside <plan-file> and <plan-diff>, at the first tag\'s line', () => {
+    const html = inMain([
+      '<plan-file path="a.js">',          // 3
+      'const x = 1;',                     // 4
+      'return <Flex gap="2" />;',         // 5
+      '</plan-file>',                     // 6
+      '<plan-diff path="b.js">',          // 7
+      ' ok',                              // 8
+      '+  &lt;Box&gt; is escaped',        // 9
+      '-  </div>',                        // 10
+      '</plan-diff>',
+    ].join('\n'));
+    expect(planr.planCheck(html).warnings).toEqual([
+      { line: 5, text: expect.stringMatching(/^<plan-file path="a\.js">: 1 unescaped tag\(s\), first <Flex> — /) },
+      { line: 10, text: expect.stringMatching(/^<plan-diff path="b\.js">: 1 unescaped tag\(s\), first <\/div> — /) },
+    ]);
+  });
+  it('warns once per <plan-diff> on lines with no gutter character, listing each line', () => {
+    const html = inMain([
+      '<plan-diff path="c.py">',          // 3
+      ' class Config:',                   // 4
+      'debug = True',                     // 5  no gutter
+      '',                                 // 6  blank line = context
+      '+    verbose = True',              // 7
+      '\tindented = 1',                   // 8  a tab is not a gutter
+      '&lt;T&gt; = 2',                    // 9  decodes to "<", not a gutter
+      '  </plan-diff>',
+    ].join('\n'));
+    expect(planr.planCheck(html).warnings).toEqual([
+      { line: 5, text: expect.stringMatching(/^<plan-diff path="c\.py">: 3 line\(s\) with no gutter character \(lines 5, 8, 9\) — /) },
+    ]);
+  });
+});
+
+describe('planCheck warnings — code components (guards)', () => {
+  it('accepts every gutter the runtime accepts, and ignores blank edge lines', () => {
+    expect(planr.planCheck(inMain('<plan-diff>\n\n   \n ctx\n-del\n+add\n\n   \n</plan-diff>')).warnings).toEqual([]);
+  });
+});
+
+describe('planCheck warnings — section references', () => {
+  it('warns on an in-page link whose whole text is a bare section number, suggesting the name', () => {
+    const html = inMain([
+      '<plan-section id="reviews" title="Reviews">',                                             // 3
+      '  <p>See <a href="#reviews">&sect;1</a>.</p>',                                             // 4
+      '  <p>See <a href="#reviews">§1.2</a> and <a href="#reviews">&sect;1 Reviews</a>.</p>',      // 5
+      '  <p><a href="https://example.test/#s">§3</a></p>',                                        // 6
+      '</plan-section>',
+    ].join('\n'));
+    const warnings = planr.planCheck(html).warnings;
+    expect(warnings.map(w => w.line)).toEqual([4, 5]);
+    expect(warnings[0].text).toBe('link text "&sect;1" (href="#reviews") is a bare section number — numbers re-derive ' +
+      'when a section is added or moved; name the section too, e.g. "&sect;1 Reviews"');
+  });
+});
+
+describe('planCheck warnings — badge labels', () => {
+  it('warns on a badge whose label is a DIFFERENT type\'s label', () => {
+    const html = inMain([
+      '<table><tbody>',                                                                   // 3
+      '<tr><td>a</td><td><plan-badge type="open">Decided</plan-badge></td></tr>',         // 4  names another type
+      '<tr><td>b</td><td><plan-badge type="decided">Decided</plan-badge></td></tr>',      // 5  its own label
+      '<tr><td>c</td><td><plan-badge type="open">not started</plan-badge></td></tr>',     // 6  custom
+      '<tr><td>d</td><td><plan-badge>low</plan-badge></td></tr>',                         // 7  no type means open
+      '</tbody></table>',
+    ].join('\n'));
+    const warnings = planr.planCheck(html).warnings;
+    expect(warnings.map(w => w.line)).toEqual([4, 7]);
+    expect(warnings[0].text).toBe('<plan-badge type="open"> reads "Decided", the label of type "decided" — it renders ' +
+      'one state and names another; clear the label with `badge --set <type> --text ""`');
+    expect(warnings[1].text).toMatch(/^<plan-badge type="open"> reads "low", the label of type "low"/);
+  });
+});
+
+describe('header title and the head <title>', () => {
+  const DOCUMENT = [
+    '<!DOCTYPE html>',
+    '<html><head>',
+    '  <title>Old &amp; Busted</title>',
+    '</head><body>',
+    '<plan-header title="Old &amp; Busted" status="draft"></plan-header>',
+    '<main>',
+    '<plan-section id="a" title="A"></plan-section>',
+    '</main>',
+    '</body></html>',
+  ].join('\n');
+  const headText = (html) => /<title>([\s\S]*?)<\/title>/.exec(html)[1];
+  it('set header.title writes the same bytes into <title>, and reports both writes', () => {
+    const { html, message } = planr.planSet(DOCUMENT, 'header.title=New &amp; Shiny');
+    expect(headText(html)).toBe('New &amp; Shiny');
+    expect(planr.getAttr(planr.findElement(html, 'plan-header').attrsRaw, 'title')).toBe('New &amp; Shiny');
+    expect(message).toBe('set header.title = "New &amp; Shiny"\nset <title> = "New &amp; Shiny"');
+  });
+  it('new --set header.title keeps both titles in step', () => {
+    const shell = '<html><head><title>{{title}}</title></head><body>' +
+      '<plan-header title="{{title}}" status="draft"></plan-header><main>{{body}}</main></body></html>';
+    const html = planr.planNew(shell, BODY, { title: 'First', date: 'd', skillSubpath: 's', sets: ['header.title=Second'] });
+    expect(headText(html)).toBe('Second');
+  });
+  it('check warns when <title> and the header title diverge, comparing decoded text', () => {
+    expect(planr.planCheck(DOCUMENT).warnings).toEqual([]);
+    const drifted = DOCUMENT.replace('<title>Old &amp; Busted</title>', '<title>Old & Busted v1</title>');
+    expect(planr.planCheck(drifted).warnings).toEqual([{
+      line: 3,
+      text: '<title> reads "Old & Busted v1" but the header title is "Old & Busted" — `set header.title=…` rewrites both',
+    }]);
+  });
+});
+
+describe('header title and the head <title> (guards)', () => {
+  it('leaves <title> alone for any other header attribute and for a section title', () => {
+    const doc = '<html><head><title>Keep</title></head><body><plan-header title="Keep" status="draft"></plan-header>' +
+      '\n<plan-section id="a" title="A"></plan-section></body></html>';
+    const { html } = planr.planSet(doc, ['header.subtitle=S', 'a.title=Renamed']);
+    expect(/<title>([\s\S]*?)<\/title>/.exec(html)[1]).toBe('Keep');
+  });
+  it('sets header.title on a document with no <head> without inventing one', () => {
+    const { html, message } = planr.planSet(DOC, 'header.title=Renamed');
+    expect(html).not.toContain('<title>');
+    expect(message).toBe('set header.title = "Renamed"');
+  });
+});
+
+describe('attribute rules — every writer validates through validateAttr', () => {
+  const TAG_IN_TITLE = /contains an HTML tag — titles are plain text/;
+  it('add-section rejects an out-of-enum --status — it used to write it and drop out of `tasks`', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', status: 'bogus' }, null))
+      .toThrow("invalid status 'bogus' for <plan-section> — valid: todo, in-progress, done, blocked");
+  });
+  it('add-section rejects a --title carrying a tag', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', title: 'Add the <code>Order</code> model' }, null))
+      .toThrow('title "Add the <code>Order</code> model" on <plan-section> contains an HTML tag — titles are plain text ' +
+        '(the navigation shows markup as literal tags); remove the markup, or write a literal < as &lt;');
+  });
+  it('set rejects a tag in a section title and in the header title, closing tags included', () => {
+    expect(() => planr.planSet(DOC, 'a.title=<b>Bold</b>')).toThrow(/^title "<b>Bold<\/b>" on <plan-section> contains an HTML tag/);
+    expect(() => planr.planSet(DOC, 'header.title=End</title>')).toThrow(/^title "End<\/title>" on <plan-header> contains an HTML tag/);
+  });
+  it('new rejects a tag in the title from --title, a bare --set, and a dotted --set', () => {
+    const base = { date: 'd', skillSubpath: 's' };
+    expect(() => planr.planNew(SHELL, BODY, { ...base, title: 'A <em>plan</em>' })).toThrow(TAG_IN_TITLE);
+    expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['title=<i>x</i>'] })).toThrow(TAG_IN_TITLE);
+    expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['header.title=<i>x</i>'] })).toThrow(TAG_IN_TITLE);
+  });
+  it('new validates the rendered sections, not only the header', () => {
+    const base = { title: 'T', date: 'd', skillSubpath: 's' };
+    expect(() => planr.planNew(SHELL, '  <plan-section id="o" status="bogus"></plan-section>', base))
+      .toThrow("invalid status 'bogus' for <plan-section>");
+    expect(() => planr.planNew(SHELL, '  <plan-section id="o" title="<b>x</b>"></plan-section>', base))
+      .toThrow(/^title "<b>x<\/b>" on <plan-section> contains an HTML tag/);
+  });
+});
+
+describe('titles are plain text (guards)', () => {
+  it('accepts a bare < that opens no tag, and escaped markup', () => {
+    expect(() => planr.planSet(DOC, 'a.title=a < b &amp; c')).not.toThrow();
+    expect(() => planr.planAddSection(DOC, { id: 'x', title: 'Use &lt;code&gt; sparingly' }, null)).not.toThrow();
+  });
+});
+
 describe('template documentation (the leading-comment convention)', () => {
   const TPL = [
     '  <!-- ════════════════════════════════════════',
@@ -504,6 +692,19 @@ describe('planInsert', () => {
   });
 });
 
+describe('--into range errors name the nested-section exclusion', () => {
+  it('says nested sections are excluded when the addressed section has any', () => {
+    expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'ul:2' }))
+      .toThrow("--into 'ul:2': only 1 <ul> in this section (nested sections are excluded — address the child section directly)");
+    expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'ol' }))
+      .toThrow("--into 'ol': no <ol> in this section (nested sections are excluded — address the child section directly)");
+  });
+  it('keeps the plain message for a section with no nested sections', () => {
+    expect(() => planr.planInsert(RICH, 'map.vocab', '<li>x</li>', { into: 'ul:2' }))
+      .toThrow(/^--into 'ul:2': only 1 <ul> in this section$/);
+  });
+});
+
 describe('planBadge', () => {
   const typeOf = (html, n) => planr.getAttr(planr.findElements(html, 'plan-badge')[n].attrsRaw, 'type');
   it('flips the badge in the row matching --match', () => {
@@ -545,6 +746,51 @@ describe('planBadge', () => {
     expect(() => planr.planBadge(RICH, { match: 'nothing here', set: 'open' })).toThrow(/no table row matching/);
     const noBadge = '<table><tr><td>q7 plain row</td></tr></table>';
     expect(() => planr.planBadge(noBadge, { match: 'q7', set: 'open' })).toThrow(/none contains a <plan-badge>/);
+  });
+});
+
+describe('planBadge label handling', () => {
+  const LABELLED = [
+    '<table><tbody>',
+    '<tr><td>q20 derived</td><td><plan-badge type="open">Open</plan-badge></td></tr>',
+    '<tr><td>q21 custom</td><td><plan-badge type="open">not started</plan-badge></td></tr>',
+    '<tr><td>q22 derived-case</td><td><plan-badge type="deferred"> deferred </plan-badge></td></tr>',
+    '<tr><td>q23 custom</td><td><plan-badge type="high">P0</plan-badge></td></tr>',
+    '</tbody></table>',
+  ].join('\n');
+  it('clears a label that is only the current type\'s derived text, and says so', () => {
+    const { html, message } = planr.planBadge(LABELLED, { match: 'q20', set: 'decided' });
+    expect(html).toContain('<td>q20 derived</td><td><plan-badge type="decided"></plan-badge>');
+    expect(message).toBe('set badge type = "decided" in row "q20 derived Open" — cleared its derived label "Open"');
+  });
+  it('compares the derived label trimmed and case-insensitively', () => {
+    const { html } = planr.planBadge(LABELLED, { match: 'q22', set: 'high' });
+    expect(html).toContain('<td>q22 derived-case</td><td><plan-badge type="high"></plan-badge>');
+  });
+  it('refuses a custom label with no --text, naming the label and both remedies', () => {
+    expect(() => planr.planBadge(LABELLED, { match: 'q21', set: 'decided' })).toThrow(
+      'badge --set would leave a label naming the old state:\n' +
+      '  row "q21 custom not started" carries "not started"\n' +
+      'pass --text "<label>" to keep or rewrite the label, or --text "" to clear it so the type names it');
+  });
+  it('lets --text win over any label: rewrite, keep, or clear', () => {
+    const rewrite = planr.planBadge(LABELLED, { match: 'q21', set: 'decided', text: 'Shipped' });
+    expect(rewrite.html).toContain('<plan-badge type="decided">Shipped</plan-badge>');
+    expect(rewrite.message).toBe('set badge type = "decided" text = "Shipped" (was "not started") in row "q21 custom not started"');
+    expect(planr.planBadge(LABELLED, { match: 'q21', set: 'decided', text: '' }).html)
+      .toContain('<td>q21 custom</td><td><plan-badge type="decided"></plan-badge>');
+  });
+  it('with --all, refuses before writing anything and lists every custom label', () => {
+    expect(() => planr.planBadge(LABELLED, { match: 'q2', set: 'decided', all: true }))
+      .toThrow(/carries "not started"\n {2}row "q23 custom P0" carries "P0"\npass --text/);
+  });
+  it('BADGE_LABELS matches the label map PlanBadge renders from', () => {
+    const runtime = readFileSync(join(SKILL_DIR, 'plan-runtime.js'), 'utf8');
+    const block = /class PlanBadge[\s\S]*?const labels = \{([\s\S]*?)\};/.exec(runtime);
+    expect(block, 'PlanBadge label map not found in plan-runtime.js').toBeTruthy();
+    const labels = Object.fromEntries([...block[1].matchAll(/([\w-]+):\s*'([^']*)'/g)].map(m => [m[1], m[2]]));
+    expect(planr.BADGE_LABELS).toEqual(labels);
+    expect(planr.BADGE_TYPES).toEqual(Object.keys(planr.BADGE_LABELS));
   });
 });
 

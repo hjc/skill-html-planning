@@ -35,7 +35,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    ```
 2. **Read the generated file.**
 3. **Use `planr`** (or `Edit`) to add sections, cards, tables, and other components using the Web Component tags below.
-4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count.
+4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count. Read the warnings it prints after the structure report; each names a line that will not render as written.
 
 ## Component Reference
 
@@ -151,6 +151,8 @@ Inline status badge.
 <plan-badge type="open">Custom Text</plan-badge>
 ```
 **Attributes:** `type` (decided/open/deferred/high/medium/low).
+
+Leave a status badge **empty** unless it needs words its type cannot say: an empty badge derives its label from `type`, so it stays correct through every `planr badge --set`. A badge with its own text keeps that text, which is why `badge --set` refuses to flip one without `--text`.
 
 ### Formulas & Principles
 
@@ -370,7 +372,7 @@ tr:2          the 2nd <tr>, 1-based
 #tickets      the element carrying id="tickets"
 ```
 
-"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. A `<plan-*>` tag is rejected here: address those with the dot-path.
+"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. A `<plan-*>` tag is rejected here: address those with the dot-path. `read --body` on a parent still shows its nested sections' content; when an ordinal taken from it is out of range for `--into`, the error says nested sections are excluded.
 
 ### Command reference
 
@@ -381,7 +383,7 @@ tr:2          the 2nd <tr>, 1-based
 | `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `chips`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. Run `templates <name>` for the variables a template offers. |
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
-| `check` | `<file>` | *(none)* | **Authoritative structure validation.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census. Exits **1** with the offending line numbers on any break. |
+| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`. Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
@@ -389,7 +391,7 @@ tr:2          the 2nd <tr>, 1-based
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
 | `append` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **end** of that body / container, just above its closing tag. |
 | `insert` | `<file> <address>` | `--before-heading <T>` \| `--after-heading <T>` **(one required)** · `--file <f>` · `--into <sel>` | Insert a hunk relative to an authored heading, matched on visible text (case-insensitive substring). |
-| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. |
+| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. A label that is just the old type's own label is cleared; any other label is refused unless `--text` says what to do with it. |
 | `add-section` | `<file>` | `--id <id>` **(required)** · `--title <T>` · `--status <S>` · `--num <N>` · `--after <addr>` \| `--before <addr>` · `--parent <addr>` · `--body-file <f>` | Insert a section, empty or filled from `--body-file`. |
 | `rm-section` | `<file> <address>` | *(none)* | Remove the section at that address, at any depth. |
 | `move-section` | `<file> <address>` | `--after <addr>` \| `--before <addr>` **(one required)** | Move the addressed section beside a sibling. |
@@ -406,6 +408,9 @@ tr:2          the 2nd <tr>, 1-based
 - **`set-body` is verbatim; the hunk commands fit the seam.** A `set-body` body owns its whitespace byte-for-byte (that is what makes the round-trip lossless). A `prepend`/`append`/`insert` hunk is placed at one point instead, so blank edge lines are dropped and the anchor's indentation is applied **only when the hunk carries none of its own**. Escaping is yours either way.
 - **Round-trip:** `read --body <addr>` → edit the hunk → `set-body <addr>` is byte-for-byte lossless.
 - **Ambiguity is an error, not a guess.** `insert --before-heading` refuses a text that matches two headings, and `badge --match` refuses a text that matches two rows (pass `--all` if you mean both). Both list the candidates so you can narrow it.
+- **`badge --set` never leaves a label naming the old state.** An empty badge derives its label from `type`, so it follows every flip. A badge whose text is only its current type's label (`Open` on `type="open"`, compared case-insensitively) is cleared, so the new type names it. A badge carrying any other text is **refused** unless you pass `--text`: `--text "<label>"` keeps or rewrites it, `--text ""` clears it. With `--all`, one refusal writes nothing.
+- **Every attribute write is validated the same way.** `set`, `add-section` and `new` all reject a `status` outside its tag's enum and a `title` containing an HTML tag (titles are plain text). `set header.title=…` also rewrites the document's `<title>`, so the browser tab and the header never disagree.
+- **`check` warns; `--strict` gates.** A warning never changes `check`'s exit code and never blocks a write — every writing command still aborts on a structure break alone. Pass `--strict` where a warning should fail the run.
 - **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. Every body-writing command — `set-body`, `prepend`, `append`, `insert`, `add-section`, `badge` — **aborts without writing** if the splice would break the plan's structure.
 - **`list` and `check` are the authoritative counts. Never `grep`.** `grep -c '<plan-section'` counts literal strings, so a commented example inflates the total — and the over-count stays *balanced*, so it never reads as a failure. Use `check` for balance, `list` for the count.
 - **`read <addr> --body` is byte-faithful.** Indentation is preserved exactly; it prepends one leading newline and nothing else, so an `Edit` `old_string` can be lifted from its output directly.

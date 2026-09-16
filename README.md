@@ -231,7 +231,7 @@ planr append  plan.html vocab --into tbody --file rows.html         # rows onto 
 planr badge   plan.html --match "q16" --set decided                 # flip a badge in a table row
 ```
 
-Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it.
+Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it. It also warns, by line, on markup that balances but will not render as written (an unescaped tag in a code block, a diff line with no gutter, a stale `<title>`); `planr check --strict` makes those fatal too.
 
 `planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
 
@@ -251,7 +251,7 @@ Relative to `skills/html-planning/`:
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
-| `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
+| `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure and warns on silent rendering traps (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
 | `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). |
 | `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md` and `authoring-traps.md`. |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |

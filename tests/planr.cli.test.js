@@ -233,6 +233,27 @@ describe('badge', () => {
   });
 });
 
+describe('badge labels', () => {
+  it('refuses a custom label without --text and writes nothing, even for valid rows (exit 1); --text "" clears', () => {
+    freshPlan();
+    const hunk = join(dir, 'rows.html');
+    writeFileSync(hunk, '<plan-table><table><tbody>' +
+      '<tr><td>q30 derived</td><td><plan-badge type="open">Open</plan-badge></td></tr>' +
+      '<tr><td>q31 custom</td><td><plan-badge type="open">not started</plan-badge></td></tr>' +
+      '</tbody></table></plan-table>');
+    expect(run(['set-body', P(), 'recon', '--file', hunk]).code).toBe(0);
+    const before = readPlan();
+    const refused = run(['badge', P(), '--match', 'q3', '--set', 'decided', '--all']);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain('carries "not started"');
+    expect(readPlan()).toBe(before);
+    // An empty argv element must survive the process boundary as --text's value.
+    const cleared = run(['badge', P(), '--match', 'q31', '--set', 'decided', '--text', '']);
+    expect(cleared.code, cleared.stderr).toBe(0);
+    expect(readPlan()).toContain('<td>q31 custom</td><td><plan-badge type="decided"></plan-badge>');
+  });
+});
+
 describe('list outline', () => {
   it('includes authored headings by default, and drops them for --no-outline', () => {
     freshPlan();
@@ -259,6 +280,17 @@ describe('flag parsing', () => {
   });
 });
 
+describe('set header.title', () => {
+  it('moves the head <title> with the header, so check --strict stays clean', () => {
+    freshPlan();
+    const r = run(['set', P(), 'header.title=Renamed Plan']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).toContain('<title>Renamed Plan</title>');
+    const c = run(['check', P(), '--strict']);
+    expect(c.code, c.stdout).toBe(0);
+  });
+});
+
 describe('end-to-end editing flow', () => {
   it('new -> add-section -> set -> read reflects each change', () => {
     freshPlan();
@@ -281,5 +313,31 @@ describe('end-to-end editing flow', () => {
     expect(html).toContain('status="review"');
     expect(html).toContain('chips="A | B | C"');
     expect(run(['read', P(), 'overview']).stdout).toContain('status="done"');
+  });
+});
+
+describe('check warnings', () => {
+  it('prints warnings after the structure report and exits 0; --strict exits 1', () => {
+    freshPlan();
+    writeFileSync(P(), readPlan().replace('<main>', '<main>\n<!-- guidance banner left behind -->'));
+    const soft = run(['check', P()]);
+    expect(soft.code, soft.stderr).toBe(0);
+    expect(soft.stdout).toMatch(/^structure OK[\s\S]*\n1 warning\(s\)[^\n]*\n {2}line \d+: <main> opens with a comment carrying text/);
+    // --strict BEFORE the file: a valueless flag not in BOOLEAN_FLAGS eats the filename.
+    const strict = run(['check', '--strict', P()]);
+    expect(strict.code).toBe(1);
+    expect(strict.stdout).toContain('1 warning(s)');
+    expect(strict.stderr).toContain('check --strict: 1 warning(s), listed above');
+  });
+});
+
+describe('check warnings (guards)', () => {
+  it('every shipped template scaffolds a document that passes --strict', () => {
+    for (const t of templateNames()) {
+      const out = join(dir, `${t}.html`);
+      expect(run(['new', out, '--template', t]).code, t).toBe(0);
+      const r = run(['check', out, '--strict']);
+      expect(r.code, `${t}: ${r.stdout}${r.stderr}`).toBe(0);
+    }
   });
 });

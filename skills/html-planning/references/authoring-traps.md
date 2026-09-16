@@ -45,6 +45,10 @@ splicing.** Hand-escaping `&lt;` while writing — inside a format spec like `{n
 error-prone and unreadable. Write the body as normal source, apply `html.escape(inner, quote=False)`
 (or the equivalent) between each open tag and its close, and only then `set-body --file`.
 
+`planr check` now warns on a tag left unescaped inside `<plan-file>` / `<plan-diff>` and on a
+`<plan-diff>` line missing its gutter character (` `/`+`/`-`) — run it after every splice; a missed
+escape no longer stays invisible. Inline `<code>` and `<pre><code>` are not checked.
+
 ## Patching an existing document
 
 **Lift a patch anchor from the dumped text, never retype it.** `planr read --body` preserves the
