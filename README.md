@@ -99,7 +99,7 @@ For a minor size increase over plaintext Markdown plans, plans generated with `h
 5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
 6. Configurable line wrapping support for code snippets, plus adjustable view width.
 7. Interactive tabs, collapsible components, and callout components.
-8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, formulas, and principles.
+8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, key/value sub-records, formulas, and principles.
 9. Per-section and per-step status pills (`todo`/`in-progress`/`done`/`blocked`) for tracking implementation progress in-place.
 
 In addition to the user-facing features mentioned above, `html-planning` comes with a CLI, `planr.js`, that serves as an interface an LLM can use to scaffold, edit, and manage plans.
@@ -145,7 +145,7 @@ Then start adding any relevant components, open in your browser and enjoy!
 | `tdd` | An opinionated software implementation plan with the canonical spine: Overview, Scope, Reconnaissance, Design Decisions, Implementation Steps, Callsite Audit, Callsite Migration List, Verification, Anti-Patterns. |
 | `issue` | A defect write-up, one addressable section each: an overview whose danger callout states the blast radius, root cause, impact table, remediation table, what is *not* affected, and open questions. |
 
-After installing, delete or add templates as you see fit.
+After installing, add your own templates to `.claude/planr-templates/` — the directory beside `skills/` — rather than editing the skill's `templates/`. They are listed (marked `[consumer]`), documented and selectable exactly like the shipped ones, a same-named one overrides the shipped template, and updating the skill never touches them.
 
 Each one documents itself, so you can read a template before committing to it:
 
@@ -154,13 +154,13 @@ node .claude/skills/html-planning/planr.js templates       # all of them, one li
 node .claude/skills/html-planning/planr.js templates tdd   # what it is for, and what it scaffolds
 ```
 
-All templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body, so a template only expresses the body of the final document, and can be parameterized with variables.
+Shipped templates live in `templates/`. `_shell.html` is a parent template containing the `<head>` inline loader plus a slot for the template's body, so a template only expresses the body of the final document, and can be parameterized with variables.
 
 ### Writing a custom template
 
 A template body is just the markup that goes inside `<main>`. Typically, this is a collection of `<plan-section>` elements.
 
-Adding a new file into `templates/` immediately makes it available to the CLI.
+Adding a new file to `.claude/planr-templates/` immediately makes it available to the CLI.
 
 **Open it with a comment saying what the template is for.** That leading comment is the template's documentation — `templates` shows its first sentence as a gist, `templates <name>` prints all of it, and `new` leaves it out of the document it scaffolds so a plan never opens with instructions to itself.
 
@@ -241,6 +241,28 @@ Every command that writes re-verifies the document afterwards and **aborts witho
 
 `planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
 
+## What's new in 1.2.0
+
+**Fixes**
+
+- `badge --set` no longer leaves a stale label: a label derived from the old type is cleared, and a custom label is refused unless `--text` says what to do with it.
+- Components render correctly in long documents — the runtime registers them after the page has parsed, so none upgrades against an empty body.
+- `set header.title` keeps the page's `<title>` in step, and `check` warns when the two diverge.
+- Diagrams keep a `<br/>` in a label, and large diagrams stay legible instead of shrinking to fit.
+- `new` no longer copies a template's documentation comment into the generated plan.
+- An out-of-range `--into` names the nested sections it excludes, so an ordinal read off `read --body` is no longer silently wrong.
+- `SKILL.md` points at the template-authoring reference with a plain path.
+
+**New**
+
+- `rm-item` removes a list item or table row by its visible text; `strike` strikes superseded text in place; `replace` rewrites a matched run of text.
+- A bare section id resolves at any depth, and an ambiguous one lists the addresses it could mean.
+- `read --text` prints a section as plain text, one block per line.
+- `<plan-defs>` / `<plan-def>`: a key/value sub-record, compact standalone and chromeless inside a table cell.
+- `.claude/planr-templates/`: templates a repo owns, listed and selectable beside the shipped ones, and untouched when the skill is updated.
+
+**`check` warnings** — printed after the structure report; exit 0, or 1 with `--strict`. They catch markup in a section title (which `add-section --title` and `set …title=` now also refuse), a tag inside a code component, a diff line with no gutter character, a bare `§N` used as link text, a badge label that restates a different type, and a scaffold banner opening `<main>`.
+
 ## Developing this skill
 
 The skill itself lives in `skills/html-planning/`; the repo root is a normal Node project (the CLI's manifest, with vitest as the only dev dependency). The **shipped skill carries zero runtime dependencies** — the dev tooling is a sibling of the skill folder and is never installed. To run the tests:
@@ -258,7 +280,7 @@ Relative to `skills/html-planning/`:
 |------|---------|
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
 | `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure and warns on silent rendering traps (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
-| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). |
+| `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). A consuming repo adds its own in `.claude/planr-templates/`. |
 | `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md` and `authoring-traps.md`. |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |

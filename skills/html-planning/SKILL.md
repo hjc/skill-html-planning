@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # html-planning
@@ -115,6 +115,28 @@ Wrapper that styles any `<table>` inside it with the plan theme.
   </table>
 </plan-table>
 ```
+
+#### `<plan-defs>` / `<plan-def>`
+A **sub-record**: two to six name → value pairs that belong to one thing — the fields a model gains, the limits a tier sets. Each `<plan-def>` is one pair: its `key` attribute is the name, its content is the value (inline markup such as `<code>` is fine).
+```html
+<plan-defs>
+  <plan-def key="country_code">CharField(max_length=2), ISO alpha-2</plan-def>
+  <plan-def key="tier">CharField(max_length=10)</plan-def>
+</plan-defs>
+```
+**Attributes:** `key` on `<plan-def>` — plain text. CSS renders it, so markup written in it shows literally.
+
+Standalone it is a compact bordered block with the keys in one column. **Inside a `<plan-table>` cell it drops its chrome** and reads as part of the row — this is the shape for any cell whose content is a sub-record:
+```html
+<tr><td>Add fields to <code>SmsLog</code></td><td><plan-defs>
+  <plan-def key="country_code">CharField(max_length=2)</plan-def>
+  <plan-def key="tier">CharField(max_length=10)</plan-def>
+</plan-defs></td></tr>
+```
+- **Never nest a `<table>` in a `<td>` for this.** The inner table inherits every plan-table rule and compounds inside the host cell's padding and border, and it asserts a peer grid where the content is one row's attributes.
+- **One level only.** A sub-record inside a sub-record is a real table — give it its own `<plan-table>`.
+- **Add a pair with `planr append <file> <section> --into plan-defs --file row.html`.** With several in a section, pick one with `--into plan-defs:<n>`.
+- **`planr read --text` prints each pair as `key: value`** — one line per pair, joined with `; ` inside a table cell.
 
 ### Interactive
 
@@ -372,7 +394,7 @@ tr:2          the 2nd <tr>, 1-based
 #tickets      the element carrying id="tickets"
 ```
 
-"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. A `<plan-*>` tag is rejected here: address those with the dot-path. `read --body` on a parent still shows its nested sections' content; when an ordinal taken from it is out of range for `--into`, the error says nested sections are excluded.
+"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. `--into` refuses exactly the tags the dot-path addresses — `plan-section`, `plan-subsection`, `plan-header` — and accepts any other container, components included: `--into plan-defs` adds a `<plan-def>` pair, `--into plan-cards` a card. `read --body` on a parent still shows its nested sections' content; when an ordinal taken from it is out of range for `--into`, the error says nested sections are excluded.
 
 ### Command reference
 
@@ -456,6 +478,7 @@ The characteristic write on a long-lived plan is **small and deep**: an amendmen
 | Amendment above everything in a section | `prepend <section> --file` |
 | One more item on a running list | `append <section> --into ul --file` |
 | More rows on a table | `append <section> --into tbody --file` |
+| One more pair on a sub-record | `append <section> --into plan-defs --file` |
 | Something next to a known heading | `insert <section> --before-heading "…" --file` |
 | A status/badge transition | `set <addr>.status=…` · `badge --match … --set …` |
 | Removing a list item or a table row | `rm-item <section> --match "…"` · `--into <sel>` to scope it |
@@ -486,6 +509,20 @@ Templates live in `./templates/`: `_shell.html` is the shared document + runtime
 | `issue` | a defect write-up: overview → root-cause → impact → remediation → not-affected → open |
 
 **A template's section ids are fixed vocabulary owned by that document type, not by this skill.** Use them verbatim, fill the scaffold rather than inventing names, and never force one template's spine onto a document type it was not written for — use `basic` and structure the document as its type demands. A stable id is what makes every document addressable (`planr read plan.html anti-patterns`) and a corpus comparable. This skill decides *how* a document is formatted; the document type decides *what* it contains.
+
+**A repo can add its own templates** without editing this skill folder, so updating the skill stays a plain overwrite. They go in **`.claude/planr-templates/`** — the directory beside `skills/` under the same `.claude` that holds this skill:
+
+```
+.claude/
+├── skills/html-planning/templates/   ← shipped: _shell.html and the bodies above
+└── planr-templates/                  ← the repo's own <name>.html bodies
+```
+
+- **They behave exactly like shipped templates.** `planr templates` lists them, marked `[consumer]`; `planr templates <name>` prints their leading comment; `new --template <name>` scaffolds them.
+- **A consumer template shadows a shipped one of the same name**, visibly: its row reads `[consumer, shadows skill]`, and `new` names the file it used.
+- **The shell stays the skill's.** A `_shell.html` in `planr-templates/` is an error, not an override. Other `_`-prefixed files are ignored, as they are in `templates/`.
+- **The same rules apply.** A template with no leading comment, a literal plan tag inside that comment, or a scaffold that fails `check` is listed under **Template problems** by `planr templates`.
+- Run from a path with no `.claude` ancestor, `planr` has no consumer directory.
 
 **Read a template before using it.** Each one opens with a comment stating what it is for and the conventions it encodes; `planr templates <name>` prints that, along with the sections it scaffolds and the variables it accepts:
 

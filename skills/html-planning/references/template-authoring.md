@@ -18,6 +18,18 @@ templates/
 
 You will almost always be writing a body. Change `_shell.html` only to alter something every plan shares — a new document-level variable, a `<head>` addition.
 
+## Where a template lives
+
+A template is either **shipped** — in the skill's `templates/` — or **consumer-owned**, in `.claude/planr-templates/`, the directory beside `skills/` under the same `.claude` ancestor. Write a repo's own templates in the consumer directory: updating the skill overwrites `templates/` and never touches `planr-templates/`.
+
+| | Shipped `templates/` | Consumer `.claude/planr-templates/` |
+|---|---|---|
+| Bodies (`<name>.html`) | yes | yes — same format, same rules |
+| `_shell.html` | the one shell | refused — `planr` errors until it is removed |
+| A name the other directory also has | — | the consumer template wins; `planr templates` marks it `[consumer, shadows skill]` |
+
+Everything below applies to both. `planr templates` holds every template it lists to the leading-comment rules and to `check`, and prints any that fail under **Template problems**.
+
 ## Variables
 
 Values fill via a zero-dep `{{var}}` substitution. A placeholder may **declare a default**:
@@ -84,7 +96,7 @@ Seed each section with a sentence describing what belongs there rather than leav
 ## Verifying a new template
 
 ```bash
-node .claude/skills/html-planning/planr.js templates              # gist reads correctly?
+node .claude/skills/html-planning/planr.js templates              # gist reads correctly? no "Template problems"?
 node .claude/skills/html-planning/planr.js templates <name>       # guidance + sections + variables
 node .claude/skills/html-planning/planr.js new /tmp/probe.html --template <name>
 node .claude/skills/html-planning/planr.js check /tmp/probe.html  # exits 1 on a structural break

@@ -38,13 +38,16 @@
    (e.g. steps.3.status=done, header.status=review).
 
    Sub-section targeting (`--into <sel>`) is the ONE non-address selector, and
-   it only ever names a plain HTML container inside an already-addressed
-   section: `<tag>` (the LAST such element), `<tag>:<n>` (1-based), or `#<id>`.
+   it only ever names a container inside an already-addressed section — any tag
+   except the ones the dot-path addresses (plan-section, plan-subsection,
+   plan-header): `<tag>` (the LAST such element), `<tag>:<n>` (1-based), or `#<id>`.
 
    Templates live in ./templates/ — `_shell.html` is the shared document +
    runtime loader (with a `{{body}}` slot); every other `<name>.html` is a body
    selectable via `--template <name>`. Values fill via `{{var}}` substitution:
    {{title}}, {{date}}, {{skillSubpath}}, plus any BARE `--set key=value`.
+   A consuming repo adds bodies in .claude/planr-templates/ (beside skills/);
+   one there shadows a ./templates/ body of the same name.
    Writing a template: references/template-authoring.md.
    ═══════════════════════════════════════════════════════════ */
 
@@ -93,17 +96,33 @@ function render(tpl, vars) {
   return tpl.replace(PLACEHOLDER, (m, k, def) =>
     (k in vars ? vars[k] : (def !== undefined ? def : m)));
 }
+// The absolute path of the `.claude` directory planr was invoked from — the
+// FIRST `.claude` segment, with `\` normalised to `/` — or null outside one.
+// resolveSkillSubpath and resolveConsumerTemplateDir both read it, so the
+// install subpath and the consumer directory always hang off the same root.
+function claudeRoot(invoked) {
+  const segs = invoked.replace(/\\/g, '/').split('/');
+  const idx = segs.indexOf('.claude');
+  return idx === -1 ? null : segs.slice(0, idx + 1).join('/');
+}
 // The skill's install subpath under .claude, from how planr was invoked:
 // argv[1] preserves the symlinked .claude/skills/<name> path that __dirname
 // would resolve through. Baked into the generated plan's loader.
 function resolveSkillSubpath(invoked = process.argv[1] || __filename) {
   invoked = invoked.replace(/\\/g, '/');
-  const segs = invoked.split('/');
-  const idx = segs.indexOf('.claude');
-  if (idx !== -1) return segs.slice(idx + 1, segs.length - 1).join('/');
+  const root = claudeRoot(invoked);
+  if (root) return invoked.slice(root.length + 1).split('/').slice(0, -1).join('/');
   return 'skills/' + path.basename(path.dirname(invoked));
 }
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
+// The consumer-owned template directory: `planr-templates/` beside `skills/`
+// under claudeRoot, or null when planr runs outside any .claude tree. Pure —
+// whether the directory exists is the shell's question.
+const CONSUMER_TEMPLATE_DIRNAME = 'planr-templates';
+function resolveConsumerTemplateDir(invoked = process.argv[1] || __filename) {
+  const root = claudeRoot(invoked);
+  return root ? `${root}/${CONSUMER_TEMPLATE_DIRNAME}` : null;
+}
 // Every {{placeholder}} the template offers, as {name, def}, sorted. `def` is
 // undefined for a placeholder that declares none. First declaration wins, so a
 // var used twice (title, in <title> and the header) reports one entry.
@@ -148,6 +167,31 @@ function templateSummary(tpl) {
   const para = doc.split(/\n[ \t]*\n/)[0].replace(/\s+/g, ' ').trim();
   const sentence = /^(.*?[.!?])(\s|$)/.exec(para);
   return sentence ? sentence[1] : para;
+}
+
+/* Pure: (template body, shell) -> string[]. The rules every shipped template is
+   tested against, applied at runtime so a consumer template is held to them
+   too: a leading comment, no literal plan tag inside it, and a scaffold that
+   passes `check` with ZERO warnings. Empty when the template is sound. */
+function templateProblems(body, shellTpl) {
+  const problems = [];
+  const lead = /^\s*<!--([\s\S]*?)-->/.exec(body);
+  if (!templateDoc(body))
+    problems.push('no leading comment — open the template with an HTML comment saying what it is for');
+  else if (/<plan-[a-z]/.test(lead[1]))
+    problems.push('its leading comment contains a literal <plan-*> tag — refer to components in prose');
+  let html;
+  try {
+    html = planNew(shellTpl, body, { title: 'Template probe', date: '2000-01-01', skillSubpath: 'skills/probe' });
+  } catch (e) {
+    if (!(e instanceof PlanError)) throw e;
+    problems.push(`cannot be scaffolded — ${e.message}`);
+    return problems;
+  }
+  const { ok, warnings } = planCheck(html);
+  if (!ok) problems.push('fails check once scaffolded — run `planr new` with it and `planr check` the result');
+  for (const w of warnings) problems.push(`check warning once scaffolded — line ${w.line}: ${w.text}`);
+  return problems;
 }
 
 /* ── line helpers ─────────────────────────────────────── */
@@ -481,6 +525,8 @@ const TEXT_RULES = {
   'plan-phase':      { kind: 'block', lines: r => [[attrText(r, 'title'), attrText(r, 'weeks') && `(${attrText(r, 'weeks')})`].filter(Boolean).join(' ')] },
   'plan-badge':      { kind: 'inline', print: (r, text) => `[${text || attrText(r, 'type')}]` },
   'plan-table':      BLOCK,
+  'plan-defs':       BLOCK,
+  'plan-def':        { kind: 'block', lead: r => `${attrText(r, 'key')}: ` },
   'plan-file':       { kind: 'code', info: r => attrText(r, 'path') },
   'plan-diff':       { kind: 'code', info: r => attrText(r, 'path') },
   'plan-diagram':    { kind: 'code', info: () => 'mermaid', after: r => [attrText(r, 'caption')] },
@@ -657,6 +703,10 @@ function textOf(html, el) {
   return decodeEntities(html.slice(el.innerStart, el.innerEnd).replace(/<[^>]*>/g, ' '))
     .replace(/\s+/g, ' ').trim();
 }
+// The tags the dot-path addresses. --into refuses exactly these and accepts any
+// other container — a <ul>, a <tbody>, or a component such as <plan-defs> or
+// <plan-cards> — because the dot-path cannot reach inside a section's content.
+const DOT_PATH_TAGS = ['plan-section', 'plan-subsection', 'plan-header'];
 /* `--into <sel>` — the one non-address selector, scoped to an already-resolved
    section and limited to plain HTML containers: `<tag>` (the LAST one, which is
    what "append to the running list" means), `<tag>:<n>` (1-based), or `#<id>`. */
@@ -670,8 +720,8 @@ function resolveContainer(html, node, sel) {
   const m = /^([A-Za-z][A-Za-z0-9-]*)(?::(\d+))?$/.exec(sel);
   if (!m) throw new PlanError(`--into '${sel}': expected <tag>, <tag>:<n>, or #<id>`);
   const [, tag, nth] = m;
-  if (tag.startsWith('plan-'))
-    throw new PlanError(`--into '${sel}': address a <${tag}> with the dot-path instead — --into is for plain HTML containers`);
+  if (DOT_PATH_TAGS.includes(tag))
+    throw new PlanError(`--into '${sel}': address a <${tag}> with the dot-path instead — --into names a container inside the addressed section`);
   const all = ownElements(html, node, tag);
   // `read --body` shows a nested section's content too; --into never reaches
   // it. Say so where a count taken from `read` stops matching.
@@ -872,7 +922,8 @@ function headTitle(html) {
 const PLAN_TAGS = [
   'plan-header', 'plan-nav', 'plan-section', 'plan-subsection', 'plan-tabs', 'plan-tab',
   'plan-cards', 'plan-card', 'plan-callout', 'plan-formula', 'plan-principles', 'plan-principle',
-  'plan-timeline', 'plan-phase', 'plan-badge', 'plan-table', 'plan-file', 'plan-diff', 'plan-diagram',
+  'plan-timeline', 'plan-phase', 'plan-badge', 'plan-table', 'plan-defs', 'plan-def',
+  'plan-file', 'plan-diff', 'plan-diagram',
 ];
 // Plain HTML containers `check` balance-checks alongside the plan tags. Limited
 // to tags whose end tag is never optional in HTML — adding <p>/<li> here would
@@ -1024,7 +1075,7 @@ function nodeText(html, el, { body = false } = {}) {
   const from = body ? el.innerStart : el.outerStart;
   const to = body ? el.innerEnd : el.outerEnd;
   const lines = [];
-  let parts = [], mark = from, lead = '', lists = 0, row = null, inCell = false;
+  let parts = [], mark = from, lead = '', lists = 0, row = null, inCell = false, cellStart = from;
   const collapse = s => s.replace(/\s+/g, ' ').trim();
   const take = end => { if (end > mark) parts.push(visibleText(html, mark, end)); mark = end; };
   const emit = more => { for (const l of more || []) if (l) lines.push(l); };
@@ -1064,8 +1115,18 @@ function nodeText(html, el, { body = false } = {}) {
     }
     switch (rule.role) {
       case 'cell':
-        if (open) { parts = []; inCell = !!row; }
-        else { row.push(collapse(parts.join(''))); parts = []; inCell = false; }
+        if (open) { parts = []; inCell = !!row; cellStart = tok.end; }
+        else {
+          // <plan-def> pairs are skipped individually while inCell (below), so
+          // a cell holding a <plan-defs> is rendered from its defs directly —
+          // `key: value` per pair, joined `; ` — rather than the generic
+          // collapse, which would drop every key (an attribute, not content).
+          const defs = findElementsDeep(html, 'plan-def', cellStart, tok.start);
+          row.push(defs.length
+            ? defs.map(d => `${attrText(d.attrsRaw, 'key')}: ${collapse(visibleText(html, d.innerStart, d.innerEnd))}`).join('; ')
+            : collapse(parts.join('')));
+          parts = []; inCell = false;
+        }
         return;
       case 'heading':
         if (open) { flush(); return; }
@@ -1532,6 +1593,22 @@ function planTemplates(files) {
               .map(f => f.replace(/\.html$/, '')).sort();
 }
 
+/* Pure: ({ skill, consumer, consumerDir }) -> [{ name, origin, shadows }], sorted.
+   `skill` and `consumer` are directory listings; `consumer` is null when the
+   consumer directory does not exist. A consumer template shadows the skill
+   template of the same name, and the entry records that it does. The shell is
+   skill-owned, so a consumer `_shell.html` is refused rather than ignored. */
+function planTemplateIndex({ skill = [], consumer = null, consumerDir = null } = {}) {
+  if (consumer && consumer.includes('_shell.html'))
+    throw new PlanError(`${consumerDir}/_shell.html: the shell is skill-owned and is never read from the ` +
+      `consumer template directory — remove or rename it`);
+  const index = new Map();
+  for (const name of planTemplates(skill)) index.set(name, { name, origin: 'skill', shadows: false });
+  for (const name of planTemplates(consumer || []))
+    index.set(name, { name, origin: 'consumer', shadows: index.has(name) });
+  return [...index.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /* Pure: ([{name, body}], name?) -> the `templates` report text.
    Without a name, a table of every template and its one-line gist; with one,
    that template's full leading comment — the guidance its author wrote for
@@ -1549,9 +1626,14 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
     // scanning the body alone under-reports what `--set` accepts.
     const vars = templateVars(shellTpl + hit.body).filter(v => v.name !== 'body');
     const w = vars.length ? Math.max(...vars.map(v => v.name.length)) : 0;
+    const source = hit.origin === 'consumer'
+      ? [`source: consumer template — ${hit.path}${hit.shadows ? ` (shadows the skill template '${hit.name}')` : ''}`, '']
+      : [];
+    const problems = templateProblems(hit.body, shellTpl);
     return [
       `# ${hit.name}    (planr new <file> --template ${hit.name})`,
       '',
+      ...source,
       doc || '(this template has no leading comment — add one to document it)',
       '',
       `Scaffolds ${sections.length} section${sections.length === 1 ? '' : 's'}:`,
@@ -1559,10 +1641,16 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
       '',
       `Variables (planr new <file> --set <name>=<value>):`,
       ...vars.map(v => `  ${v.name.padEnd(w)}  ${varDefault(v) || '(no default — always filled)'}`),
+      ...(problems.length ? ['', 'Problems:', ...problems.map(p => '  ' + p)] : []),
     ].join('\n') + '\n';
   }
   const w = Math.max(...sorted.map(t => t.name.length));
-  return sorted.map(t => `${t.name.padEnd(w)}  ${templateSummary(t.body) || '(no description)'}`).join('\n') +
+  const mark = (t) => t.origin !== 'consumer' ? '' : t.shadows ? '[consumer, shadows skill] ' : '[consumer] ';
+  const rows = sorted.map(t => `${t.name.padEnd(w)}  ${mark(t)}${templateSummary(t.body) || '(no description)'}`);
+  const flagged = sorted.flatMap(t => templateProblems(t.body, shellTpl)
+    .map(p => `  ${t.name}${t.origin === 'consumer' ? ' [consumer]' : ''}: ${p}`));
+  return rows.join('\n') +
+    (flagged.length ? `\n\nTemplate problems:\n${flagged.join('\n')}` : '') +
     `\n\nRun \`planr templates <name>\` for a template's full guidance.\n`;
 }
 
@@ -1897,13 +1985,34 @@ function planMoveSection(html, address, flags) {
    error text live in the cores (they throw PlanError); main() is the sole site
    that maps a PlanError to die(). */
 
+// Every selectable template: the skill's templates/ merged with the consumer
+// directory when it exists (planTemplateIndex decides precedence). Both dirs
+// are parameters; the defaults are the installed layout. Bodies are read by
+// the caller from each entry's `path`.
+function loadTemplates({ skillDir = TEMPLATE_DIR, consumerDir = resolveConsumerTemplateDir() } = {}) {
+  const listDir = (d) => {
+    try { return fs.readdirSync(d); }
+    catch (e) { throw new PlanError(`cannot read templates dir '${d}': ${e.message}`); }
+  };
+  const consumer = consumerDir && fs.existsSync(consumerDir) ? listDir(consumerDir) : null;
+  const index = planTemplateIndex({ skill: listDir(skillDir), consumer, consumerDir });
+  return {
+    shell: read(path.join(skillDir, '_shell.html')),
+    entries: index.map(t => ({
+      ...t,
+      path: path.join(t.origin === 'consumer' ? consumerDir : skillDir, `${t.name}.html`),
+    })),
+  };
+}
+
 function cmdNew(outPath, flags) {
   if (!outPath) throw new PlanError('new requires an output path, e.g. `new plan.html --template tdd`');
   const template = flagValue(flags, 'template') || 'basic';
   if (template.startsWith('_')) throw new PlanError(`'${template}' is not a selectable template`);
-  const bodyPath = path.join(TEMPLATE_DIR, `${template}.html`);
-  if (!fs.existsSync(bodyPath)) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
-  const html = planNew(read(path.join(TEMPLATE_DIR, '_shell.html')), read(bodyPath), {
+  const { shell, entries } = loadTemplates();
+  const hit = entries.find(t => t.name === template);
+  if (!hit) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
+  const html = planNew(shell, read(hit.path), {
     title: flagValue(flags, 'title'),
     date: new Date().toISOString().slice(0, 10),
     skillSubpath: resolveSkillSubpath(),
@@ -1912,7 +2021,8 @@ function cmdNew(outPath, flags) {
   const parent = path.dirname(outPath);
   if (parent && !fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
   write(outPath, html);
-  process.stdout.write(`Created ${outPath} (template: ${template})\n`);
+  const origin = hit.origin === 'consumer' ? `, consumer: ${hit.path}` : '';
+  process.stdout.write(`Created ${outPath} (template: ${template}${origin})\n`);
 }
 
 // Read-only shell: read, run core, print.
@@ -1928,11 +2038,8 @@ function cmdCheck(file, flags) {
     throw new PlanError(`check --strict: ${warnings.length} warning(s), listed above`);
 }
 function cmdTemplates(name) {
-  let files;
-  try { files = fs.readdirSync(TEMPLATE_DIR); }
-  catch (e) { throw new PlanError(`cannot read templates dir: ${e.message}`); }
-  const entries = planTemplates(files).map(n => ({ name: n, body: read(path.join(TEMPLATE_DIR, `${n}.html`)) }));
-  process.stdout.write(planTemplateReport(entries, name, read(path.join(TEMPLATE_DIR, '_shell.html'))));
+  const { shell, entries } = loadTemplates();
+  process.stdout.write(planTemplateReport(entries.map(t => ({ ...t, body: read(t.path) })), name, shell));
 }
 
 // Mutating shell: read, run core, write, print message.
@@ -2056,8 +2163,9 @@ address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth; a
          which also fixes the nesting depth, so --parent is only needed to
          append as the last child.
 --into:  a plain HTML container inside the addressed section — <tag> (the LAST
-         one), <tag>:<n> (1-based), or #<id>. Never a <plan-*> tag: address
-         those with the dot-path.
+         one), <tag>:<n> (1-based), or #<id>. Any container, plan-defs and
+         plan-cards included, except the tags the dot-path addresses
+         (plan-section, plan-subsection, plan-header).
 new --set: a DOTTED key is a node address applied to the generated file
          (--set header.status=review); a BARE key fills a {{placeholder}}.
 round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`;
@@ -2106,7 +2214,7 @@ function main() {
 if (require.main === module) main();   // run the CLI only when invoked directly
 
 module.exports = {
-  render, templateVars, templateDoc, templateSummary, resolveSkillSubpath,
+  render, templateVars, templateDoc, templateSummary, templateProblems, claudeRoot, resolveSkillSubpath, resolveConsumerTemplateDir,
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
   childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,
@@ -2115,6 +2223,6 @@ module.exports = {
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS,
-  planNew, planTemplates, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
+  planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };

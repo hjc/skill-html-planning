@@ -288,6 +288,12 @@ class PlanBadge extends HTMLElement {
 /* ── plan-table ───────────────────────────────────────── */
 class PlanTable extends HTMLElement {} // Pure CSS wrapper
 
+/* ── plan-defs / plan-def ─────────────────────────────── */
+// A sub-record of name → value pairs. Pure CSS: plan-styles.css lays the pairs
+// out as table rows and renders each key from its `key` attribute via ::before.
+class PlanDefs extends HTMLElement {} // CSS container only
+class PlanDef extends HTMLElement {}  // key rendered by CSS attr(key)
+
 /* ── Helpers ──────────────────────────────────────────── */
 // Human labels for the section/subsection `status` attribute. Unknown values
 // pass through verbatim so a new status shows *something* rather than nothing.
@@ -614,6 +620,8 @@ const components = {
   'plan-phase':      PlanPhase,
   'plan-badge':      PlanBadge,
   'plan-table':      PlanTable,
+  'plan-defs':       PlanDefs,
+  'plan-def':        PlanDef,
   'plan-file':       PlanFile,
   'plan-diff':       PlanDiff,
   'plan-diagram':    PlanDiagram,

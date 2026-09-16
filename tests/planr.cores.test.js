@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PLANR_URL, SKILL_DIR } from './helpers.js';
 
@@ -64,6 +64,27 @@ const RICH = [
   '</main>',
 ].join('\n');
 const bodyOf = (html, addr) => planr.planRead(html, addr, { body: true });
+
+// A sub-record in both shapes <plan-defs> takes: standalone, and inside a table
+// cell. Two lists, so an `--into plan-defs` without `:<n>` has to pick the LAST.
+const DEFS_DOC = [
+  '<plan-header title="Defs" status="draft"></plan-header>',
+  '<main>',
+  '  <plan-section id="fields" title="Fields">',
+  '    <plan-defs>',
+  '      <plan-def key="country_code">CharField(max_length=2)</plan-def>',
+  '    </plan-defs>',
+  '    <plan-table>',
+  '      <table>',
+  '        <tbody>',
+  '          <tr><td>SmsLog</td><td><plan-defs><plan-def key="tier">CharField</plan-def></plan-defs></td></tr>',
+  '        </tbody>',
+  '      </table>',
+  '    </plan-table>',
+  '  </plan-section>',
+  '</main>',
+].join('\n');
+const skillFile = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
 
 describe('planList', () => {
   it('formats header + numbered top level + indented child', () => {
@@ -592,6 +613,55 @@ describe('template documentation (the leading-comment convention)', () => {
     expect(() => planr.planTemplateReport(entries, 'nope')).toThrow(/unknown template 'nope' — have: alpha, zeta/);
     expect(() => planr.planTemplateReport([])).toThrow(/no templates found/);
   });
+
+  // Inside describe('template documentation (the leading-comment convention)'),
+  // after the existing `entries` tests — TPL and `entries` are in scope there.
+  const PROBE_SHELL = '<title>{{title}}</title>\n<plan-header title="{{title}}" status="draft"></plan-header>\n<main>\n{{body}}\n</main>';
+
+  it('templateProblems holds a template to the rules every shipped template meets', () => {
+    expect(planr.templateProblems(TPL, PROBE_SHELL)).toEqual([]);
+    expect(planr.templateProblems('<plan-section id="a"></plan-section>', PROBE_SHELL))
+      .toEqual(['no leading comment — open the template with an HTML comment saying what it is for']);
+    expect(planr.templateProblems('<!-- Uses <plan-callout> for notes. -->\n<plan-section id="a"></plan-section>', PROBE_SHELL))
+      .toEqual(['its leading comment contains a literal <plan-*> tag — refer to components in prose']);
+    expect(planr.templateProblems('<!-- Broken. -->\n<plan-section id="a">', PROBE_SHELL))
+      .toContain('fails check once scaffolded — run `planr new` with it and `planr check` the result');
+  });
+  it('templateProblems counts a check WARNING in the scaffold as a problem', () => {
+    // A diff line with no gutter character: structurally sound, one S2 warning.
+    const body = '<!-- Gutterless. -->\n<plan-section id="a" title="A">\n<plan-diff path="a.py">\nno gutter\n</plan-diff>\n</plan-section>';
+    const problems = planr.templateProblems(body, PROBE_SHELL);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^check warning once scaffolded — line \d+: /);
+  });
+  it('every shipped template has no problems', () => {
+    const dir = join(SKILL_DIR, 'templates');
+    const shell = readFileSync(join(dir, '_shell.html'), 'utf8');
+    const names = planr.planTemplates(readdirSync(dir));
+    expect(names.length).toBeGreaterThan(0);
+    for (const n of names)
+      expect(planr.templateProblems(readFileSync(join(dir, `${n}.html`), 'utf8'), shell), n).toEqual([]);
+  });
+  it('marks a consumer template, and one that shadows a skill template, in the list', () => {
+    const out = planr.planTemplateReport([
+      { name: 'zeta', body: TPL, origin: 'consumer', shadows: false },
+      { name: 'tdd', body: TPL, origin: 'consumer', shadows: true },
+      { name: 'basic', body: TPL, origin: 'skill', shadows: false },
+    ]);
+    expect(out).toMatch(/^basic {2}Probe template/m);
+    expect(out).toMatch(/^tdd {4}\[consumer, shadows skill\] Probe template/m);
+    expect(out).toMatch(/^zeta {3}\[consumer\] Probe template/m);
+  });
+  it('names a consumer template\'s source file when describing it', () => {
+    const out = planr.planTemplateReport([{
+      name: 'tdd', body: TPL, origin: 'consumer', shadows: true, path: '/r/.claude/planr-templates/tdd.html',
+    }], 'tdd');
+    expect(out).toContain("source: consumer template — /r/.claude/planr-templates/tdd.html (shadows the skill template 'tdd')");
+  });
+  it('reports template problems in the list and in the description', () => {
+    expect(planr.planTemplateReport(entries)).toMatch(/Template problems:\n {2}alpha: no leading comment/);
+    expect(planr.planTemplateReport(entries, 'alpha')).toMatch(/Problems:\n {2}no leading comment/);
+  });
 });
 
 describe('planList outline', () => {
@@ -609,6 +679,41 @@ describe('planList outline', () => {
 });
 
 describe('planInsert', () => {
+  it('appends a <plan-def> INTO a <plan-defs>', () => {
+    const one = planr.planInsert(DEFS_DOC, 'fields',
+      '<plan-def key="tier">CharField(max_length=10)</plan-def>', { where: 'end', into: 'plan-defs:1' });
+    expect(one.message).toBe("inserted 56 chars at the end of 'fields' → plan-defs:1 of 2");
+    expect(one.html).toMatch(
+      /<plan-def key="country_code">CharField\(max_length=2\)<\/plan-def>\n {6}<plan-def key="tier">CharField\(max_length=10\)<\/plan-def>\n {4}<\/plan-defs>/);
+    expect(planr.planCheck(one.html).ok).toBe(true);
+
+    // No ordinal → the LAST own <plan-defs>, here the one inside the table cell.
+    const cell = planr.planInsert(DEFS_DOC, 'fields',
+      '<plan-def key="limit">500/day</plan-def>', { where: 'end', into: 'plan-defs' });
+    expect(cell.message).toContain('→ plan-defs:2 of 2');
+    expect(cell.html).toMatch(
+      /<td><plan-defs><plan-def key="tier">CharField<\/plan-def>\s*<plan-def key="limit">500\/day<\/plan-def>\s*<\/plan-defs><\/td>/);
+    expect(planr.planCheck(cell.html).ok).toBe(true);
+  });
+  it('--into refuses exactly the tags the dot-path addresses, and accepts any other component', () => {
+    const doc = [
+      '<plan-header title="T" status="draft"></plan-header>',
+      '<plan-section id="s" title="S">',
+      '  <plan-section id="k" title="K"></plan-section>',
+      '  <plan-subsection id="u" title="U"></plan-subsection>',
+      '  <plan-cards>',
+      '    <plan-card label="A"></plan-card>',
+      '  </plan-cards>',
+      '</plan-section>',
+    ].join('\n');
+    for (const tag of ['plan-section', 'plan-subsection', 'plan-header'])
+      expect(() => planr.planInsert(doc, 's', '<p>x</p>', { into: tag }), tag)
+        .toThrow(new RegExp(`address a <${tag}> with the dot-path`));
+    const { html, message } = planr.planInsert(doc, 's', '<plan-card label="B"></plan-card>', { where: 'end', into: 'plan-cards' });
+    expect(message).toContain('→ plan-cards');
+    expect(html).toMatch(/<plan-card label="A"><\/plan-card>\n {4}<plan-card label="B"><\/plan-card>\n {2}<\/plan-cards>/);
+    expect(planr.planCheck(html).ok).toBe(true);
+  });
   it('prepends to a section body — the amendment-callout write', () => {
     const { html, message } = planr.planInsert(RICH, 'map', '<plan-callout type="warn">Amended.</plan-callout>', { where: 'start' });
     expect(bodyOf(html, 'map').trimStart()).toMatch(/^<plan-callout type="warn">Amended\.<\/plan-callout>/);
@@ -639,7 +744,6 @@ describe('planInsert', () => {
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'ol' })).toThrow(/no <ol> in this section/);
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'tr:9' })).toThrow(/only 2 <tr>/);
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: '#nope' })).toThrow(/no element with id 'nope'/);
-    expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'plan-table' })).toThrow(/address a <plan-table> with the dot-path/);
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'a b' })).toThrow(/expected <tag>, <tag>:<n>, or #<id>/);
   });
   it('anchors on a heading, before and after', () => {
@@ -1065,5 +1169,88 @@ describe('planRead --text', () => {
     const empty = '<plan-section id="e" title="Empty"></plan-section>';
     expect(planr.planRead(empty, 'e', { text: true })).toBe('## 1. Empty\n');
     expect(planr.planRead(empty, 'e', { text: true, body: true })).toBe('');
+  });
+});
+
+describe('<plan-defs> component', () => {
+  it('is registered in the runtime, and PLAN_TAGS matches the runtime registry', () => {
+    const map = /const components = \{([\s\S]*?)\};/.exec(skillFile('plan-runtime.js'))[1];
+    const registered = [...map.matchAll(/'(plan-[a-z-]+)'\s*:/g)].map(m => m[1]);
+    expect(registered).toEqual(expect.arrayContaining(['plan-defs', 'plan-def']));
+    expect([...registered].sort()).toEqual([...planr.PLAN_TAGS].sort());
+  });
+  it('passes check standalone and inside a table cell', () => {
+    const { ok, report } = planr.planCheck(DEFS_DOC);
+    expect(ok, report).toBe(true);
+    expect(report).toContain('plan-def 2, plan-defs 2');
+  });
+  it('reads as text: one `key: value` line per pair, and pairs joined by `; ` inside a table cell', () => {
+    // The key lives only in an attribute, so the text rule has to print it.
+    const html = [
+      '<plan-section id="d" title="D">',
+      '  <plan-defs>',
+      '    <plan-def key="country_code">CharField(max_length=2), <code>ISO</code> alpha-2</plan-def>',
+      '    <plan-def key="tier">CharField(max_length=10)</plan-def>',
+      '  </plan-defs>',
+      '  <plan-table><table><tbody>',
+      '    <tr><td>Default limits</td><td><plan-defs><plan-def key="Enterprise">500/day</plan-def><plan-def key="Professional">100/day</plan-def></plan-defs></td></tr>',
+      '  </tbody></table></plan-table>',
+      '</plan-section>',
+    ].join('\n');
+    expect(planr.planRead(html, 'd', { text: true, body: true })).toBe([
+      'country_code: CharField(max_length=2), ISO alpha-2',
+      'tier: CharField(max_length=10)',
+      'Default limits | Enterprise: 500/day; Professional: 100/day',
+      '',
+    ].join('\n'));
+  });
+  it('is styled as a compact block, per row, and chromeless inside a table cell', () => {
+    const css = skillFile('plan-styles.css');
+    expect(css).toMatch(/^plan-defs\s*\{[^}]*display:\s*table;/m);
+    expect(css).toMatch(/^plan-def\s*\{[^}]*display:\s*table-row;/m);
+    expect(css).toMatch(/^plan-def::before\s*\{[^}]*content:\s*attr\(key\);/m);
+    expect(css).toMatch(/^plan-table td plan-defs\s*\{[^}]*border:\s*none;/m);
+  });
+  it('is demonstrated in the sample plan, standalone and inside a table cell', () => {
+    const sample = skillFile('examples/sample-plan.html');
+    const all = (tag) => planr.findElementsDeep(sample, tag, 0, sample.length);
+    const cells = all('td');
+    const inCell = (d) => cells.some(td => td.innerStart <= d.outerStart && d.outerEnd <= td.innerEnd);
+    const defs = all('plan-defs');
+    expect(defs.filter(d => !inCell(d)).length).toBeGreaterThan(0);
+    expect(defs.filter(inCell).length).toBeGreaterThan(0);
+  });
+  it('is documented in SKILL.md, and replaces the nested-table workaround', () => {
+    const skill = skillFile('SKILL.md');
+    expect(skill).toContain('#### `<plan-defs>` / `<plan-def>`');
+    expect(skill).toContain('--into plan-defs');
+    expect(skill).not.toMatch(/bold(ed)? leads/);
+  });
+});
+
+describe('planTemplateIndex', () => {
+  it('merges skill and consumer listings into one sorted index, marking origin', () => {
+    expect(planr.planTemplateIndex({
+      skill: ['_shell.html', 'basic.html', 'tdd.html'],
+      consumer: ['map.html', 'notes.txt', '_draft.html'],
+      consumerDir: '/r/.claude/planr-templates',
+    })).toEqual([
+      { name: 'basic', origin: 'skill', shadows: false },
+      { name: 'map', origin: 'consumer', shadows: false },
+      { name: 'tdd', origin: 'skill', shadows: false },
+    ]);
+  });
+  it('lets a consumer template shadow the skill template of the same name, and records it', () => {
+    expect(planr.planTemplateIndex({ skill: ['tdd.html'], consumer: ['tdd.html'], consumerDir: '/r' }))
+      .toEqual([{ name: 'tdd', origin: 'consumer', shadows: true }]);
+  });
+  it('is the skill listing alone when there is no consumer directory', () => {
+    expect(planr.planTemplateIndex({ skill: ['basic.html'], consumer: null, consumerDir: null }))
+      .toEqual([{ name: 'basic', origin: 'skill', shadows: false }]);
+  });
+  it('refuses a consumer _shell.html — the shell is skill-owned', () => {
+    expect(() => planr.planTemplateIndex({
+      skill: ['basic.html'], consumer: ['_shell.html'], consumerDir: '/r/.claude/planr-templates',
+    })).toThrow(/\/r\/\.claude\/planr-templates\/_shell\.html: the shell is skill-owned/);
   });
 });

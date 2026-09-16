@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
@@ -171,6 +171,13 @@ describe('shipped docs stand alone', () => {
       }
     }
     expect(checked, 'no cited references found — has the pattern gone stale?').toBeGreaterThan(0);
+  });
+  it('document the consumer template directory', () => {
+    // Scoped to the two docs Templates/template-authoring guidance lives in —
+    // not the full `docs` list above, which also covers authoring-traps.md,
+    // an unrelated reference this feature has no reason to touch.
+    for (const doc of ['SKILL.md', 'references/template-authoring.md'])
+      expect(readFileSync(join(SKILL_DIR, doc), 'utf8'), doc).toContain('.claude/planr-templates/');
   });
 });
 
@@ -418,5 +425,91 @@ describe('text-addressed writes', () => {
     expect(both.stderr).toContain('use only one of --with / --file');
     expect(run(['--help']).stdout).toContain('replace');
     expect(skill()).toContain('| `replace` |');
+  });
+});
+
+describe('consumer template directory (.claude/planr-templates/)', () => {
+  const PROBE = [
+    '<!-- ════════════════════════════════════════',
+    '     Probe consumer template — owned by the repo, not the skill.',
+    '     ════════════════════════════════════════ -->',
+    '',
+    '  <plan-section id="probe" title="Probe"></plan-section>',
+  ].join('\n');
+  // Stage the skill at <dir>/.claude/skills/html-planning and write `files` into
+  // its sibling consumer directory. Returns the staged planr.js.
+  const stageWithConsumer = (files) => {
+    const staged = stageSkill(dir, 'skills/html-planning');
+    const consumerDir = join(dir, '.claude', 'planr-templates');
+    mkdirSync(consumerDir, { recursive: true });
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(consumerDir, name), body);
+    return staged;
+  };
+
+  it('lists, describes and scaffolds a consumer template beside the skill ones', () => {
+    const staged = stageWithConsumer({ 'probe.html': PROBE });
+    const list = runAt(staged, ['templates']);
+    expect(list.code, list.stderr).toBe(0);
+    expect(list.stdout).toMatch(/^probe\s+\[consumer\] Probe consumer template/m);
+    expect(list.stdout).toMatch(/^tdd\s+TDD implementation plan/m);
+    expect(list.stdout).not.toContain('Template problems');
+
+    const one = runAt(staged, ['templates', 'probe']);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.stdout).toContain('source: consumer template');
+    expect(one.stdout).toContain('1. probe');
+
+    const out = join(dir, 'probe-plan.html');
+    const made = runAt(staged, ['new', out, '--template', 'probe']);
+    expect(made.code, made.stderr).toBe(0);
+    expect(made.stdout).toContain('(template: probe, consumer:');
+    const html = readFileSync(out, 'utf8');
+    expect(html).toContain('<plan-section id="probe" title="Probe">');
+    expect(html).toContain('/skills/html-planning');   // the shell still comes from the skill
+    expect(run(['check', out]).code).toBe(0);
+  });
+  it('lets a consumer template shadow a skill template, and says so', () => {
+    const staged = stageWithConsumer({ 'tdd.html': PROBE });
+    expect(runAt(staged, ['templates']).stdout).toMatch(/^tdd\s+\[consumer, shadows skill\] Probe consumer template/m);
+    const out = join(dir, 'shadowed.html');
+    expect(runAt(staged, ['new', out, '--template', 'tdd']).code).toBe(0);
+    expect(readFileSync(out, 'utf8')).toContain('id="probe"');
+    expect(readFileSync(out, 'utf8')).not.toContain('id="anti-patterns"');
+  });
+  it('refuses a consumer _shell.html (exit 1)', () => {
+    const staged = stageWithConsumer({ '_shell.html': '{{body}}' });
+    for (const args of [['templates'], ['new', join(dir, 'x.html')]]) {
+      const r = runAt(staged, args);
+      expect(r.code, args[0]).toBe(1);
+      expect(r.stderr, args[0]).toContain('the shell is skill-owned');
+    }
+  });
+  it('reports a consumer template that breaks the template rules', () => {
+    const staged = stageWithConsumer({ 'bare.html': '<plan-section id="bare" title="Bare"></plan-section>' });
+    const r = runAt(staged, ['templates']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/Template problems:\n {2}bare \[consumer\]: no leading comment/);
+  });
+
+  // Regression guard — passes before AND after this step. Placed inside the
+  // describe above: with no planr-templates/ beside the staged skill, the
+  // listing is exactly what the unstaged skill prints.
+  it('is simply absent when the directory does not exist', () => {
+    const staged = stageSkill(dir, 'skills/html-planning');
+    expect(runAt(staged, ['templates']).stdout).toBe(run(['templates']).stdout);
+  });
+});
+
+describe('release metadata', () => {
+  it('SKILL.md, package.json, the lockfile root and the README release notes name one version', () => {
+    const root = join(SKILL_DIR, '..', '..');
+    const json = (f) => JSON.parse(readFileSync(join(root, f), 'utf8'));
+    const pkg = json('package.json');
+    const lock = json('package-lock.json');
+    const skillVersion = /^version:\s*(\S+)$/m.exec(readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8'))[1];
+    expect(skillVersion).toBe(pkg.version);
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages[''].version).toBe(pkg.version);
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain(`## What's new in ${pkg.version}`);
   });
 });

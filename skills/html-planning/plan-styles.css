@@ -299,6 +299,53 @@ plan-table th.right, plan-table td.right { text-align: right; }
 plan-table td.mono { font-family: var(--mono); font-size: 13px; }
 plan-table .row-total { background: var(--accent-dim) !important; }
 
+/* ── plan-defs / plan-def ─────────────────────────────── */
+/* A sub-record of name → value pairs. CSS table display: every key shares one
+   column width, and a value's mixed inline content (text, <code>, <strong>, a
+   badge) is wrapped into ONE anonymous table cell. The key is generated from
+   the `key` attribute, so no JS runs. */
+plan-defs {
+  display: table;
+  border-collapse: separate;
+  border-spacing: 0 4px;
+  max-width: 100%;
+  margin: 12px 0;
+  padding: 6px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.5;
+}
+plan-def {
+  display: table-row;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+plan-def::before {
+  content: attr(key);
+  display: table-cell;
+  padding-right: 16px;
+  white-space: nowrap;
+  vertical-align: baseline;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+/* Inside a table cell the host <td> already carries padding and a border, so
+   the sub-record drops its chrome and reads as part of its row. */
+plan-table td plan-defs {
+  margin: -2px 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  border-spacing: 0 2px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+plan-table td plan-def::before { padding-right: 12px; font-size: 12px; }
+
 /* ── plan-tabs / plan-tab ─────────────────────────────── */
 plan-tabs {
   display: block;

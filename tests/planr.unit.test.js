@@ -43,6 +43,28 @@ describe('resolveSkillSubpath(invoked)', () => {
   });
 });
 
+describe('resolveConsumerTemplateDir(invoked)', () => {
+  it('is planr-templates/ beside skills/, under the same .claude ancestor', () => {
+    expect(planr.resolveConsumerTemplateDir('/u/.claude/skills/html-planning/planr.js')).toBe('/u/.claude/planr-templates');
+    expect(planr.resolveConsumerTemplateDir('C:\\a\\.claude\\skills\\my-skill\\planr.js')).toBe('C:/a/.claude/planr-templates');
+    expect(planr.resolveConsumerTemplateDir('/x/.claude/skills/a/b/planr.js')).toBe('/x/.claude/planr-templates');
+  });
+  it('is null outside any .claude tree', () => {
+    expect(planr.resolveConsumerTemplateDir('/repo/skills/html-planning/planr.js')).toBeNull();
+  });
+});
+
+describe('claudeRoot(invoked)', () => {
+  it('is the one .claude both resolvers read, even with a nested .claude in the path', () => {
+    const invoked = '/u/.claude/worktrees/w1/.claude/skills/html-planning/planr.js';
+    const root = planr.claudeRoot(invoked);
+    expect(root).toBe('/u/.claude');
+    expect(`${root}/${planr.resolveSkillSubpath(invoked)}/planr.js`).toBe(invoked);
+    expect(planr.resolveConsumerTemplateDir(invoked)).toBe(`${root}/planr-templates`);
+    expect(planr.claudeRoot('/repo/skills/html-planning/planr.js')).toBeNull();
+  });
+});
+
 describe('attribute scanner / mutator', () => {
   const raw = ' id="foo" num="3" add title="Hi There"';
   it('reads valued and boolean attributes', () => {
