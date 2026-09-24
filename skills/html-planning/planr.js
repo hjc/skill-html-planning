@@ -12,6 +12,8 @@
      node planr.js check       <file> [--strict]
      node planr.js tasks       <file> [--all | --status <s>]
      node planr.js read        <file> <address> [--body] [--text]
+     node planr.js meta        <file> [--format text|json]
+     node planr.js meta        <file> --set <k>=<v> [...] [--unset <k> ...]
      node planr.js set         <file> <path>=<value> [<path>=<value> ...]
      node planr.js set-body    <file> <address> [--file <f>] [--append]
      node planr.js prepend     <file> <address> [--file <f>] [--into <sel>]
@@ -173,7 +175,7 @@ function templateSummary(tpl) {
    tested against, applied at runtime so a consumer template is held to them
    too: a leading comment, no literal plan tag inside it, and a scaffold that
    passes `check` with ZERO warnings. Empty when the template is sound. */
-function templateProblems(body, shellTpl) {
+function templateProblems(body, shellTpl, schema = null) {
   const problems = [];
   const lead = /^\s*<!--([\s\S]*?)-->/.exec(body);
   if (!templateDoc(body))
@@ -182,13 +184,13 @@ function templateProblems(body, shellTpl) {
     problems.push('its leading comment contains a literal <plan-*> tag — refer to components in prose');
   let html;
   try {
-    html = planNew(shellTpl, body, { title: 'Template probe', date: '2000-01-01', skillSubpath: 'skills/probe' });
+    html = planNew(shellTpl, body, { title: 'Template probe', date: '2000-01-01', skillSubpath: 'skills/probe', schema });
   } catch (e) {
     if (!(e instanceof PlanError)) throw e;
     problems.push(`cannot be scaffolded — ${e.message}`);
     return problems;
   }
-  const { ok, warnings } = planCheck(html);
+  const { ok, warnings } = planCheck(html, schema);
   if (!ok) problems.push('fails check once scaffolded — run `planr new` with it and `planr check` the result');
   for (const w of warnings) problems.push(`check warning once scaffolded — line ${w.line}: ${w.text}`);
   return problems;
@@ -527,6 +529,8 @@ const TEXT_RULES = {
   'plan-table':      BLOCK,
   'plan-defs':       BLOCK,
   'plan-def':        { kind: 'block', lead: r => `${attrText(r, 'key')}: ` },
+  'plan-meta':       BLOCK,
+  'plan-field':      { kind: 'block', lead: r => `${attrText(r, 'key')}: ` },
   'plan-file':       { kind: 'code', info: r => attrText(r, 'path') },
   'plan-diff':       { kind: 'code', info: r => attrText(r, 'path') },
   'plan-diagram':    { kind: 'code', info: () => 'mermaid', after: r => [attrText(r, 'caption')] },
@@ -901,13 +905,442 @@ function validateAttr(tag, attr, value) {
 }
 // The header and every section of a finished document, each valued attribute
 // through validateAttr — for `new`, whose placeholder fills bypass planSet.
-function validateNodes(html) {
+function validateNodes(html, schema = null) {
   const nodes = [];
   const header = findElement(html, 'plan-header');
   if (header) nodes.push(header);
   walkSections(html, ({ el }) => nodes.push(el));
   for (const el of nodes)
     for (const a of scanAttrs(el.attrsRaw)) if (a.hasValue) validateAttr(el.tag, a.name, a.value);
+  // A template may declare metadata defaults, so a scaffolded document's
+  // <plan-meta> is held to exactly the rules a `meta --set` write is.
+  if (!schema) return;
+  const block = readMetaBlock(html);
+  for (const f of block ? block.fields : []) {
+    if (!f.key) throw new PlanError('<plan-field> has no `key` attribute');
+    // C9: a template default may never name a field the header already owns.
+    const owned = headerOwnedProblem(schema, f.key);
+    if (owned) throw new PlanError(`a template may not declare a header field — ${owned}`);
+    const problem = validateField(schema, f.key, f.raw);
+    if (problem) throw new PlanError(problem);
+  }
+}
+
+/* ── metadata schema ──────────────────────────────────────
+   The schema owns the vocabulary: every queryable field, its type, and — for
+   an enum — the DECLARED order sorting and >= comparisons read. Nothing here
+   hardcodes a field name; the shipped core schema (planr-schema.json beside
+   this file) is data in exactly the format a consumer's
+   .claude/planr-schema.json uses. Parsing is pure: the shell reads the files
+   and hands the parsed JSON in. */
+const CORE_SCHEMA_FILE = 'planr-schema.json';
+const CONSUMER_SCHEMA_FILENAME = 'planr-schema.json';
+// The consumer's schema: planr-schema.json under claudeRoot, beside
+// planr-templates/. Same derivation as resolveConsumerTemplateDir, so both hang
+// off the one .claude the tool was invoked through. Pure — whether the file
+// exists is the shell's question.
+function resolveConsumerSchemaPath(invoked = process.argv[1] || __filename) {
+  const root = claudeRoot(invoked);
+  return root ? `${root}/${CONSUMER_SCHEMA_FILENAME}` : null;
+}
+const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
+const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label'];
+const SCHEMA_KEYS = ['fields', 'infer', 'defaults', 'rankings'];
+const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
+const HEADER_SOURCE = /^header:(title|subtitle|status|date|chips)$/;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function schemaFail(origin, msg) { throw new PlanError(`schema ${origin}: ${msg}`); }
+function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+
+/* Pure: (parsed JSON, origin label) -> a normalised schema. SHAPE only — every
+   cross-reference (a `defaults` key, a ranking's field names) is checked after
+   the merge by validateSchemaRefs, because a consumer may legitimately
+   reference a CORE field. Every part carries its `origin`, so an error names
+   the file at fault rather than "the schema". */
+function parseSchema(data, origin) {
+  if (!isPlainObject(data)) schemaFail(origin, 'must be a JSON object');
+  for (const k of Object.keys(data))
+    if (!SCHEMA_KEYS.includes(k)) schemaFail(origin, `unknown key '${k}' — valid: ${SCHEMA_KEYS.join(', ')}`);
+  const fields = {};
+  const raw = data.fields === undefined ? {} : data.fields;
+  if (!isPlainObject(raw)) schemaFail(origin, '`fields` must be an object');
+  for (const [name, def] of Object.entries(raw)) {
+    if (!FIELD_NAME.test(name)) schemaFail(origin, `field name '${name}' must be lower-case letters, digits and hyphens`);
+    if (!isPlainObject(def)) schemaFail(origin, `field '${name}' must be an object`);
+    for (const k of Object.keys(def))
+      if (!FIELD_KEYS.includes(k)) schemaFail(origin, `field '${name}': unknown key '${k}' — valid: ${FIELD_KEYS.join(', ')}`);
+    if (!FIELD_TYPES.includes(def.type)) schemaFail(origin, `field '${name}': type '${def.type}' — valid: ${FIELD_TYPES.join(', ')}`);
+    if (def.type === 'enum') {
+      if (!Array.isArray(def.values) || !def.values.length)
+        schemaFail(origin, `field '${name}': an enum declares a non-empty \`values\` array (its order is the sort order)`);
+      if (def.values.some(v => typeof v !== 'string' || !v))
+        schemaFail(origin, `field '${name}': every enum value must be a non-empty string`);
+      if (new Set(def.values).size !== def.values.length)
+        schemaFail(origin, `field '${name}': enum values must be unique`);
+    } else if (def.values !== undefined) {
+      schemaFail(origin, `field '${name}': \`values\` applies only to type enum`);
+    }
+    for (const k of ['min', 'max'])
+      if (def[k] !== undefined) {
+        if (def.type !== 'number') schemaFail(origin, `field '${name}': \`${k}\` applies only to type number`);
+        if (typeof def[k] !== 'number' || !Number.isFinite(def[k])) schemaFail(origin, `field '${name}': \`${k}\` must be a number`);
+      }
+    if (def.min !== undefined && def.max !== undefined && def.min > def.max)
+      schemaFail(origin, `field '${name}': min ${def.min} is greater than max ${def.max}`);
+    if (def.repeatable !== undefined && typeof def.repeatable !== 'boolean')
+      schemaFail(origin, `field '${name}': \`repeatable\` must be true or false`);
+    if (def.from !== undefined && !HEADER_SOURCE.test(def.from))
+      schemaFail(origin, `field '${name}': \`from\` must be header:title|subtitle|status|date|chips, got '${def.from}'`);
+    if (def.label !== undefined && typeof def.label !== 'string')
+      schemaFail(origin, `field '${name}': \`label\` must be a string`);
+    // `list` IS `string` + repeatable; normalising here gives one code path for
+    // splitting, validating and normalising a multi-valued field.
+    fields[name] = { ...def, repeatable: def.type === 'list' || def.repeatable === true, origin };
+  }
+  const infer = [];
+  if (data.infer !== undefined) {
+    if (!Array.isArray(data.infer)) schemaFail(origin, '`infer` must be an array of { match, set } rules');
+    data.infer.forEach((rule, i) => {
+      if (!isPlainObject(rule)) schemaFail(origin, `infer[${i}] must be an object`);
+      for (const k of Object.keys(rule))
+        if (!['match', 'set'].includes(k)) schemaFail(origin, `infer[${i}]: unknown key '${k}' — valid: match, set`);
+      if (typeof rule.match !== 'string' || !rule.match)
+        schemaFail(origin, `infer[${i}]: \`match\` must be a regular-expression string`);
+      let re;
+      try { re = new RegExp(rule.match); }
+      catch (e) { schemaFail(origin, `infer[${i}]: \`match\` is not a valid regular expression — ${e.message}`); }
+      if (!isPlainObject(rule.set) || !Object.keys(rule.set).length)
+        schemaFail(origin, `infer[${i}]: \`set\` must be a non-empty object of field → value`);
+      infer.push({ match: rule.match, re, set: { ...rule.set }, origin });
+    });
+  }
+  const defaults = data.defaults === undefined ? {} : data.defaults;
+  if (!isPlainObject(defaults)) schemaFail(origin, '`defaults` must be an object of field → value');
+  const defaultsOrigin = Object.fromEntries(Object.keys(defaults).map(k => [k, origin]));
+  const rankings = {};
+  const rraw = data.rankings === undefined ? {} : data.rankings;
+  if (!isPlainObject(rraw)) schemaFail(origin, '`rankings` must be an object of name → ranking');
+  for (const [name, r] of Object.entries(rraw)) {
+    if (!isPlainObject(r)) schemaFail(origin, `ranking '${name}' must be an object`);
+    for (const k of Object.keys(r))
+      if (!['where', 'order'].includes(k)) schemaFail(origin, `ranking '${name}': unknown key '${k}' — valid: where, order`);
+    if (r.where !== undefined && !isPlainObject(r.where)) schemaFail(origin, `ranking '${name}': \`where\` must be an object`);
+    if (r.order !== undefined && (!Array.isArray(r.order) || r.order.some(o => typeof o !== 'string')))
+      schemaFail(origin, `ranking '${name}': \`order\` must be an array of "field" or "field:asc"/"field:desc" strings`);
+    rankings[name] = { where: r.where || {}, order: r.order || [], origin };
+  }
+  return { fields, infer, defaults: { ...defaults }, defaultsOrigin, rankings };
+}
+
+/* Pure: (core, consumer|null) -> ONE validated schema. A consumer field
+   REPLACES the core field of the same name outright rather than merging key by
+   key: an enum's declared order is load-bearing, and there is no unambiguous
+   way to merge two orders. Consumer infer rules go FIRST, so the first match
+   that wins is the consumer's. Cross-references are checked here, on the merged
+   result, and never per file. */
+function mergeSchemas(core, consumer = null) {
+  const merged = consumer ? {
+    fields: { ...core.fields, ...consumer.fields },
+    infer: [...consumer.infer, ...core.infer],
+    defaults: { ...core.defaults, ...consumer.defaults },
+    defaultsOrigin: { ...core.defaultsOrigin, ...consumer.defaultsOrigin },
+    rankings: { ...core.rankings, ...consumer.rankings },
+  } : { ...core };
+  validateSchemaRefs(merged);
+  return merged;
+}
+// Every field name the merged schema mentions outside `fields`, and every value
+// it declares as a default or infers.
+function validateSchemaRefs(schema) {
+  const known = Object.keys(schema.fields);
+  const need = (origin, where, name) => {
+    if (!schema.fields[name])
+      schemaFail(origin, `${where} names unknown field '${name}' — declared: ${known.join(', ') || '(none)'}`);
+  };
+  for (const [name, value] of Object.entries(schema.defaults)) {
+    const origin = schema.defaultsOrigin[name];
+    need(origin, `default for '${name}'`, name);
+    const problem = validateField(schema, name, String(value));
+    if (problem) schemaFail(origin, `default for '${name}': ${problem}`);
+  }
+  for (const rule of schema.infer)
+    for (const [name, value] of Object.entries(rule.set)) {
+      need(rule.origin, `infer rule /${rule.match}/`, name);
+      const problem = validateField(schema, name, String(value));
+      if (problem) schemaFail(rule.origin, `infer rule /${rule.match}/: ${problem}`);
+    }
+  for (const [rname, r] of Object.entries(schema.rankings)) {
+    for (const name of Object.keys(r.where)) need(r.origin, `ranking '${rname}' where`, name);
+    for (const spec of r.order) {
+      const [name, dir] = spec.split(':');
+      need(r.origin, `ranking '${rname}' order`, name);
+      if (dir !== undefined && dir !== 'asc' && dir !== 'desc')
+        schemaFail(r.origin, `ranking '${rname}': order '${spec}' — direction must be asc or desc`);
+    }
+  }
+}
+
+/* ── field values ─────────────────────────────────────────
+   ONE value validator, reached by every writer of a <plan-field>:
+   planMetaSet, validateNodes (so `new` holds a template's declared defaults to
+   the same rules) and lintMeta, which collects instead of throwing. It returns
+   the problem text or null; the throwing callers wrap it in a PlanError. The
+   `key` ATTRIBUTE keeps going through validateAttr — this is the value, which
+   is element content and so beyond ATTR_RULES' reach. */
+function validateScalar(schema, key, v) {
+  const def = schema.fields[key];
+  const label = `<plan-field key="${key}">`;
+  if (def.type === 'enum' && !def.values.includes(v))
+    return `${label}: '${v}' is not a declared value — valid: ${def.values.join(', ')}`;
+  if (def.type === 'number') {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return `${label}: '${v}' is not a number`;
+    if (def.min !== undefined && n < def.min) return `${label}: ${n} is below the declared minimum ${def.min}`;
+    if (def.max !== undefined && n > def.max) return `${label}: ${n} is above the declared maximum ${def.max}`;
+  }
+  if (def.type === 'date' && !ISO_DATE.test(v)) return `${label}: '${v}' is not a YYYY-MM-DD date`;
+  if (def.type === 'path' && /[\s\\]/.test(v))
+    return `${label}: '${v}' is not a usable path — write it relative, with forward slashes and no spaces`;
+  return null;
+}
+// A repeatable field's items, or the single trimmed value. One splitter, so a
+// `list` and a repeatable `path` behave identically.
+function fieldItems(def, raw) {
+  return def.repeatable ? String(raw).split(',').map(s => s.trim()) : [String(raw).trim()];
+}
+function validateField(schema, key, raw) {
+  const def = schema.fields[key];
+  if (!def) return `unknown field '${key}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`;
+  const items = fieldItems(def, raw);
+  if (!items.length || items.some(s => s === ''))
+    return `<plan-field key="${key}">: empty value — give it a value, or remove the field`;
+  for (const item of items) {
+    const problem = validateScalar(schema, key, item);
+    if (problem) return problem;
+  }
+  return null;
+}
+// The normalised value: an array for a repeatable field, a number for a number,
+// the trimmed string otherwise.
+function fieldValue(def, raw) {
+  const items = fieldItems(def, raw);
+  if (def.repeatable) return items;
+  return def.type === 'number' ? Number(items[0]) : items[0];
+}
+/* The value's position in a TOTAL ORDER for its field — the whole of what a
+   sort or a >=/<= comparison needs: the DECLARED index for an enum, the number
+   itself for a number, the ISO string for a date (which sorts lexically), the
+   lower-cased text for a string or path, and null for a repeatable field, which
+   has no single position. Exported so a query can rank a LITERAL from the
+   command line by the same rule as a stored value. */
+function fieldRank(def, raw) {
+  if (!def || raw == null || String(raw).trim() === '') return null;
+  if (def.repeatable) return null;
+  const v = String(raw).trim();
+  if (def.type === 'enum') { const i = def.values.indexOf(v); return i === -1 ? null : i; }
+  if (def.type === 'number') { const n = Number(v); return Number.isFinite(n) ? n : null; }
+  if (def.type === 'date') return v;
+  return v.toLowerCase();
+}
+
+/* ── <plan-meta> ──────────────────────────────────────────
+   A document's own metadata: a <plan-meta> block of <plan-field key="…">
+   pairs, the FIRST element inside <main>. Everything below is pure — the
+   document path arrives as data and is never read from the filesystem. */
+function readMetaBlock(html) {
+  const el = findElement(html, 'plan-meta');
+  if (!el) return null;
+  const fields = findElementsDeep(html, 'plan-field', el.innerStart, el.innerEnd).map(f => ({
+    key: decodeEntities(String(getAttr(f.attrsRaw, 'key') || '')).trim(),
+    raw: decodeEntities(html.slice(f.innerStart, f.innerEnd)).replace(/\s+/g, ' ').trim(),
+    line: lineOf(html, f.outerStart),
+    el: f,
+  }));
+  return { el, fields };
+}
+
+/* Pure: (html, { schema, docPath }) -> the resolved metadata record:
+     { path, fields: { <name>: { value, raw, source, type, rank } }, unknown, problems }
+   `source` is 'meta' | 'header' | 'path' | 'default', or null when the field
+   resolves to nothing. EVERY schema field is present, in schema-declaration
+   order, so a consumer never has to tell "absent" from "unknown". The order the
+   sources are tried is the contract: block, then header attribute, then path
+   inference, then schema default — and a value that fails validation is
+   recorded as a problem rather than resolved, so a bad value never reaches a
+   query as if it were good. */
+function resolveMeta(html, { schema, docPath = null } = {}) {
+  const out = { path: docPath, fields: {}, unknown: [], problems: [] };
+  const take = (name, raw, source, line) => {
+    if (out.fields[name]) return;
+    const problem = validateField(schema, name, String(raw));
+    if (problem) { out.problems.push({ line, text: problem }); return; }
+    const def = schema.fields[name];
+    out.fields[name] = {
+      value: fieldValue(def, raw), raw: String(raw).trim(), source, type: def.type, rank: fieldRank(def, raw),
+    };
+  };
+  const block = readMetaBlock(html);
+  const seen = new Set();
+  for (const f of block ? block.fields : []) {
+    if (!f.key) { out.problems.push({ line: f.line, text: '<plan-field> has no `key` attribute' }); continue; }
+    if (seen.has(f.key)) { out.problems.push({ line: f.line, text: `duplicate field '${f.key}' — the first one wins` }); continue; }
+    seen.add(f.key);
+    if (!schema.fields[f.key]) { out.unknown.push({ key: f.key, value: f.raw, line: f.line }); continue; }
+    take(f.key, f.raw, 'meta', f.line);
+  }
+  const header = findElement(html, 'plan-header');
+  const hline = header ? lineOf(html, header.outerStart) : 0;
+  for (const [name, def] of Object.entries(schema.fields)) {
+    if (!def.from || out.fields[name]) continue;
+    const v = header ? getAttr(header.attrsRaw, def.from.slice('header:'.length)) : null;
+    if (typeof v === 'string' && v.trim()) take(name, decodeEntities(v), 'header', hline);
+  }
+  if (docPath) {
+    const p = String(docPath).replace(/\\/g, '/');
+    for (const rule of schema.infer)
+      if (rule.re.test(p)) for (const [name, v] of Object.entries(rule.set)) take(name, v, 'path', 0);
+  }
+  for (const [name, v] of Object.entries(schema.defaults)) take(name, v, 'default', 0);
+  for (const [name, def] of Object.entries(schema.fields))
+    if (!out.fields[name]) out.fields[name] = { value: null, raw: null, source: null, type: def.type, rank: null };
+  // Schema-declaration order, so every document's record is keyed the same way
+  // and a corpus of them is diffable.
+  out.fields = Object.fromEntries(Object.keys(schema.fields).map(n => [n, out.fields[n]]));
+  return out;
+}
+
+/* Pure: (html, opts) -> the `meta` report text. Human by default — one aligned
+   line per field that carries a value, with where that value came from, which
+   is the question the command exists to answer. `--format json` emits the
+   resolveMeta record verbatim: that record is the machine contract, so the two
+   outputs can never drift. A metadata problem is REPORTED here and gated by
+   `check --strict`; this command is a reader and always returns 0. */
+function planMeta(html, { schema, docPath = null, schemaSources = [], format = 'text' } = {}) {
+  if (format !== 'text' && format !== 'json')
+    throw new PlanError(`unknown --format '${format}' — valid: text, json`);
+  const rec = resolveMeta(html, { schema, docPath });
+  const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
+  if (format === 'json') return JSON.stringify({ ...rec, schema: sources }, null, 2) + '\n';
+  const set = Object.entries(rec.fields).filter(([, f]) => f.source);
+  const unset = Object.keys(rec.fields).filter(k => !rec.fields[k].source);
+  const kw = set.length ? Math.max(...set.map(([k]) => k.length)) : 0;
+  const vw = set.length ? Math.max(...set.map(([, f]) => f.raw.length)) : 0;
+  const out = set.length
+    ? set.map(([k, f]) => `${k.padEnd(kw)}  ${f.raw.padEnd(vw)}  (${f.source})`)
+    : ['(no metadata resolves for this document)'];
+  if (unset.length) out.push('', `unset: ${unset.join(', ')}`);
+  if (rec.unknown.length) out.push('', 'Unknown fields (not in the schema, so not queryable):',
+    ...rec.unknown.map(u => `  line ${u.line}: ${u.key} = ${u.value}`));
+  if (rec.problems.length) out.push('', 'Problems:', ...rec.problems.map(p => `  line ${p.line}: ${p.text}`));
+  if (sources.length) out.push('', `schema: ${sources.join(' + ')}`);
+  return out.join('\n') + '\n';
+}
+
+/* C9 — one writable home per fact. A field declared `from: "header:…"` is a
+   READ-ONLY VIEW of a header attribute: the header is where the value lives,
+   planSet and planNew write it there, and planList and the runtime header dot
+   read it there. A second copy inside <plan-meta> outranks the header in the
+   resolution chain and then diverges silently the first time someone runs
+   `planr set header.status=…`. Returns the refusal text, or null. ONE rule,
+   three callers: planMetaSet here, validateNodes for a template's declared
+   defaults, and lintMeta for a document that already carries one. */
+function headerOwnedProblem(schema, key) {
+  const def = schema.fields[key];
+  if (!def || !def.from) return null;
+  const attr = def.from.slice('header:'.length);
+  return `'${key}' is a header field — use \`planr set <file> header.${attr}=…\``;
+}
+
+/* Pure: (html, { schema, sets, unsets }) -> { html, message }.
+   Creates the block as the first element inside <main> when absent, updates it
+   in place otherwise. EVERY value is validated before anything is written, so a
+   refused write leaves the document byte-identical; assertIntact then re-checks
+   the splice, exactly as set-body does. */
+function parseMetaSets(sets) {
+  const out = [];
+  for (const pair of sets) {
+    const eq = String(pair).indexOf('=');
+    if (eq === -1) throw new PlanError(`--set expects key=value, got "${pair}"`);
+    const key = String(pair).slice(0, eq).trim(), value = String(pair).slice(eq + 1).trim();
+    if (!key) throw new PlanError(`--set expects key=value, got "${pair}"`);
+    if (!value) throw new PlanError(`--set ${key}= has no value — use \`--unset ${key}\` to remove the field`);
+    out.push({ key, value });
+  }
+  return out;
+}
+function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
+  const writes = parseMetaSets(sets);
+  const drops = unsets.map(u => String(u).trim()).filter(Boolean);
+  if (!writes.length && !drops.length)
+    throw new PlanError('meta expects --set <key>=<value> or --unset <key>; with neither it prints the resolved metadata');
+  for (const { key } of writes)
+    if (drops.includes(key)) throw new PlanError(`'${key}' is both --set and --unset — pick one`);
+  for (const { key, value } of writes) {
+    const owned = headerOwnedProblem(schema, key);
+    if (owned) throw new PlanError(owned);
+    const problem = validateField(schema, key, value);
+    if (problem) throw new PlanError(problem);
+  }
+  const block = readMetaBlock(html);
+  const present = new Map((block ? block.fields : []).map(f => [f.key, f]));
+  for (const key of drops)
+    if (!present.has(key)) {
+      // A header field is never in a well-formed block, so an --unset of one is
+      // the C9 mistake, not a missing field — name its real writer. Removing one
+      // that IS present stays allowed: that is the lint's remedy.
+      const owned = headerOwnedProblem(schema, key);
+      throw new PlanError(owned || `'${key}' is not in this document's <plan-meta> — nothing to unset`);
+    }
+
+  // Existing keys keep the order the document has them in; NEW keys are
+  // appended in schema-declaration order, so a corpus reads the same way.
+  const order = [...present.keys()].filter(k => !drops.includes(k));
+  for (const name of Object.keys(schema.fields))
+    if (writes.some(w => w.key === name) && !order.includes(name)) order.push(name);
+  const valueOf = (k) => {
+    const w = writes.find(x => x.key === k);
+    return w ? w.value : present.get(k).raw;
+  };
+  const messages = [];
+  let out;
+  if (!order.length) {
+    out = removeBlock(html, block.el.outerStart, block.el.outerEnd);
+    messages.push('removed <plan-meta> — no fields left');
+  } else {
+    const indent = block ? elementIndent(html, block.el) : metaIndent(html);
+    const body = '\n' + order.map(k => `${indent}  <plan-field key="${k}">${valueOf(k)}</plan-field>`).join('\n') + `\n${indent}`;
+    const rebuilt = `${indent}<plan-meta>${body}</plan-meta>`;
+    if (block) out = html.slice(0, lineStart(html, block.el.outerStart)) + rebuilt + html.slice(block.el.outerEnd);
+    else { out = insertMetaBlock(html, rebuilt); messages.push('created <plan-meta>'); }
+  }
+  for (const { key, value } of writes) messages.push(`${present.has(key) ? 'set' : 'added'} ${key} = "${value}"`);
+  for (const key of drops) messages.push(`unset ${key}`);
+  assertIntact(html, out, 'meta');
+  return { html: out, message: messages.join('\n') };
+}
+// The indentation a created block takes: whatever <main>'s first element uses,
+// else two spaces (the shell's own body indentation).
+function metaIndent(html) {
+  const main = findElement(html, 'main');
+  if (!main) throw new PlanError('this document has no <main> — <plan-meta> is the first element inside it');
+  const first = firstElementIn(html, main);
+  return first ? elementIndent(html, first) : '  ';
+}
+function insertMetaBlock(html, block) {
+  const main = findElement(html, 'main');
+  const pos = lineEndAfterNewline(html, main.innerStart);
+  return html.slice(0, pos) + block + '\n' + html.slice(pos);
+}
+// The first ELEMENT inside a node, or null — comments and whitespace do not
+// count. Backs both the placement above and the position lint in the next step.
+function firstElementIn(html, node) {
+  let hit = null;
+  walkNodes(html, node.innerStart, node.innerEnd, tok => {
+    if (hit || tok.kind === 'text' || tok.kind === 'close') return;
+    hit = { tag: tok.name, outerStart: tok.start };
+    return node.innerEnd;
+  });
+  return hit;
 }
 
 // The document's <title>, filled by `new` from the same placeholder as the
@@ -923,7 +1356,7 @@ const PLAN_TAGS = [
   'plan-header', 'plan-nav', 'plan-section', 'plan-subsection', 'plan-tabs', 'plan-tab',
   'plan-cards', 'plan-card', 'plan-callout', 'plan-formula', 'plan-principles', 'plan-principle',
   'plan-timeline', 'plan-phase', 'plan-badge', 'plan-table', 'plan-defs', 'plan-def',
-  'plan-file', 'plan-diff', 'plan-diagram',
+  'plan-file', 'plan-diff', 'plan-diagram', 'plan-meta', 'plan-field',
 ];
 // Plain HTML containers `check` balance-checks alongside the plan tags. Limited
 // to tags whose end tag is never optional in HTML — adding <p>/<li> here would
@@ -1283,7 +1716,7 @@ function removeItem(html, el) {
      · a BARE key fills a {{placeholder}}, and must name one that this template
        actually offers, or it throws (it used to be written into the var map and
        never read). */
-function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {}) {
+function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [], schema = null } = {}) {
   const composed = shellTpl.split('{{body}}').join(stripTemplateDoc(bodyTpl));
   const vars = { title: title || 'Untitled Plan', date, skillSubpath };
   const nodeSets = [];
@@ -1303,12 +1736,28 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {
     }
     vars[key] = value;
   }
-  let html = render(composed, vars);
+  let html = pruneEmptyFields(render(composed, vars));
   if (nodeSets.length) html = planSet(html, nodeSets).html;
   // A bare fill is substitution, not planSet, so the rendered document is held
   // to the same attribute rules — else `--set status=aproved` writes a typo.
-  validateNodes(html);
+  validateNodes(html, schema);
   return html;
+}
+/* A template declares a metadata default by writing the field into its
+   <plan-meta> block, with a {{var:default}} placeholder where the value should
+   be fillable at scaffold time. An empty placeholder means "no value", so `new`
+   DROPS that field — and the block with it when nothing is left — rather than
+   writing an empty one the schema would refuse. */
+function pruneEmptyFields(html) {
+  const block = readMetaBlock(html);
+  if (!block) return html;
+  const empties = block.fields.filter(f => f.raw === '');
+  if (!empties.length) return html;
+  if (empties.length === block.fields.length) return removeBlock(html, block.el.outerStart, block.el.outerEnd);
+  let out = html;
+  // Back to front, so an earlier removal never shifts a later element's offsets.
+  for (const f of [...empties].reverse()) out = removeBlock(out, f.el.outerStart, f.el.outerEnd);
+  return out;
 }
 // "(default: draft)", or null when the variable declares none. One spelling for
 // both the `--set` error and the `templates <name>` listing.
@@ -1418,16 +1867,58 @@ function checkStructure(html) {
    yet will not render as written. Gathered only on a sound document: the lints
    locate elements with findElement, which is reliable only once every tag
    balances. A warning never changes `ok` — `check --strict` makes them fatal. */
-function planCheck(html) {
+function planCheck(html, schema = null) {
   const structure = checkStructure(html);
-  return { ...structure, warnings: structure.ok ? lintPlan(html) : [] };
+  return { ...structure, warnings: structure.ok ? lintPlan(html, schema) : [] };
+}
+
+/* Metadata lints — C5's warning tier. A metadata problem never fails the
+   structure check and never blocks a write (assertIntact gates on
+   checkStructure alone); `check --strict` is the gate. With no schema the
+   schema-independent problems are still reported, so `templateProblems` and any
+   other schema-less caller still catches a duplicate or a misplaced block. */
+function lintMeta(html, schema) {
+  const out = [];
+  const blocks = findElementsDeep(html, 'plan-meta', 0, html.length);
+  const main = findElement(html, 'main');
+  for (const b of blocks.slice(1))
+    out.push({ line: lineOf(html, b.outerStart),
+      text: 'a second <plan-meta> block — only the first is read; merge them' });
+  if (blocks.length) {
+    const first = main && firstElementIn(html, main);
+    if (!first || first.tag !== 'plan-meta')
+      out.push({ line: lineOf(html, blocks[0].outerStart),
+        text: '<plan-meta> is not the first element inside <main> — move it there, directly below the header' });
+  }
+  const inBlock = new Set(blocks.flatMap(b =>
+    findElementsDeep(html, 'plan-field', b.innerStart, b.innerEnd).map(f => f.outerStart)));
+  for (const f of findElementsDeep(html, 'plan-field', 0, html.length))
+    if (!inBlock.has(f.outerStart))
+      out.push({ line: lineOf(html, f.outerStart),
+        text: '<plan-field> outside a <plan-meta> block — it renders as inert markup' });
+  if (!blocks.length) return out;
+  const seen = new Set();
+  for (const f of readMetaBlock(html).fields) {
+    if (!f.key) { out.push({ line: f.line, text: '<plan-field> has no `key` attribute — it declares nothing' }); continue; }
+    if (seen.has(f.key)) { out.push({ line: f.line, text: `duplicate field '${f.key}' — only the first is read` }); continue; }
+    seen.add(f.key);
+    if (!schema) continue;
+    // C9: the header owns this value, so the field is a second copy that will
+    // outrank it. Reported instead of the value check, not as well as it.
+    const owned = headerOwnedProblem(schema, f.key);
+    if (owned) { out.push({ line: f.line, text: `${owned}; remove the field from <plan-meta>` }); continue; }
+    const problem = validateField(schema, f.key, f.raw);
+    if (problem) out.push({ line: f.line, text: problem });
+  }
+  return out;
 }
 
 /* ── check warnings ───────────────────────────────────────
    Each lint returns [{ line, text }] for markup that passes the structure
    check and still renders something other than what the author wrote. */
-function lintPlan(html) {
+function lintPlan(html, schema = null) {
   return [
+    ...lintMeta(html, schema),
     ...lintScaffoldBanner(html),
     ...lintCodeBodies(html),
     ...lintSectionRefs(html),
@@ -1613,7 +2104,7 @@ function planTemplateIndex({ skill = [], consumer = null, consumerDir = null } =
    Without a name, a table of every template and its one-line gist; with one,
    that template's full leading comment — the guidance its author wrote for
    whoever fills the scaffold in. */
-function planTemplateReport(entries, name = null, shellTpl = '') {
+function planTemplateReport(entries, name = null, shellTpl = '', schema = null) {
   const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
   if (!sorted.length) throw new PlanError('no templates found');
   if (name) {
@@ -1629,7 +2120,7 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
     const source = hit.origin === 'consumer'
       ? [`source: consumer template — ${hit.path}${hit.shadows ? ` (shadows the skill template '${hit.name}')` : ''}`, '']
       : [];
-    const problems = templateProblems(hit.body, shellTpl);
+    const problems = templateProblems(hit.body, shellTpl, schema);
     return [
       `# ${hit.name}    (planr new <file> --template ${hit.name})`,
       '',
@@ -1647,7 +2138,7 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
   const w = Math.max(...sorted.map(t => t.name.length));
   const mark = (t) => t.origin !== 'consumer' ? '' : t.shadows ? '[consumer, shadows skill] ' : '[consumer] ';
   const rows = sorted.map(t => `${t.name.padEnd(w)}  ${mark(t)}${templateSummary(t.body) || '(no description)'}`);
-  const flagged = sorted.flatMap(t => templateProblems(t.body, shellTpl)
+  const flagged = sorted.flatMap(t => templateProblems(t.body, shellTpl, schema)
     .map(p => `  ${t.name}${t.origin === 'consumer' ? ' [consumer]' : ''}: ${p}`));
   return rows.join('\n') +
     (flagged.length ? `\n\nTemplate problems:\n${flagged.join('\n')}` : '') +
@@ -2005,6 +2496,44 @@ function loadTemplates({ skillDir = TEMPLATE_DIR, consumerDir = resolveConsumerT
   };
 }
 
+/* The one filesystem boundary for the schema: the shipped core beside this
+   file, merged with the consumer's .claude/planr-schema.json when it exists.
+   Both paths are parameters; the defaults are the installed layout. A JSON
+   syntax error becomes a PlanError naming the file, never a raw stack. */
+function loadSchema({ skillDir = __dirname, consumerPath = resolveConsumerSchemaPath() } = {}) {
+  const parse = (file) => {
+    let data;
+    try { data = JSON.parse(read(file)); }
+    catch (e) { throw new PlanError(`schema ${file}: ${e.message}`); }
+    return parseSchema(data, file);
+  };
+  const corePath = path.join(skillDir, CORE_SCHEMA_FILE);
+  const core = parse(corePath);
+  const useConsumer = consumerPath && fs.existsSync(consumerPath);
+  return {
+    schema: mergeSchemas(core, useConsumer ? parse(consumerPath) : null),
+    sources: useConsumer ? [corePath, consumerPath] : [corePath],
+  };
+}
+
+function cmdMeta(file, flags) {
+  const { schema, sources } = loadSchema();
+  const list = (v) => (v == null ? [] : [].concat(v));
+  const sets = list(flags.set), unsets = list(flags.unset);
+  // parseFlags stores a valueless flag as `true`, so dropping those would make
+  // `meta f.html --set` print the report and exit 0 — a silent no-op.
+  if ([...sets, ...unsets].some(v => v === true))
+    throw new PlanError('--set expects <key>=<value> and --unset expects a field name');
+  if (!sets.length && !unsets.length) {
+    process.stdout.write(planMeta(read(file), {
+      schema, docPath: file, schemaSources: sources, format: flagValue(flags, 'format') || 'text',
+    }));
+    return;
+  }
+  const { html, message } = planMetaSet(read(file), { schema, sets, unsets });
+  write(file, html); process.stdout.write(message + '\n');
+}
+
 function cmdNew(outPath, flags) {
   if (!outPath) throw new PlanError('new requires an output path, e.g. `new plan.html --template tdd`');
   const template = flagValue(flags, 'template') || 'basic';
@@ -2017,6 +2546,7 @@ function cmdNew(outPath, flags) {
     date: new Date().toISOString().slice(0, 10),
     skillSubpath: resolveSkillSubpath(),
     sets: flags.set == null ? [] : [].concat(flags.set),
+    schema: loadSchema().schema,
   });
   const parent = path.dirname(outPath);
   if (parent && !fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
@@ -2030,7 +2560,7 @@ function cmdList(file, flags)        { process.stdout.write(planList(read(file),
 function cmdTasks(file, flags)       { process.stdout.write(planTasks(read(file), flags)); }
 function cmdRead(file, addr, flags)  { process.stdout.write(planRead(read(file), addr, flags)); }
 function cmdCheck(file, flags) {
-  const { ok, report, warnings } = planCheck(read(file));
+  const { ok, report, warnings } = planCheck(read(file), loadSchema().schema);
   if (!ok) throw new PlanError(report);      // → stderr + exit 1, so CI can gate on it
   process.stdout.write(report + '\n');
   if (warnings.length) process.stdout.write(warningReport(warnings) + '\n');
@@ -2039,7 +2569,7 @@ function cmdCheck(file, flags) {
 }
 function cmdTemplates(name) {
   const { shell, entries } = loadTemplates();
-  process.stdout.write(planTemplateReport(entries.map(t => ({ ...t, body: read(t.path) })), name, shell));
+  process.stdout.write(planTemplateReport(entries.map(t => ({ ...t, body: read(t.path) })), name, shell, loadSchema().schema));
 }
 
 // Mutating shell: read, run core, write, print message.
@@ -2141,6 +2671,8 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   check        <file> [--strict]                          (exit 1 on a structure break; warnings exit 1 only with --strict)
   tasks        <file> [--all | --status <s>]
   read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
+  meta         <file> [--format text|json]                (resolved metadata, with each value's source)
+  meta         <file> --set <k>=<v> [...] [--unset <k> ...]
   set          <file> <path>=<value> [<path>=<value> ...]
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   prepend      <file> <address> [--file <f>] [--into <sel>]
@@ -2177,7 +2709,7 @@ function main() {
   const file = positional[0];
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
-  const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'set', 'set-body', 'prepend', 'append',
+  const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
     'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
   try {
     if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
@@ -2188,6 +2720,7 @@ function main() {
       case 'list':         return cmdList(file, flags);
       case 'check':        return cmdCheck(file, flags);
       case 'tasks':        return cmdTasks(file, flags);
+      case 'meta':         return cmdMeta(file, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
       // read as success.
@@ -2222,7 +2755,9 @@ module.exports = {
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
-  PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS,
+  PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS, FIELD_TYPES,
+  resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
+  readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };

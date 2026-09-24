@@ -1254,3 +1254,573 @@ describe('planTemplateIndex', () => {
     })).toThrow(/\/r\/\.claude\/planr-templates\/_shell\.html: the shell is skill-owned/);
   });
 });
+
+describe('<plan-meta> component', () => {
+  it('is registered in the runtime, and PLAN_TAGS matches the runtime registry', () => {
+    const map = /const components = \{([\s\S]*?)\};/.exec(skillFile('plan-runtime.js'))[1];
+    const registered = [...map.matchAll(/'(plan-[a-z-]+)'\s*:/g)].map(m => m[1]);
+    expect(registered).toEqual(expect.arrayContaining(['plan-meta', 'plan-field']));
+    expect([...registered].sort()).toEqual([...planr.PLAN_TAGS].sort());
+  });
+
+  it('is styled CSS-only, with the key generated from the attribute', () => {
+    const css = skillFile('plan-styles.css');
+    expect(css).toMatch(/^plan-meta\s*\{[^}]*display:\s*flex;/m);
+    expect(css).toMatch(/^plan-field\s*\{[^}]*display:\s*inline-flex;/m);
+    expect(css).toMatch(/^plan-field::before\s*\{[^}]*content:\s*attr\(key\);/m);
+    // No JS: the runtime classes are empty, like PlanDefs/PlanDef.
+    expect(skillFile('plan-runtime.js')).toMatch(/class PlanMeta extends HTMLElement \{\}/);
+    expect(skillFile('plan-runtime.js')).toMatch(/class PlanField extends HTMLElement \{\}/);
+  });
+
+  it('reads as text: one `key: value` line per field', () => {
+    const html = [
+      '<plan-section id="d" title="D">',
+      '  <plan-meta>',
+      '    <plan-field key="type">issue</plan-field>',
+      '    <plan-field key="area">crm, celery</plan-field>',
+      '  </plan-meta>',
+      '</plan-section>',
+    ].join('\n');
+    expect(planr.planRead(html, 'd', { text: true, body: true }))
+      .toBe('type: issue\narea: crm, celery\n');
+  });
+
+  it('passes check, and an unregistered sibling tag does not', () => {
+    const doc = '<main><plan-meta><plan-field key="type">doc</plan-field></plan-meta></main>';
+    const { ok, report } = planr.planCheck(doc);
+    expect(ok, report).toBe(true);
+    expect(report).toContain('plan-field 1, plan-meta 1');
+    expect(planr.planCheck('<plan-metadata></plan-metadata>').report)
+      .toContain('unknown component <plan-metadata>');
+  });
+
+  it('is demonstrated in the sample plan and documented in SKILL.md', () => {
+    const sample = skillFile('examples/sample-plan.html');
+    expect(planr.findElementsDeep(sample, 'plan-meta', 0, sample.length).length).toBe(1);
+    expect(planr.findElementsDeep(sample, 'plan-field', 0, sample.length).length).toBeGreaterThan(1);
+    expect(skillFile('SKILL.md')).toContain('#### `<plan-meta>` / `<plan-field>`');
+  });
+});
+
+describe('parseSchema', () => {
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+
+  it('normalises a field table, and `list` becomes a repeatable string', () => {
+    const s = S({ fields: { area: { type: 'list' }, owner: { type: 'string' } } });
+    expect(s.fields.area).toMatchObject({ type: 'list', repeatable: true, origin: 'probe.json' });
+    expect(s.fields.owner.repeatable).toBe(false);
+  });
+
+  it('refuses every malformed shape, naming the origin file', () => {
+    expect(() => S({ feilds: {} })).toThrow(/probe\.json: unknown key 'feilds' — valid: fields, infer, defaults, rankings/);
+    expect(() => S({ fields: { p: { type: 'enumm' } } })).toThrow(/type 'enumm' — valid: enum, string, list, path, date, number/);
+    expect(() => S({ fields: { p: { type: 'enum' } } })).toThrow(/an enum declares a non-empty `values` array/);
+    expect(() => S({ fields: { p: { type: 'enum', values: ['a', 'a'] } } })).toThrow(/enum values must be unique/);
+    expect(() => S({ fields: { p: { type: 'string', values: ['a'] } } })).toThrow(/`values` applies only to type enum/);
+    expect(() => S({ fields: { p: { type: 'number', min: 5, max: 1 } } })).toThrow(/min 5 is greater than max 1/);
+    expect(() => S({ fields: { p: { type: 'string', min: 1 } } })).toThrow(/`min` applies only to type number/);
+    expect(() => S({ fields: { p: { type: 'string', frobnicate: 1 } } })).toThrow(/unknown key 'frobnicate'/);
+    expect(() => S({ fields: { p: { type: 'string', from: 'header:nope' } } })).toThrow(/`from` must be header:/);
+    expect(() => S({ fields: { Priority: { type: 'string' } } })).toThrow(/must be lower-case letters, digits and hyphens/);
+    expect(() => S({ fields: { p: { type: 'string' } }, infer: [{ match: '[', set: { p: 'x' } }] }))
+      .toThrow(/infer\[0\]: `match` is not a valid regular expression/);
+    expect(() => S({ fields: {}, rankings: { r: { order: 'priority' } } }))
+      .toThrow(/ranking 'r': `order` must be an array/);
+    expect(() => S('nope')).toThrow(/probe\.json: must be a JSON object/);
+  });
+});
+
+describe('mergeSchemas', () => {
+  const core = () => planr.parseSchema({
+    fields: { type: { type: 'enum', values: ['doc', 'issue'] }, owner: { type: 'string' } },
+    infer: [{ match: '/issues/', set: { type: 'issue' } }],
+    defaults: { type: 'doc' },
+  }, 'core.json');
+
+  it('replaces a field outright, prepends consumer infer rules, and merges defaults', () => {
+    const consumer = planr.parseSchema({
+      fields: { type: { type: 'enum', values: ['doc', 'issue', 'tdd'] }, priority: { type: 'enum', values: ['p0', 'p1'] } },
+      infer: [{ match: '/tdds/', set: { type: 'tdd' } }],
+      defaults: { priority: 'p1' },
+    }, 'consumer.json');
+    const m = planr.mergeSchemas(core(), consumer);
+    expect(m.fields.type.values).toEqual(['doc', 'issue', 'tdd']);   // replaced, not merged
+    expect(m.fields.type.origin).toBe('consumer.json');
+    expect(m.fields.owner.origin).toBe('core.json');                  // core survives
+    expect(Object.keys(m.fields)).toEqual(['type', 'owner', 'priority']); // core order, consumer appended
+    expect(m.infer.map(r => r.match)).toEqual(['/tdds/', '/issues/']); // consumer first
+    expect(m.defaults).toEqual({ type: 'doc', priority: 'p1' });
+  });
+
+  it('validates cross-references only after merging, and names the file at fault', () => {
+    // A consumer default naming a CORE field is legal — the per-file pass cannot know that.
+    expect(() => planr.mergeSchemas(core(), planr.parseSchema({ defaults: { owner: 'hayden' } }, 'consumer.json'))).not.toThrow();
+    expect(() => planr.mergeSchemas(core(), planr.parseSchema({ defaults: { nope: 'x' } }, 'consumer.json')))
+      .toThrow(/consumer\.json: default for 'nope' names unknown field 'nope'/);
+    expect(() => planr.mergeSchemas(core(), planr.parseSchema({ rankings: { r: { order: ['nope'] } } }, 'consumer.json')))
+      .toThrow(/consumer\.json: ranking 'r' order names unknown field 'nope'/);
+    expect(() => planr.mergeSchemas(core(), planr.parseSchema({ rankings: { r: { order: ['owner:sideways'] } } }, 'consumer.json')))
+      .toThrow(/direction must be asc or desc/);
+    expect(() => planr.mergeSchemas(core(), planr.parseSchema({ defaults: { type: 'nonsense' } }, 'consumer.json')))
+      .toThrow(/consumer\.json: default for 'type': .*'nonsense' is not a declared value/);
+  });
+});
+
+describe('validateField / fieldValue / fieldRank', () => {
+  // Deferred: `planr` is only assigned in the top-level beforeAll, which runs
+  // AFTER this describe body is collected — an immediate call here would see
+  // `planr` still undefined.
+  const schema = () => planr.parseSchema({
+    fields: {
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'] },
+      points:   { type: 'number', min: 0, max: 21 },
+      when:     { type: 'date' },
+      area:     { type: 'list' },
+      link:     { type: 'path', repeatable: true },
+      note:     { type: 'string' },
+    },
+  }, 'probe.json');
+  const bad = (k, v) => planr.validateField(schema(), k, v);
+
+  it('accepts a well-formed value of every type', () => {
+    for (const [k, v] of [['priority', 'p1'], ['points', '13'], ['when', '2026-09-23'],
+                          ['area', 'crm, celery'], ['link', 'a.html,b.html'], ['note', 'anything']])
+      expect(bad(k, v), `${k}=${v}`).toBeNull();
+  });
+
+  it('refuses an unknown field, an out-of-enum value, a bad number, date and path, and an empty value', () => {
+    expect(bad('severity', 'high')).toMatch(/unknown field 'severity' — declared: priority, points, when, area, link, note/);
+    expect(bad('priority', 'urgent')).toMatch(/'urgent' is not a declared value — valid: p0, p1, p2/);
+    expect(bad('points', 'lots')).toMatch(/'lots' is not a number/);
+    expect(bad('points', '99')).toMatch(/99 is above the declared maximum 21/);
+    expect(bad('points', '-1')).toMatch(/-1 is below the declared minimum 0/);
+    expect(bad('when', 'yesterday')).toMatch(/is not a YYYY-MM-DD date/);
+    expect(bad('link', 'my file.html')).toMatch(/is not a usable path/);
+    expect(bad('note', '   ')).toMatch(/empty value/);
+    expect(bad('area', 'crm,,celery')).toMatch(/empty value/);   // an empty item is an empty value
+  });
+
+  it('normalises a repeatable field to an array and a number to a Number', () => {
+    expect(planr.fieldValue(schema().fields.area, ' crm , celery ')).toEqual(['crm', 'celery']);
+    expect(planr.fieldValue(schema().fields.points, ' 13 ')).toBe(13);
+    expect(planr.fieldValue(schema().fields.note, ' hi ')).toBe('hi');
+  });
+
+  it('ranks by DECLARED enum order, numerically, and not at all for a repeatable field', () => {
+    expect(planr.fieldRank(schema().fields.priority, 'p0')).toBe(0);
+    expect(planr.fieldRank(schema().fields.priority, 'p2')).toBe(2);
+    expect(planr.fieldRank(schema().fields.priority, 'nope')).toBeNull();
+    expect(planr.fieldRank(schema().fields.points, '13')).toBe(13);
+    expect(planr.fieldRank(schema().fields.when, '2026-09-23')).toBe('2026-09-23');
+    expect(planr.fieldRank(schema().fields.note, 'Beta')).toBe('beta');
+    expect(planr.fieldRank(schema().fields.area, 'crm, celery')).toBeNull();
+    expect(planr.fieldRank(schema().fields.note, '')).toBeNull();
+  });
+});
+
+describe('the shipped core schema', () => {
+  const core = () => planr.parseSchema(JSON.parse(skillFile('planr-schema.json')), 'core');
+
+  it('parses, and merges with nothing', () => {
+    expect(() => planr.mergeSchemas(core(), null)).not.toThrow();
+  });
+
+  it('declares the header-backed fields and keeps status in step with HEADER_STATUS', () => {
+    const s = core();
+    expect(s.fields.title.from).toBe('header:title');
+    expect(s.fields.status.from).toBe('header:status');
+    expect(s.fields.date.from).toBe('header:date');
+    // Drift here means a status `planr set` accepts is one the schema refuses.
+    expect(s.fields.status.values).toEqual([...planr.HEADER_STATUS]);
+  });
+
+  it('infers a type from the path segments the corpus actually uses', () => {
+    const hits = (p) => core().infer.filter(r => r.re.test(p)).map(r => r.set.type);
+    expect(hits('.claude/plans/issues/foo.html')).toContain('issue');
+    expect(hits('.claude/plans/features/x/tdds/m1.html')).toContain('tdd');
+    expect(hits('.claude/plans/prd-thing.html')).toContain('prd');
+    expect(hits('.claude/plans/notes/whatever.html')).toEqual([]);
+  });
+});
+
+describe('resolveMeta', () => {
+  // Deferred: `planr` is only assigned in the top-level beforeAll, which runs
+  // AFTER this describe body is collected.
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      title:  { type: 'string', from: 'header:title' },
+      type:   { type: 'enum', values: ['doc', 'issue'] },
+      status: { type: 'enum', values: ['draft', 'review'], from: 'header:status' },
+      owner:  { type: 'string' },
+      area:   { type: 'list' },
+    },
+    infer: [{ match: '/issues/', set: { type: 'issue' } }],
+    defaults: { owner: 'unassigned' },
+  }, 'probe.json'));
+  const doc = (body) => [
+    '<plan-header title="Quota cache" status="review"></plan-header>',
+    '<main>',
+    body,
+    '</main>',
+  ].join('\n');
+
+  it('reads every source, and reports which one each value came from', () => {
+    const html = doc('  <plan-meta>\n    <plan-field key="area">crm, celery</plan-field>\n  </plan-meta>');
+    const rec = planr.resolveMeta(html, { schema: schema(), docPath: 'plans/issues/foo.html' });
+    expect(rec.path).toBe('plans/issues/foo.html');
+    expect(rec.fields.area).toMatchObject({ value: ['crm', 'celery'], source: 'meta', type: 'list', rank: null });
+    expect(rec.fields.title).toMatchObject({ value: 'Quota cache', source: 'header' });
+    expect(rec.fields.status).toMatchObject({ value: 'review', source: 'header', rank: 1 });
+    expect(rec.fields.type).toMatchObject({ value: 'issue', source: 'path' });
+    expect(rec.fields.owner).toMatchObject({ value: 'unassigned', source: 'default' });
+  });
+
+  it('applies the sources in C1 order — the block beats the header, the header beats the path', () => {
+    const html = doc('  <plan-meta>\n    <plan-field key="status">draft</plan-field>\n' +
+                     '    <plan-field key="type">doc</plan-field>\n  </plan-meta>');
+    const rec = planr.resolveMeta(html, { schema: schema(), docPath: 'plans/issues/foo.html' });
+    expect(rec.fields.status).toMatchObject({ value: 'draft', source: 'meta' });  // not 'review' from the header
+    expect(rec.fields.type).toMatchObject({ value: 'doc', source: 'meta' });      // not 'issue' from the path
+  });
+
+  it('returns EVERY schema field, in schema-declaration order, with a null record for an unset one', () => {
+    const rec = planr.resolveMeta(doc('  <p>No metadata at all.</p>'), { schema: schema(), docPath: null });
+    expect(Object.keys(rec.fields)).toEqual(['title', 'type', 'status', 'owner', 'area']);
+    expect(rec.fields.area).toEqual({ value: null, raw: null, source: null, type: 'list', rank: null });
+    expect(rec.fields.title.source).toBe('header');   // a document with no block is still queryable
+  });
+
+  it('collects an unknown field and a duplicate key without throwing', () => {
+    const html = doc('  <plan-meta>\n    <plan-field key="owner">hayden</plan-field>\n' +
+                     '    <plan-field key="owner">someone</plan-field>\n' +
+                     '    <plan-field key="severity">high</plan-field>\n' +
+                     '    <plan-field key="type">nonsense</plan-field>\n  </plan-meta>');
+    const rec = planr.resolveMeta(html, { schema: schema(), docPath: null });
+    expect(rec.fields.owner).toMatchObject({ value: 'hayden', source: 'meta' });   // the first one wins
+    expect(rec.unknown).toEqual([{ key: 'severity', value: 'high', line: 6 }]);
+    expect(rec.problems.map(p => p.text)).toEqual([
+      expect.stringMatching(/duplicate field 'owner'/),
+      expect.stringMatching(/'nonsense' is not a declared value/),
+    ]);
+    expect(rec.fields.type.source).toBeNull();   // a refused value resolves to nothing, never to the bad text
+  });
+
+  it('collapses whitespace in a value and decodes entities in a key and a header fallback', () => {
+    const html = [
+      '<plan-header title="Scope &amp; limits"></plan-header>',
+      '<main><plan-meta><plan-field key="area">crm,\n      celery</plan-field></plan-meta></main>',
+    ].join('\n');
+    const rec = planr.resolveMeta(html, { schema: schema(), docPath: null });
+    expect(rec.fields.area.value).toEqual(['crm', 'celery']);
+    expect(rec.fields.title.value).toBe('Scope & limits');
+  });
+});
+
+describe('planMeta', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: { type: { type: 'enum', values: ['doc', 'issue'] }, owner: { type: 'string' }, area: { type: 'list' } },
+    defaults: { type: 'doc' },
+  }, 'probe.json'));
+  const html = '<plan-header title="T"></plan-header>\n<main>\n  <plan-meta>\n' +
+               '    <plan-field key="owner">hayden</plan-field>\n  </plan-meta>\n</main>';
+
+  it('prints one aligned line per resolved field with its source, then the unset ones and the schema', () => {
+    expect(planr.planMeta(html, { schema: schema(), docPath: 'a.html', schemaSources: ['core.json'] })).toBe([
+      'type   doc     (default)',
+      'owner  hayden  (meta)',
+      '',
+      'unset: area',
+      '',
+      'schema: core.json',
+      '',
+    ].join('\n'));
+  });
+
+  it('emits the resolveMeta record verbatim under --format json, plus the schema sources', () => {
+    const out = JSON.parse(planr.planMeta(html, { schema: schema(), docPath: 'a.html', schemaSources: ['core.json'], format: 'json' }));
+    expect(out).toMatchObject({ path: 'a.html', schema: ['core.json'], unknown: [], problems: [] });
+    expect(out.fields.owner).toEqual({ value: 'hayden', raw: 'hayden', source: 'meta', type: 'string', rank: 'hayden' });
+    expect(Object.keys(out.fields)).toEqual(['type', 'owner', 'area']);
+  });
+
+  it('lists unknown fields and problems, and refuses an unknown format', () => {
+    const messy = html.replace('</plan-meta>', '  <plan-field key="nope">x</plan-field>\n  </plan-meta>');
+    const out = planr.planMeta(messy, { schema: schema(), docPath: null, schemaSources: [] });
+    expect(out).toContain('Unknown fields (not in the schema, so not queryable):');
+    expect(out).toMatch(/nope = x/);
+    expect(() => planr.planMeta(html, { schema: schema(), format: 'yaml' })).toThrow(/unknown --format 'yaml' — valid: text, json/);
+  });
+
+  it('says so when a document resolves no metadata at all', () => {
+    const empty = planr.mergeSchemas(planr.parseSchema({ fields: { owner: { type: 'string' } } }, 'probe.json'));
+    expect(planr.planMeta('<main></main>', { schema: empty })).toContain('(no metadata resolves for this document)');
+  });
+});
+
+describe('planMetaSet', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      type:     { type: 'enum', values: ['doc', 'issue'] },
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'] },
+      owner:    { type: 'string' },
+      area:     { type: 'list' },
+    },
+  }, 'probe.json'));
+  const BARE = ['<plan-header title="T"></plan-header>', '<main>', '',
+                '  <plan-section id="a" title="A"><p>Body.</p></plan-section>', '', '</main>'].join('\n');
+  const set = (html, sets, unsets = []) => planr.planMetaSet(html, { schema: schema(), sets, unsets });
+
+  it('creates the block as the first element inside <main>, in schema-declaration order', () => {
+    const { html, message } = set(BARE, ['owner=hayden', 'type=issue']);
+    expect(message).toContain('created <plan-meta>');
+    expect(html).toContain([
+      '<main>',
+      '  <plan-meta>',
+      '    <plan-field key="type">issue</plan-field>',      // schema order, not argument order
+      '    <plan-field key="owner">hayden</plan-field>',
+      '  </plan-meta>',
+    ].join('\n'));
+    expect(planr.planCheck(html).ok).toBe(true);
+  });
+
+  it('updates a field in place and keeps the existing field order', () => {
+    const once = set(BARE, ['owner=hayden', 'type=issue']).html;
+    const { html, message } = planr.planMetaSet(once, { schema: schema(), sets: ['owner=someone', 'priority=p1'] });
+    expect(message).toMatch(/set owner = "someone"/);
+    expect(message).toMatch(/added priority = "p1"/);
+    expect(message).not.toContain('created');
+    expect([...html.matchAll(/key="([a-z-]+)"/g)].map(m => m[1])).toEqual(['type', 'owner', 'priority']);
+    expect(planr.resolveMeta(html, { schema: schema() }).fields.owner.value).toBe('someone');
+    expect(planr.planCheck(html).ok).toBe(true);
+  });
+
+  it('refuses an unknown field, a bad value, an empty value, and a key both set and unset', () => {
+    expect(() => set(BARE, ['severity=high'])).toThrow(/unknown field 'severity'/);
+    expect(() => set(BARE, ['priority=urgent'])).toThrow(/'urgent' is not a declared value/);
+    expect(() => set(BARE, ['owner='])).toThrow(/--set owner= has no value — use `--unset owner`/);
+    expect(() => set(BARE, ['nope'])).toThrow(/--set expects key=value/);
+    expect(() => set(BARE, [])).toThrow(/expects --set <key>=<value> or --unset <key>/);
+    const once = set(BARE, ['owner=hayden']).html;
+    expect(() => planr.planMetaSet(once, { schema: schema(), sets: ['owner=x'], unsets: ['owner'] }))
+      .toThrow(/'owner' is both --set and --unset/);
+  });
+
+  it('refuses to write ANY field when one of them is bad', () => {
+    expect(() => set(BARE, ['owner=hayden', 'priority=urgent'])).toThrow(/'urgent' is not a declared value/);
+    // the good one must not have been written on the way to refusing the bad one
+    expect(set(BARE, ['owner=hayden']).html).not.toContain('urgent');
+  });
+
+  it('unsets a field, refuses one that is not there, and removes the block with the last field', () => {
+    const two = set(BARE, ['owner=hayden', 'type=issue']).html;
+    expect(() => planr.planMetaSet(two, { schema: schema(), unsets: ['priority'] }))
+      .toThrow(/'priority' is not in this document's <plan-meta> — nothing to unset/);
+    const one = planr.planMetaSet(two, { schema: schema(), unsets: ['owner'] }).html;
+    expect(one).not.toContain('key="owner"');
+    const gone = planr.planMetaSet(one, { schema: schema(), unsets: ['type'] });
+    expect(gone.message).toContain('removed <plan-meta> — no fields left');
+    expect(gone.html).not.toContain('plan-meta');
+    expect(planr.planCheck(gone.html).ok).toBe(true);
+  });
+
+  it('refuses a document with no <main> rather than guessing a position', () => {
+    expect(() => set('<plan-header title="T"></plan-header>', ['owner=hayden']))
+      .toThrow(/no <main>/);
+  });
+});
+
+describe('planMetaSet — header-owned fields (C9)', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      title:  { type: 'string', from: 'header:title' },
+      status: { type: 'enum', values: ['draft', 'review'], from: 'header:status' },
+      date:   { type: 'date', from: 'header:date' },
+      owner:  { type: 'string' },
+    },
+  }, 'probe.json'));
+  const BARE = ['<plan-header title="T" status="draft"></plan-header>', '<main>', '',
+                '  <plan-section id="a" title="A"></plan-section>', '', '</main>'].join('\n');
+
+  it('refuses to --set one, naming the real writer, for every header-backed field', () => {
+    for (const [key, attr] of [['title', 'title'], ['status', 'status'], ['date', 'date']])
+      expect(() => planr.planMetaSet(BARE, { schema: schema(), sets: [`${key}=x`] }), key)
+        .toThrow(`'${key}' is a header field — use \`planr set <file> header.${attr}=…\``);
+  });
+
+  it('refuses to --unset one that is not there, with the same message rather than "nothing to unset"', () => {
+    expect(() => planr.planMetaSet(BARE, { schema: schema(), unsets: ['status'] }))
+      .toThrow(/'status' is a header field/);
+  });
+
+  it('DOES --unset one that a hand edit put there — that is the lint\'s remedy', () => {
+    const hand = BARE.replace('<main>', '<main>\n  <plan-meta>\n' +
+      '    <plan-field key="status">review</plan-field>\n' +
+      '    <plan-field key="owner">h</plan-field>\n  </plan-meta>');
+    const { html, message } = planr.planMetaSet(hand, { schema: schema(), unsets: ['status'] });
+    expect(message).toContain('unset status');
+    expect(html).not.toContain('key="status"');
+    expect(planr.planCheck(html, schema()).warnings).toEqual([]);
+  });
+
+  it('leaves an ordinary field writable', () => {
+    expect(planr.planMetaSet(BARE, { schema: schema(), sets: ['owner=hayden'] }).message).toContain('added owner');
+  });
+
+  it('does not change resolveMeta — the C1 order stands', () => {
+    const hand = BARE.replace('<main>', '<main><plan-meta><plan-field key="status">review</plan-field></plan-meta>');
+    expect(planr.resolveMeta(hand, { schema: schema() }).fields.status)
+      .toMatchObject({ value: 'review', source: 'meta' });
+  });
+});
+
+describe('planCheck warnings — metadata', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: { type: { type: 'enum', values: ['doc', 'issue'] }, when: { type: 'date' }, owner: { type: 'string' } },
+  }, 'probe.json'));
+  const wrap = (body) => `<plan-header title="T"></plan-header>\n<main>\n${body}\n</main>`;
+  const warn = (body) => planr.planCheck(wrap(body), schema()).warnings;
+
+  it('is silent on a well-formed block', () => {
+    expect(warn('  <plan-meta>\n    <plan-field key="type">issue</plan-field>\n  </plan-meta>')).toEqual([]);
+    // A comment is not an element, so the block is still "first". Use a RULE-LINE
+    // comment: a comment carrying text at the top of <main> is a scaffold banner,
+    // which lintScaffoldBanner already warns about for its own reasons.
+    expect(warn('  <!-- ═══════════════ -->\n  <plan-meta>\n    <plan-field key="type">doc</plan-field>\n  </plan-meta>')).toEqual([]);
+  });
+
+  it('warns on an unknown field, a bad value, a duplicate key and a keyless field — never failing the structure', () => {
+    const { ok, warnings } = planr.planCheck(wrap([
+      '  <plan-meta>',
+      '    <plan-field key="type">issue</plan-field>',
+      '    <plan-field key="type">doc</plan-field>',
+      '    <plan-field key="severity">high</plan-field>',
+      '    <plan-field key="when">yesterday</plan-field>',
+      '    <plan-field>orphan</plan-field>',
+      '  </plan-meta>',
+    ].join('\n')), schema());
+    expect(ok).toBe(true);
+    expect(warnings.map(w => [w.line, w.text])).toEqual([
+      [5, expect.stringMatching(/duplicate field 'type' — only the first is read/)],
+      [6, expect.stringMatching(/unknown field 'severity'/)],
+      [7, expect.stringMatching(/'yesterday' is not a YYYY-MM-DD date/)],
+      [8, expect.stringMatching(/<plan-field> has no `key` attribute/)],
+    ]);
+  });
+
+  it('warns when the block is misplaced, doubled, or a field sits outside one', () => {
+    const misplaced = warn('  <plan-section id="a" title="A"></plan-section>\n' +
+                           '  <plan-meta><plan-field key="type">doc</plan-field></plan-meta>');
+    expect(misplaced).toHaveLength(1);
+    expect(misplaced[0].text).toMatch(/is not the first element inside <main>/);
+
+    const doubled = warn('  <plan-meta><plan-field key="type">doc</plan-field></plan-meta>\n' +
+                         '  <plan-meta><plan-field key="owner">h</plan-field></plan-meta>');
+    expect(doubled.map(w => w.text)).toEqual([expect.stringMatching(/a second <plan-meta> block/)]);
+
+    const orphan = warn('  <plan-meta><plan-field key="type">doc</plan-field></plan-meta>\n' +
+                        '  <plan-field key="owner">h</plan-field>');
+    expect(orphan.map(w => w.text)).toEqual([expect.stringMatching(/outside a <plan-meta> block/)]);
+  });
+
+  it('checks only the schema-independent problems when no schema is passed', () => {
+    const body = '  <plan-meta>\n    <plan-field key="severity">high</plan-field>\n' +
+                 '    <plan-field key="severity">low</plan-field>\n  </plan-meta>';
+    expect(planr.planCheck(wrap(body)).warnings.map(w => w.text))
+      .toEqual([expect.stringMatching(/duplicate field 'severity'/)]);   // unknown-field needs a schema
+  });
+
+  it('gathers no metadata warnings on a document whose structure is broken', () => {
+    expect(planr.planCheck(wrap('  <plan-meta><plan-field key="nope">x</plan-field>'), schema()))
+      .toMatchObject({ ok: false, warnings: [] });
+  });
+});
+
+it('warns when a header-owned field appears in the block, and says who owns it', () => {
+  const withHeader = planr.mergeSchemas(planr.parseSchema({
+    fields: { status: { type: 'enum', values: ['draft', 'review'], from: 'header:status' },
+              owner:  { type: 'string' } },
+  }, 'probe.json'));
+  const html = '<plan-header title="T" status="draft"></plan-header>\n<main>\n' +
+               '  <plan-meta>\n    <plan-field key="status">review</plan-field>\n' +
+               '    <plan-field key="owner">h</plan-field>\n  </plan-meta>\n</main>';
+  const { ok, warnings } = planr.planCheck(html, withHeader);
+  expect(ok).toBe(true);
+  expect(warnings).toEqual([{ line: 4,
+    text: "'status' is a header field — use `planr set <file> header.status=…`; remove the field from <plan-meta>" }]);
+  // the header-owned warning replaces the value check for that field — one warning, not two
+  expect(warnings).toHaveLength(1);
+});
+
+describe('template metadata defaults', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: { type: { type: 'enum', values: ['doc', 'issue'] }, area: { type: 'list' }, owner: { type: 'string' } },
+  }, 'probe.json'));
+  const SHELL_M = '<title>{{title}}</title>\n<plan-header title="{{title}}"></plan-header>\n<main>\n{{body}}\n</main>';
+  const BODY_M = [
+    '<!-- A probe template. -->',
+    '  <plan-meta>',
+    '    <plan-field key="type">issue</plan-field>',
+    '    <plan-field key="area">{{area:}}</plan-field>',
+    '  </plan-meta>',
+    '  <plan-section id="o" title="O"></plan-section>',
+  ].join('\n');
+  const base = () => ({ title: 'T', date: 'd', skillSubpath: 's', schema: schema() });
+
+  it('writes the declared default and DROPS a field whose placeholder was left empty', () => {
+    const html = planr.planNew(SHELL_M, BODY_M, base());
+    expect(html).toContain('<plan-field key="type">issue</plan-field>');
+    expect(html).not.toContain('key="area"');
+    expect(planr.planCheck(html, schema()).warnings).toEqual([]);
+  });
+
+  it('fills a declared field from --set, exactly like any other template variable', () => {
+    const html = planr.planNew(SHELL_M, BODY_M, { ...base(), sets: ['area=crm,celery'] });
+    expect(html).toContain('<plan-field key="area">crm,celery</plan-field>');
+    expect(planr.templateVars(SHELL_M + BODY_M).map(v => v.name)).toContain('area');
+  });
+
+  it('drops the whole block when every field was left empty', () => {
+    const allEmpty = BODY_M.replace('<plan-field key="type">issue</plan-field>', '<plan-field key="type">{{type:}}</plan-field>');
+    expect(planr.planNew(SHELL_M, allEmpty, base())).not.toContain('plan-meta');
+  });
+
+  it('refuses a scaffold whose metadata the schema does not accept', () => {
+    expect(() => planr.planNew(SHELL_M, BODY_M, { ...base(), sets: ['area=crm'], schema:
+      planr.mergeSchemas(planr.parseSchema({ fields: { area: { type: 'list' } } }, 'probe.json')) }))
+      .toThrow(/unknown field 'type'/);
+    const badValue = BODY_M.replace('issue', 'nonsense');
+    expect(() => planr.planNew(SHELL_M, badValue, base())).toThrow(/'nonsense' is not a declared value/);
+  });
+
+  it('holds every SHIPPED template to the SHIPPED schema, and none of them declares a header field', () => {
+    const core = planr.mergeSchemas(planr.parseSchema(JSON.parse(skillFile('planr-schema.json')), 'core'));
+    const dir = join(SKILL_DIR, 'templates');
+    const shell = readFileSync(join(dir, '_shell.html'), 'utf8');
+    for (const n of readdirSync(dir).filter(f => f.endsWith('.html') && !f.startsWith('_')).map(f => f.replace(/\.html$/, ''))) {
+      const body = readFileSync(join(dir, `${n}.html`), 'utf8');
+      expect(planr.templateProblems(body, shell, core), n).toEqual([]);
+      // C9: a template default may never name a field the header owns.
+      const block = planr.readMetaBlock(body);
+      for (const f of block ? block.fields : [])
+        expect(planr.headerOwnedProblem(core, f.key), `${n}: ${f.key}`).toBeNull();
+    }
+  });
+
+  it('refuses at scaffold time a template that declares a header field', () => {
+    const withHeader = planr.mergeSchemas(planr.parseSchema({
+      fields: { status: { type: 'enum', values: ['draft'], from: 'header:status' } },
+    }, 'probe.json'));
+    const body = '<!-- A probe template. -->\n  <plan-meta><plan-field key="status">draft</plan-field></plan-meta>\n' +
+                 '  <plan-section id="o" title="O"></plan-section>';
+    expect(() => planr.planNew(SHELL_M, body, { ...base(), schema: withHeader }))
+      .toThrow(/a template may not declare a header field — 'status' is a header field/);
+  });
+
+  it('gives the issue and tdd templates a type, and leaves basic without a block', () => {
+    const read1 = (n) => readFileSync(join(SKILL_DIR, 'templates', `${n}.html`), 'utf8');
+    expect(read1('issue')).toContain('<plan-field key="type">issue</plan-field>');
+    expect(read1('tdd')).toContain('<plan-field key="type">tdd</plan-field>');
+    expect(read1('basic')).not.toContain('plan-meta');
+  });
+});

@@ -513,3 +513,145 @@ describe('release metadata', () => {
     expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain(`## What's new in ${pkg.version}`);
   });
 });
+
+describe('meta (read)', () => {
+  it('resolves from the header and the path, and names the schema in force', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
+      expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'Quota cache']).code).toBe(0);
+      const r = runAt(staged, ['meta', doc]);
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^title +Quota cache +\(header\)$/m);
+      // The issue template declares type=issue as a literal metadata default
+      // (step 7), which resolves via `meta` and outranks the issues/ path
+      // inference — both agree on the value, so this still proves the chain.
+      expect(r.stdout).toMatch(/^type +issue +\(meta\)$/m);
+      expect(r.stdout).toMatch(/^status +draft +\(header\)$/m);
+      expect(r.stdout).toMatch(/planr-schema\.json/);
+    } finally { rmTmp(root); }
+  });
+
+  it('merges a consumer .claude/planr-schema.json over the core, and names both', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify({
+        fields: { priority: { type: 'enum', values: ['p0', 'p1', 'p2'] } },
+        defaults: { priority: 'p2' },
+      }));
+      const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
+      expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'X']).code).toBe(0);
+      const r = runAt(staged, ['meta', doc]);
+      expect(r.stdout).toMatch(/^priority +p2 +\(default\)$/m);   // a consumer-only field and its default
+      expect(r.stdout).toMatch(/schema: .*planr-schema\.json \+ .*\.claude\/planr-schema\.json/);
+    } finally { rmTmp(root); }
+  });
+
+  it('exits 1 on a malformed consumer schema, naming the file', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      writeFileSync(join(root, '.claude', 'planr-schema.json'), '{ "feilds": {} }');
+      const doc = join(root, '.claude', 'plans', 'x.html');
+      expect(runAt(staged, ['new', doc, '--title', 'X']).code).toBe(1);
+      const r = runAt(staged, ['meta', doc]);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toMatch(/planr-schema\.json: unknown key 'feilds'/);
+    } finally { rmTmp(root); }
+  });
+
+  it('is listed in the usage text and the skill command table', () => {
+    expect(run(['--help']).stdout).toContain('meta ');
+    expect(readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8')).toContain('| `meta` |');
+  });
+});
+
+describe('meta (write)', () => {
+  it('writes, re-reads and unsets through the CLI, leaving the document checkable', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
+      expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'Quota']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc, '--set', 'owner=hayden', '--set', 'area=crm,celery']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^owner +hayden +\(meta\)$/m);
+      expect(runAt(staged, ['check', doc]).code).toBe(0);
+      const bad = runAt(staged, ['meta', doc, '--set', 'owner=']);
+      expect(bad.code).toBe(1);
+      expect(bad.stderr).toMatch(/use `--unset owner`/);
+      expect(runAt(staged, ['meta', doc, '--unset', 'owner']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^unset: .*owner/m);
+      // a valueless --set is an error, never a silent fall-through to the report
+      expect(runAt(staged, ['meta', doc, '--set']).code).toBe(1);
+    } finally { rmTmp(root); }
+  });
+});
+
+it('check reports a metadata problem as a warning, and --strict makes it fatal', () => {
+  const root = mkTmp();
+  try {
+    const staged = stageSkill(root, 'skills/html-planning');
+    const doc = join(root, '.claude', 'plans', 'x.html');
+    expect(runAt(staged, ['new', doc, '--title', 'X']).code).toBe(0);
+    const html = readFileSync(doc, 'utf8')
+      .replace('<main>', '<main>\n  <plan-meta><plan-field key="severity">high</plan-field></plan-meta>');
+    writeFileSync(doc, html);
+    const r = runAt(staged, ['check', doc]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/unknown field 'severity'/);
+    expect(runAt(staged, ['check', doc, '--strict']).code).toBe(1);
+  } finally { rmTmp(root); }
+});
+
+it('scaffolds an issue with its declared type, and reports area as a settable variable', () => {
+  const root = mkTmp();
+  try {
+    const staged = stageSkill(root, 'skills/html-planning');
+    const doc = join(root, '.claude', 'plans', 'x.html');
+    expect(runAt(staged, ['new', doc, '--template', 'tdd', '--title', 'T', '--set', 'area=server,client']).code).toBe(0);
+    const meta = runAt(staged, ['meta', doc]).stdout;
+    expect(meta).toMatch(/^type +tdd +\(meta\)$/m);
+    expect(meta).toMatch(/^area +server,client +\(meta\)$/m);
+    expect(runAt(staged, ['check', doc, '--strict']).code, 'a scaffold must be warning-free').toBe(0);
+    expect(runAt(staged, ['templates', 'tdd']).stdout).toMatch(/^ {2}area +\(default: empty\)$/m);
+    // an undeclared field is refused at scaffold time, not written and warned about later
+    const bad = runAt(staged, ['new', join(root, '.claude', 'y.html'), '--template', 'tdd', '--title', 'Y', '--set', 'area=']);
+    expect(bad.code).toBe(0);   // an empty value means "no value" — the field is dropped
+    expect(readFileSync(join(root, '.claude', 'y.html'), 'utf8')).not.toContain('key="area"');
+  } finally { rmTmp(root); }
+});
+
+
+describe('metadata documentation', () => {
+  const skillDoc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
+
+  it('SKILL.md carries a Metadata section covering the schema, the chain and the command', () => {
+    const s = skillDoc('SKILL.md');
+    expect(s).toContain('## Metadata');
+    expect(s).toContain('.claude/planr-schema.json');
+    for (const t of ['enum', 'string', 'list', 'path', 'date', 'number']) expect(s, t).toContain(`\`${t}\``);
+    expect(s).toMatch(/<plan-meta>.*header.*path.*default/s);   // the resolution chain, in order
+    expect(s).toContain('planr set <file> header.status=');       // C9 names the real writer
+  });
+
+  it('template-authoring.md says how a template declares metadata defaults', () => {
+    expect(skillDoc('references/template-authoring.md')).toContain('<plan-meta>');
+  });
+
+  it('the README names the component and the schema file', () => {
+    const r = readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8');
+    expect(r).toContain('plan-meta');
+    expect(r).toContain('planr-schema.json');
+  });
+
+  it('the repo CLAUDE.md records the metadata invariants a change must not break', () => {
+    const c = readFileSync(join(SKILL_DIR, '..', '..', 'CLAUDE.md'), 'utf8');
+    expect(c).toContain('planr-schema.json');
+    expect(c).toContain('validateField');
+    expect(c).toContain('resolveMeta');
+    expect(c).toContain('headerOwnedProblem');
+    expect(c).toContain('One writable home per fact');
+  });
+});

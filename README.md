@@ -99,7 +99,7 @@ For a minor size increase over plaintext Markdown plans, plans generated with `h
 5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
 6. Configurable line wrapping support for code snippets, plus adjustable view width.
 7. Interactive tabs, collapsible components, and callout components.
-8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, key/value sub-records, formulas, and principles.
+8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, key/value sub-records (`<plan-defs>`), document metadata (`<plan-meta>`), formulas, and principles.
 9. Per-section and per-step status pills (`todo`/`in-progress`/`done`/`blocked`) for tracking implementation progress in-place.
 
 In addition to the user-facing features mentioned above, `html-planning` comes with a CLI, `planr.js`, that serves as an interface an LLM can use to scaffold, edit, and manage plans.
@@ -200,6 +200,10 @@ Write a placeholder as `{{name:default}}` and it becomes a knob — settable wit
 ```
 
 That is the tour. The authoring reference ships with the skill at [`references/template-authoring.md`](skills/html-planning/references/template-authoring.md).
+
+### Metadata
+
+Every document can carry a small `<plan-meta>` block of queryable facts (`type`, `status`, `owner`, `area`, …), resolved from the block itself, the header, the file's path, or a schema default — with no block at all still fully queryable. The field vocabulary is data: a shipped `planr-schema.json` plus an optional `.claude/planr-schema.json` a consuming repo adds for its own fields. Read and write it with `planr meta <file>`; see `SKILL.md`'s "Metadata" section for the full contract.
 
 ## Editing Plans Cheaply
 

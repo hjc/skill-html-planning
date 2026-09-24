@@ -138,6 +138,27 @@ Standalone it is a compact bordered block with the keys in one column. **Inside 
 - **Add a pair with `planr append <file> <section> --into plan-defs --file row.html`.** With several in a section, pick one with `--into plan-defs:<n>`.
 - **`planr read --text` prints each pair as `key: value`** — one line per pair, joined with `; ` inside a table cell.
 
+#### `<plan-meta>` / `<plan-field>`
+The document's own **metadata** — a small, understated strip of `key → value` pairs directly under the header, holding
+the facts a tool can filter and sort a whole directory of documents by. Each `<plan-field>` is one pair: its `key`
+attribute names the field, its content is the value.
+
+```html
+<plan-meta>
+  <plan-field key="type">issue</plan-field>
+  <plan-field key="area">server/project/crm, celery</plan-field>
+  <plan-field key="blocked-by">storage-quota-cache.html</plan-field>
+</plan-meta>
+```
+
+**Attributes:** `key` on `<plan-field>` — plain text. CSS renders it, so markup written in it shows literally.
+
+- **It is the first element inside `<main>`**, before the first section. Anywhere else and `check` warns.
+- **One block per document.** A second one is not read.
+- **The field names are not free text** — they come from a schema, and a name the schema does not declare is a `check`
+  warning. See "Metadata" below for the schema, the resolution chain and `planr meta`.
+- **`planr read --text` prints each pair as `key: value`**, one line per pair.
+
 ### Interactive
 
 #### `<plan-tabs>` / `<plan-tab>`
@@ -361,6 +382,7 @@ Apply these to any element:
     - **A glob is never a link** (`notes/*.html`, `slices/<n>-*.html`, `tdds/`) — it is not a file. Leave it plain.
     - Don't double-wrap an existing `<a>`, and don't add icons or link text.
     - This is a rule for HTML documents. Plain-text instruction docs (`.md`) keep the bare backtick path.
+11. **A document's `<plan-meta>` is the first element inside `<main>`**, directly below the header. See "Metadata" below for the schema, the resolution chain and `planr meta`.
 
 ## Using `planr`
 
@@ -408,6 +430,7 @@ tr:2          the 2nd <tr>, 1-based
 | `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`. Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
+| `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value. See "Metadata" below. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
@@ -485,6 +508,7 @@ The characteristic write on a long-lived plan is **small and deep**: an amendmen
 | Striking a superseded sentence | `strike <section> --match "…"` |
 | Rewriting a phrase or sentence in place | `replace <section> --match "…" --with "…"` |
 | Replacing a whole section's content | `set-body <section> --file` |
+| A field on the document's metadata | `meta --set k=v` |
 
 **Prefer these over `Edit` for anything structural.** An `Edit` on a plan means hand-lifting an `old_string` out of a large file, which is where this toolchain's worst failure mode lives — and a `<plan-badge>` in a table row is usually an *empty* tag (`<plan-badge type="open"></plan-badge>`), so an `old_string` written assuming inner text matches nothing at all.
 
@@ -542,6 +566,51 @@ Both are validated identically (`--set status=aproved` and `--set header.status=
 >
 > **Authoring a real document?** See **`references/authoring-traps.md`** — the failure modes that leave `planr check` green and the document wrong: ids carried in table rows, sequential-replace renumbering, unverified enumerations, escaping code bodies, patching from a dump, and the browser check for diagrams.
 
+## Metadata
+
+A document's **metadata** is the small set of facts a tool filters and sorts a whole directory of documents by — `type`, `status`, `owner`, `area`, and whatever else a repo's schema declares — held in the document itself rather than in a separate index.
+
+**Resolution chain.** Every field resolves through four sources, in order, and the first one that carries a value wins: the document's own `<plan-meta>` block, then a `<plan-header>` attribute (for a field declared `from: "header:…"`), then path inference (a document under `issues/` resolves `type=issue`), then a schema-declared default. A document with **no `<plan-meta>` block at all is still fully queryable** — the header and path sources alone resolve `title`, `status`, `date` and an inferred `type` — so adding the block to an existing corpus is optional, never a prerequisite.
+
+**The schema.** The field vocabulary is **data, not code**: nothing about a field's name, type or enum values is hardcoded in `planr.js`. Two files are read, merged in this order: the shipped core (`planr-schema.json` beside `planr.js`) and, when it exists, a consuming repo's own **`.claude/planr-schema.json`**, found beside `planr-templates/` under the same `.claude` this skill installs into. A consumer field **replaces** the core field of the same name outright — never a key-by-key merge — because an enum's declared value order is load-bearing and there is no unambiguous way to merge two orders.
+
+```json
+{
+  "fields": {
+    "priority": { "type": "enum", "values": ["p0", "p1", "p2"] },
+    "area":     { "type": "list" },
+    "due":      { "type": "date" }
+  },
+  "infer":    [{ "match": "/issues/", "set": { "priority": "p1" } }],
+  "defaults": { "priority": "p2" }
+}
+```
+
+Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enum`, the declared `values` order **is** the sort order — never alphabetical. `list` is a repeatable `string`; a `number` may declare `min`/`max`.
+
+**`planr meta`** reads and writes the block. With no `--set`/`--unset`, it prints the resolved value of every field and where each one came from:
+
+```bash
+$ planr meta plan.html
+title   Quota cache has no invalidator   (header)
+type    issue                            (path)
+status  draft                            (header)
+
+unset: owner, area
+
+$ planr meta plan.html --format json    # the same record, machine-readable
+$ planr meta plan.html --set owner=hayden --set area=crm,celery
+$ planr meta plan.html --unset owner
+```
+
+`--set` creates the `<plan-meta>` block as the **first element inside `<main>`** when none exists yet, and updates it in place otherwise. An unknown field or a value the schema refuses is **refused, never written** — exactly the rule `check` enforces below.
+
+**What `check` says.** A metadata problem is reported as a **warning**, never a structure failure: an unknown field, a value the type or enum refuses, a duplicate key, a header-owned field written into the block (see below), a `<plan-meta>` that is misplaced or appears twice, and a `<plan-field>` sitting outside any block. Warnings never change `check`'s exit code and never block a write; `check --strict` is the gate.
+
+**One writable home per fact.** A field declared `from: "header:…"` — `title`, `status`, `date` in the shipped core — is a **read-only view** of that header attribute, not a second place to store it. `planr meta --set` refuses to write one and names the real writer: `planr set <file> header.status=…`. A template may not declare one either, and `check` warns when a hand edit puts one in a block anyway.
+
+**Template defaults.** A template declares metadata defaults by writing a literal `<plan-meta>` block at the top of its body, using `{{name:default}}` wherever the value should be fillable at scaffold time — no new template syntax. A placeholder left empty is dropped rather than written as an empty field, and a template may not declare a header-owned field. See **`references/template-authoring.md`** for the full convention.
+
 ### Rich content
 
 **Author an HTML body to a file, not through a shell heredoc.** Write it with your file-writing tool and splice it with `set-body --file` / `add-section --body-file`: the body is written verbatim, the plan is never loaded into context, and a splice that aborts leaves the body on disk to fix and retry.
@@ -559,6 +628,7 @@ Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the 
 ```
 .claude/skills/html-planning/
 ├── planr.js          ← Generate (from a template) + address-based plan mutator
+├── planr-schema.json ← Shipped core metadata schema (field vocabulary, as data)
 ├── templates/        ← _shell.html (shared doc + loader) and <name>.html bodies (basic, tdd, …)
 ├── references/       ← Deep-dive docs, read on demand (template-authoring.md, authoring-traps.md)
 ├── plan-styles.css   ← Design system (loaded at runtime)
