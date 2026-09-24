@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # html-planning
@@ -431,6 +431,8 @@ tr:2          the 2nd <tr>, 1-based
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
 | `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value. See "Metadata" below. |
+| `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
+| `next` | `<dir\|glob>` | `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
@@ -618,6 +620,133 @@ $ planr meta plan.html --unset owner
 **A single `set-body --file` of ~17KB is a normal operation** — there is no size-related failure mode, and structure is re-verified after every splice.
 
 Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the content — but you can pay for the content *without* also paying to load the plan. Author the body as normal plan markup in a scratch file, then inject it by address with `add-section --body-file` or `set-body --file`; the plan is mutated in place and never read into context. To fix content in an existing section, pull just that hunk with `read --body`, edit it, and push it back with `set-body` — ~2× the hunk, still far less than materializing the whole plan. To *add* to a section rather than rewrite it, skip the read entirely and use `prepend` / `append` / `insert` (see "Editing a document too big to load"): the cost is the hunk alone. `set-body` and `add-section` splice **verbatim** (the body owns its whitespace); escaping is your responsibility exactly as when authoring markup directly.
+
+## Querying
+
+`planr meta` answers one document. `planr query` and `planr next` answer a **corpus**: which documents match, in what order, and which one to pick up. Both read the schema in force and the metadata every document resolves, so a document with no `<plan-meta>` block is still queryable from its header and its path.
+
+```bash
+planr query <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
+                       [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
+                       [--format table|json|tsv|paths] [--strict]
+planr next  <dir|glob> [--rank <name>] [--format text|json] [--strict]
+```
+
+### What gets scanned
+
+The target is a **directory**, a **single file**, or a **glob**:
+
+| Target | Scans |
+|---|---|
+| `.claude/plans/issues` | every `*.html` under it, recursively |
+| `.claude/plans/issues/quota.html` | that one file |
+| `.claude/plans/**/tdds/*.html` | whatever the glob matches — `**` crosses directories (including none), `*` and `?` do not |
+
+There is **no index and no cache**: the documents are read on every run. A 142-document, 8 MB corpus scans in about a quarter of a second.
+
+A file the scan cannot use is **reported, never silently dropped**. Three reasons, printed on stderr so stdout stays exactly the result set, and carried in the `skipped` array under `--format json`:
+
+```
+2 file(s) skipped — scanned, not queryable:
+  .claude/plans/issues/mockup.html: not a plan document — no <plan-*> markup
+  .claude/plans/issues/old.html: structure does not balance — run `planr check` on it
+```
+
+`--strict` turns a non-empty skip list into exit 1, exactly as it does for `check`'s warnings. A target that resolves to **no files at all** is an error; a filter that matches no documents is not.
+
+### Filtering
+
+`--where`, `--has` and `--missing` are repeatable and **AND** together. Every comparison runs against the schema, so an unknown field or a value the field cannot hold is an error naming what *is* valid — never a silently empty result.
+
+| Form | Means |
+|---|---|
+| `--where 'priority=p0'` | equals |
+| `--where 'priority=p0,p1'` | equals any of them |
+| `--where 'status!=implemented'` | equals none of them |
+| `--where 'impact>=high'` · `<=` · `>` · `<` | compares positions in the field's **declared order** |
+| `--where 'area~celery'` | case-insensitive substring |
+| `--has blocked-by` | the field resolves a value |
+| `--missing priority` | it does not |
+
+Three rules worth knowing before the first surprise:
+
+- **`>=` and friends read the declared order, not intuitive importance.** With `priority` declared `["p0","p1","p2","p3"]`, `priority<=p1` means "at index p1 or below" — p0 and p1, the *most* important. The schema's declaration order is the whole of the ordering.
+- **A repeatable field matches per item.** `area~celery` and `area=celery` both hit `crm, celery`; `area=crm, celery` does not, because that is the raw string rather than one item. `>=`, `<=`, `>`, `<` and `--sort` refuse a repeatable field outright — it has no single position.
+- **An unset field satisfies nothing** except `--missing` and `!=`. A document that declares no `status` does match `--where 'status!=implemented'`, which is what you want while a corpus is still being backfilled.
+
+Narrow by **path** with the target glob, not with a filter — `path` is a column you can print, not a field you can filter.
+
+### Sorting, projection and output
+
+`--sort priority,impact:desc` sorts on the same declared order, **ascending by default for every field type**, so an enum sorts in the order the schema declares it and a ranking writes `:desc` where its enum runs least-to-most. Documents with no value for a sort key come **last in both directions**, and the sort is stable: ties keep path order.
+
+`--fields path,title,priority` picks the columns. With none given, the columns are `path` plus every schema field that at least one matching document resolves — so a column is never all-empty and any field you filtered on is always shown.
+
+| `--format` | For |
+|---|---|
+| `table` *(default)* | reading. Aligned columns, `-` for an unset value, a trailing `N of M document(s) match`. |
+| `json` | **an agent or a script.** The counts, the column list, the schema files in force, the skip list, and one `{ value, raw, source, type, rank }` record per projected field — the same per-field shape `meta --format json` emits. |
+| `tsv` | a pipeline. A header row, tab-separated, empty cell for unset. |
+| `paths` | a loop. One path per line and nothing else. (`--fields` is refused here — there is one column.) |
+
+`--limit N` cuts the result **after** sorting; the trailing count still reports how many matched.
+
+### Rankings
+
+A ranking is a named `where` + `order` preset declared **in the schema**, so each repo defines its own queue rather than inheriting one:
+
+```json
+{
+  "rankings": {
+    "default": {
+      "where": { "status": { "ne": "implemented" }, "priority": { "set": true } },
+      "order": ["priority", "impact:desc", "urgency:desc", "effort:asc", "date:asc"]
+    },
+    "triage": { "where": { "priority": { "set": false } }, "order": ["date:asc"] }
+  }
+}
+```
+
+The `where` operators are `eq`, `ne`, `ge`, `le`, `gt`, `lt`, `in`, `contains` and `set` — the same nine the command line spells `=`, `!=`, `>=`, `<=`, `>`, `<`, `~`, `--has` and `--missing`. A ranking is validated **when the schema is read**, by the very code that runs it, so an unknown operator or an out-of-enum literal is refused at load rather than the first time somebody reaches for that ranking.
+
+`--rank <name>` applies the preset. An explicit flag **replaces the preset's conditions on that field** and leaves the rest standing; `--sort`, when given, replaces the preset's order outright:
+
+```bash
+planr query .claude/plans/issues --rank default
+planr query .claude/plans/issues --rank default --where 'impact=high'   # keeps the preset's status + priority rules
+planr query .claude/plans/issues --rank default --sort date             # keeps the preset's filter, replaces its order
+```
+
+### `planr next` — handing one document to an agent
+
+`next` is the top-ranked document and the addresses needed to act on it. It is driven by a **named ranking** and nothing else, defaulting to the one called `default`; with no ranking declared it says so rather than inventing an order.
+
+```
+$ planr next .claude/plans/issues
+.claude/plans/issues/quota.html
+Quota cache has no invalidator
+
+  type      issue                       (meta)
+  status    draft                       (header)
+  priority  p0                          (meta)
+  area      server/project/crm, celery  (meta)
+
+  ranking 'default' — 1 of 7 matching, 122 scanned
+
+open sections:
+  impact       [in-progress]  Impact
+  remediation  [todo       ]  Remediation
+
+start at: impact
+```
+
+Under `--format json` the `document` object carries the path, the title, every resolved field, and the document's address space:
+
+- **`sections`** — every section at every depth as `{ addr, num, title, status }`. `addr` is the same dot-path every other `planr` command takes, so a caller can `read`, flip a `status` or `append` without a `list` round-trip.
+- **`open`** — the subset carrying a status other than `done`, which is where the work is.
+- **`next_section`** — the first of those in document order, or `null`.
+
+**An empty queue is an answer, not a failure.** `next` prints `no document matches ranking '<name>'` and exits **0**, with `"document": null` in JSON, so a caller polling "is there anything to do" can tell *nothing* from *broken*.
 
 ## Escaping Inside Code Components
 

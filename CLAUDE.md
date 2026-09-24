@@ -70,6 +70,32 @@ When adding a command: write the pure `plan*` core (throwing `PlanError`), add a
 - **`<plan-meta>` is the FIRST element inside `<main>`.** `meta --set` creates it there, `check` warns when it is anywhere else, and a template declares its defaults by writing the block at the top of its body — which is why the position is inside `<main>` rather than beside the header: a template body can reach nowhere else.
 - **One writable home per fact.** A schema field declared `from: "header:<attr>"` — `title`, `status`, `date` — is a READ-ONLY VIEW of the header attribute, and `headerOwnedProblem` is the one rule that says so. `planMetaSet` refuses a `--set` of one and names the real writer (`planr set <file> header.status=…`), `validateNodes` refuses a template that declares one, and `lintMeta` warns when a document already carries one. `resolveMeta` is deliberately unaffected: the C1 order stands, so there is exactly one resolution chain. The writers of those three values remain `planSet`, `planNew`'s dotted `--set` and `_shell.html`; a second copy in `<plan-meta>` would outrank the header and diverge the first time `planr set header.status=…` runs.
 - **A metadata problem is a warning, never a structure failure.** `lintMeta` runs in `lintPlan`, so it can never block a write; `check --strict` is the gate. An empty field value is never valid: `--set k=` is refused, a template placeholder left empty is pruned by `new`, and an empty one in a document is a warning.
+- **A condition has ONE shape and ONE evaluator.** A schema ranking's `where` and the CLI's `--where`/`--has`/`--missing`
+  flags both produce `{ field: { op: literal } }`; `compileWhere` validates it and pre-ranks every literal; `matchWhere`
+  reads only that compiled form and never sees the schema. Never add a second place that interprets an operator — the
+  two surfaces would agree the day they were written and diverge on the first operator either one gained. Compile the
+  flag half and the ranking half **separately**, so a refusal names the origin the condition actually came from.
+- **A ranking is validated by the code that runs it.** `validateSchemaRefs` calls `compileWhere` and `parseSort` on
+  every ranking, so a ranking that LOADS is a ranking `query --rank` can execute. That is why an operator typo in a
+  consumer schema fails `meta`, `check`, `new` and `templates` too: they all call `loadSchema()`.
+- **`--fields` is a COLUMN list, never a record filter.** `query --format json`, `next --format json` and
+  `meta --format json` all emit the same per-field record — every declared schema field present, `source: null` for an
+  unset one. A key set that varied with the projection would make "not selected" and "no value" both read as
+  `undefined` in a consumer.
+- **`queryDocs` calls `checkStructure`, never `planCheck`.** It needs "does this balance", not the lints, and the lints
+  are half the cost of a corpus scan. A metadata problem is `check`'s to report; `query` never opens a second channel
+  for it.
+- **Nothing a corpus scan cannot use is dropped in silence.** Unreadable, not-a-plan-document and does-not-balance each
+  become a `skipped` entry, printed to stderr so stdout stays exactly the result set, carried in the JSON payload, and
+  gated by `--strict`. A target that resolves to zero FILES is an error; a filter that matches zero documents is not.
+- **`query` and `next` take a `<dir|glob>`, so they live in `NEEDS_TARGET`, not `NEEDS_FILE`.** Both of `main()`'s
+  guards read those lists — the unknown-command check and the missing-argument check — and the second one prints
+  "requires a `<file>` argument", which is false for a directory.
+- **`next` is driven only by a named ranking.** There is no implicit order: a prioritisation policy in `planr.js` is a
+  field vocabulary in `planr.js`, which the schema owns. An empty queue exits **0** — a caller polling "is there
+  anything to do" must be able to tell nothing from broken.
+- **No index, no cache.** `query` reads the documents. Measured on a 142-document, 8 MB corpus: ~230 ms wall clock,
+  ~70 ms of which is Node's own startup. Re-measure before proposing one.
 
 ## Adding or changing a component
 

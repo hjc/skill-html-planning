@@ -1824,3 +1824,610 @@ describe('template metadata defaults', () => {
     expect(read1('basic')).not.toContain('plan-meta');
   });
 });
+
+// ── corpus query fixtures (shared by every query/next block below) ──
+// planr is assigned in the file-level beforeAll, so NOTHING here may run at
+// collection time: a `const schema = planr.parseSchema(...)` in a describe body
+// evaluates before that hook and throws "Cannot read properties of undefined".
+let QS;   // the shared fixture schema
+beforeAll(() => {
+  QS = planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      title:    { type: 'string', from: 'header:title' },
+      status:   { type: 'enum', values: ['draft', 'review', 'implemented'], from: 'header:status' },
+      date:     { type: 'date', from: 'header:date' },
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2', 'p3'] },
+      impact:   { type: 'enum', values: ['low', 'medium', 'high'] },
+      points:   { type: 'number', min: 0, max: 21 },
+      area:     { type: 'list' },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+});
+
+// A document carrying the given <plan-meta> pairs and header attributes.
+const QDOC = (meta = {}, attrs = 'title="T" status="draft" date="2026-01-02"') => [
+  `<plan-header ${attrs}></plan-header>`,
+  '<main>',
+  '  <plan-meta>',
+  ...Object.entries(meta).map(([k, v]) => `    <plan-field key="${k}">${v}</plan-field>`),
+  '  </plan-meta>',
+  '  <plan-section id="s1" title="One"></plan-section>',
+  '</main>',
+].join('\n');
+
+const QREC = (meta, path = 'a.html', attrs) =>
+  planr.resolveMeta(QDOC(meta, attrs), { schema: QS, docPath: path });
+
+describe('parseWhere', () => {
+  const P = (o) => planr.parseWhere(QS, o);
+
+  it('maps every CLI comparison onto the declared operator shape', () => {
+    expect(P({ where: ['priority=p0'] })).toEqual({ priority: { in: ['p0'] } });
+    expect(P({ where: ['priority=p0,p1'] })).toEqual({ priority: { in: ['p0', 'p1'] } });
+    expect(P({ where: ['status!=implemented'] })).toEqual({ status: { ne: ['implemented'] } });
+    expect(P({ where: ['impact>=medium'] })).toEqual({ impact: { ge: 'medium' } });
+    expect(P({ where: ['impact<=medium'] })).toEqual({ impact: { le: 'medium' } });
+    expect(P({ where: ['points>3'] })).toEqual({ points: { gt: '3' } });
+    expect(P({ where: ['points<3'] })).toEqual({ points: { lt: '3' } });
+    expect(P({ where: ['area~celery'] })).toEqual({ area: { contains: 'celery' } });
+    expect(P({ has: ['owner'], missing: ['priority'] }))
+      .toEqual({ owner: { set: true }, priority: { set: false } });
+  });
+
+  it('reads >= before >, and AND-s several flags on one field', () => {
+    // `priority>=p1` must not parse as `priority` > `=p1`.
+    expect(P({ where: ['priority>=p1'] })).toEqual({ priority: { ge: 'p1' } });
+    expect(P({ where: ['points>=3', 'points<=9'] })).toEqual({ points: { ge: '3', le: '9' } });
+  });
+
+  it('refuses a malformed expression, an unknown field, and `path`', () => {
+    expect(() => P({ where: ['priority'] })).toThrow(/has no comparison — write key=value/);
+    expect(() => P({ where: ['=p0'] })).toThrow(/names no field/);
+    expect(() => P({ where: ['priority='] })).toThrow(/has no value/);
+    expect(() => P({ where: ['severity=high'] }))
+      .toThrow(/unknown field 'severity' — declared: title, status, date, priority, impact, points, area, owner/);
+    expect(() => P({ has: ['severity'] })).toThrow(/unknown field 'severity'/);
+    expect(() => P({ where: ['path~issues'] })).toThrow(/narrow by path with the target glob instead/);
+  });
+});
+
+describe('compileWhere', () => {
+  const C = (o) => planr.compileWhere(QS, o, 'filter');
+
+  it('pre-ranks every literal by the field’s declared order', () => {
+    expect(C({ priority: { in: ['p0', 'p2'] } }))
+      .toEqual([{ key: 'priority', op: 'in', items: ['p0', 'p2'], ranks: [0, 2] }]);
+    expect(C({ impact: { ge: 'medium' } })).toEqual([{ key: 'impact', op: 'ge', rank: 1 }]);
+    expect(C({ points: { lt: '13' } })).toEqual([{ key: 'points', op: 'lt', rank: 13 }]);
+    expect(C({ owner: { set: true } })).toEqual([{ key: 'owner', op: 'set', want: true }]);
+    expect(C({ area: { contains: 'CELERY' } })).toEqual([{ key: 'area', op: 'contains', text: 'celery' }]);
+    expect(C({ status: { ne: ['implemented'] } }))
+      .toEqual([{ key: 'status', op: 'ne', items: ['implemented'], ranks: [2] }]);
+  });
+
+  it('accepts `eq` from a schema and normalises it to `in`', () => {
+    expect(C({ priority: { eq: 'p1' } })).toEqual([{ key: 'priority', op: 'in', items: ['p1'], ranks: [1] }]);
+  });
+
+  it('refuses an unknown operator, a bad literal, a non-boolean `set`, and an ordered repeatable', () => {
+    expect(() => C({ priority: { gte: 'p1' } }))
+      .toThrow(/filter on 'priority': unknown operator 'gte' — valid: eq, ne, ge, le, gt, lt, in, contains, set/);
+    expect(() => C({ priority: { in: ['urgent'] } }))
+      .toThrow(/filter on 'priority': .*'urgent' is not a declared value — valid: p0, p1, p2, p3/);
+    expect(() => C({ points: { ge: 'lots' } })).toThrow(/filter on 'points': .*'lots' is not a number/);
+    expect(() => C({ owner: { set: 'yes' } })).toThrow(/filter on 'owner': `set` takes true or false/);
+    expect(() => C({ area: { ge: 'crm' } }))
+      .toThrow(/filter on 'area': 'ge' needs an order, and a repeatable field has none — use =, != or ~/);
+    expect(() => C({ nope: { in: ['x'] } })).toThrow(/filter names unknown field 'nope'/);
+  });
+
+  it('does NOT hold a `contains` literal to the field’s values', () => {
+    // A substring is deliberately not a whole value.
+    expect(() => C({ priority: { contains: 'p' } })).not.toThrow();
+  });
+
+  it('names the label it was given, so a ranking says so', () => {
+    expect(() => planr.compileWhere(QS, { priority: { gte: 'p1' } }, "ranking 'default' where"))
+      .toThrow(/ranking 'default' where on 'priority': unknown operator 'gte'/);
+  });
+});
+
+describe('matchWhere', () => {
+  let rec, bare;
+  beforeAll(() => {
+    rec = QREC({ priority: 'p1', impact: 'high', points: '8', area: 'server/project/crm, celery' });
+    bare = QREC({});
+  });
+  const hit = (r, o) => planr.matchWhere(r, planr.compileWhere(QS, o, 'filter'));
+
+  it('compares on rank, so a declared enum order decides >= and <=', () => {
+    expect(hit(rec, { priority: { in: ['p0', 'p1'] } })).toBe(true);
+    expect(hit(rec, { priority: { in: ['p0'] } })).toBe(false);
+    expect(hit(rec, { priority: { le: 'p1' } })).toBe(true);     // index 1 <= index 1
+    expect(hit(rec, { priority: { lt: 'p1' } })).toBe(false);
+    expect(hit(rec, { impact: { ge: 'medium' } })).toBe(true);   // high is index 2
+    expect(hit(rec, { impact: { gt: 'high' } })).toBe(false);
+    expect(hit(rec, { points: { ge: '8' } })).toBe(true);
+    expect(hit(rec, { points: { gt: '8' } })).toBe(false);
+  });
+
+  it('AND-s conditions, and ORs the values of one', () => {
+    expect(hit(rec, { priority: { in: ['p1'] }, impact: { in: ['high'] } })).toBe(true);
+    expect(hit(rec, { priority: { in: ['p1'] }, impact: { in: ['low'] } })).toBe(false);
+    expect(hit(rec, { priority: { in: ['p0', 'p1', 'p2'] } })).toBe(true);
+    expect(hit(rec, { points: { ge: '5', le: '9' } })).toBe(true);
+    expect(hit(rec, { points: { ge: '5', le: '7' } })).toBe(false);
+  });
+
+  it('matches a repeatable field per ITEM, for =, != and ~', () => {
+    expect(hit(rec, { area: { in: ['celery'] } })).toBe(true);
+    expect(hit(rec, { area: { in: ['server/project/crm, celery'] } })).toBe(false);  // not the whole raw string
+    expect(hit(rec, { area: { ne: ['celery'] } })).toBe(false);
+    expect(hit(rec, { area: { contains: 'CELE' } })).toBe(true);
+  });
+
+  it('matches a substring case-insensitively over a scalar’s raw text', () => {
+    expect(hit(rec, { title: { contains: 't' } })).toBe(true);
+    expect(hit(rec, { title: { contains: 'zzz' } })).toBe(false);
+  });
+
+  it('never lets an unset field satisfy a comparison, but lets != and --missing through', () => {
+    expect(hit(bare, { priority: { in: ['p0'] } })).toBe(false);
+    expect(hit(bare, { priority: { le: 'p3' } })).toBe(false);
+    expect(hit(bare, { priority: { contains: 'p' } })).toBe(false);
+    expect(hit(bare, { priority: { ne: ['p0'] } })).toBe(true);     // no value is not p0
+    expect(hit(bare, { priority: { set: false } })).toBe(true);
+    expect(hit(bare, { priority: { set: true } })).toBe(false);
+    expect(hit(rec, { priority: { set: true } })).toBe(true);
+  });
+
+  it('matches a header-resolved value exactly as it matches a block-resolved one', () => {
+    expect(hit(rec, { status: { in: ['draft'] } })).toBe(true);     // from the header
+    expect(hit(rec, { status: { ne: ['implemented'] } })).toBe(true);
+    expect(hit(rec, { date: { ge: '2026-01-01' } })).toBe(true);    // ISO dates sort lexically
+    expect(hit(rec, { date: { gt: '2026-01-02' } })).toBe(false);
+  });
+});
+
+describe('parseSort / parseFields / parseLimit', () => {
+  it('defaults every field to asc and reads an explicit direction', () => {
+    expect(planr.parseSort(QS, 'priority,impact:desc,date:asc')).toEqual([
+      { name: 'priority', dir: 'asc' }, { name: 'impact', dir: 'desc' }, { name: 'date', dir: 'asc' },
+    ]);
+    expect(planr.parseSort(QS, '')).toEqual([]);
+  });
+
+  it('refuses an unknown field, a bad direction, and a repeatable field', () => {
+    expect(() => planr.parseSort(QS, 'nope')).toThrow(/--sort names unknown field 'nope' — declared: title, status/);
+    expect(() => planr.parseSort(QS, 'priority:sideways')).toThrow(/--sort 'priority:sideways': direction must be asc or desc/);
+    expect(() => planr.parseSort(QS, 'area'))
+      .toThrow(/--sort names 'area', which is repeatable and so has no single position/);
+    expect(() => planr.parseSort(QS, 'nope', "ranking 'r' order")).toThrow(/ranking 'r' order names unknown field 'nope'/);
+  });
+
+  it('validates a projection against the schema, plus the pseudo-column `path`', () => {
+    expect(planr.parseFields(QS, 'path, priority ,area')).toEqual(['path', 'priority', 'area']);
+    expect(() => planr.parseFields(QS, 'path,nope'))
+      .toThrow(/--fields names unknown column 'nope' — valid: path, title, status, date, priority, impact, points, area, owner/);
+    expect(() => planr.parseFields(QS, ' , ')).toThrow(/--fields is empty/);
+  });
+
+  it('takes a positive whole number as a limit and nothing else', () => {
+    expect(planr.parseLimit(null)).toBeNull();
+    expect(planr.parseLimit('3')).toBe(3);
+    for (const bad of ['0', '-1', '2.5', 'many', ''])
+      expect(() => planr.parseLimit(bad), bad).toThrow(/--limit '.*' must be a positive whole number/);
+  });
+});
+
+describe('queryDocs', () => {
+  const DOCS = () => [
+    { path: 'a/p0.html', html: QDOC({ priority: 'p0', impact: 'low' }) },
+    { path: 'a/p1-a.html', html: QDOC({ priority: 'p1', impact: 'high' }) },
+    { path: 'a/p1-b.html', html: QDOC({ priority: 'p1', impact: 'low' }) },
+    { path: 'a/none.html', html: QDOC({}) },
+    { path: 'a/mockup.html', html: '<html><body><h1>mock</h1></body></html>' },
+    { path: 'a/broken.html', html: QDOC({ priority: 'p2' }).replace('</plan-section>', '') },
+    { path: 'a/gone.html', error: 'unreadable — ENOENT' },
+  ];
+
+  it('reports the three unusable kinds instead of dropping them', () => {
+    const q = planr.queryDocs(DOCS(), { schema: QS });
+    expect(q.scanned).toBe(7);
+    expect(q.matched).toBe(4);
+    expect(q.skipped).toEqual([
+      { path: 'a/mockup.html', reason: 'not a plan document — no <plan-*> markup' },
+      { path: 'a/broken.html', reason: 'structure does not balance — run `planr check` on it' },
+      { path: 'a/gone.html', reason: 'unreadable — ENOENT' },
+    ]);
+  });
+
+  it('sorts on rank, puts nulls last in BOTH directions, and is stable on a tie', () => {
+    const order = (spec) => planr.queryDocs(DOCS(), { schema: QS, order: planr.parseSort(QS, spec) })
+      .results.map(r => r.path);
+    expect(order('priority')).toEqual(['a/p0.html', 'a/p1-a.html', 'a/p1-b.html', 'a/none.html']);
+    expect(order('priority:desc')).toEqual(['a/p1-a.html', 'a/p1-b.html', 'a/p0.html', 'a/none.html']);
+    // p1-a before p1-b in both: ties keep the input (path-sorted) order.
+    expect(order('impact:desc')).toEqual(['a/p1-a.html', 'a/p0.html', 'a/p1-b.html', 'a/none.html']);
+  });
+
+  it('filters before sorting, and counts matches BEFORE the limit', () => {
+    const q = planr.queryDocs(DOCS(), {
+      schema: QS,
+      where: planr.compileWhere(QS, { priority: { set: true } }, 'filter'),
+      order: planr.parseSort(QS, 'priority'),
+      limit: 2,
+    });
+    expect(q.matched).toBe(3);
+    expect(q.results.map(r => r.path)).toEqual(['a/p0.html', 'a/p1-a.html']);
+  });
+
+  it('returns the resolveMeta record itself, unmodified', () => {
+    const q = planr.queryDocs([{ path: 'a/p0.html', html: QDOC({ priority: 'p0' }) }], { schema: QS });
+    expect(q.results[0].path).toBe('a/p0.html');
+    expect(q.results[0].fields.priority).toEqual({ value: 'p0', raw: 'p0', source: 'meta', type: 'enum', rank: 0 });
+    expect(Object.keys(q.results[0])).toEqual(['path', 'fields', 'unknown', 'problems']);
+  });
+});
+
+describe('defaultFields', () => {
+  it('is path plus every field some matched document resolves, in schema order', () => {
+    const q = planr.queryDocs([{ path: 'a.html', html: QDOC({ priority: 'p0', area: 'crm' }) }], { schema: QS });
+    // title/status/date come from the header; points and owner resolve nowhere.
+    expect(planr.defaultFields(QS, q.results)).toEqual(['path', 'title', 'status', 'date', 'priority', 'area']);
+  });
+  it('is path alone when nothing matched', () => {
+    expect(planr.defaultFields(QS, [])).toEqual(['path']);
+  });
+});
+
+describe('applyRanking', () => {
+  let ranked;
+  beforeAll(() => {
+    ranked = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        status:   { type: 'enum', values: ['draft', 'review', 'implemented'] },
+        priority: { type: 'enum', values: ['p0', 'p1', 'p2'] },
+        impact:   { type: 'enum', values: ['low', 'medium', 'high'] },
+      },
+      rankings: {
+        default: { where: { status: { ne: 'implemented' }, priority: { set: true } },
+                   order: ['priority', 'impact:desc'] },
+        triage:  { where: { priority: { set: false } }, order: [] },
+      },
+    }, 'probe.json'));
+  });
+
+  it('supplies the preset when no flag contradicts it', () => {
+    expect(planr.applyRanking(ranked, 'default', {})).toEqual({
+      where: { status: { ne: 'implemented' }, priority: { set: true } },
+      sort: 'priority,impact:desc',
+    });
+  });
+
+  it('lets an explicit flag replace the preset per FIELD, leaving the rest standing', () => {
+    const r = planr.applyRanking(ranked, 'default', { where: { priority: { in: ['p0'] } } });
+    expect(r.where).toEqual({ status: { ne: 'implemented' }, priority: { in: ['p0'] } });  // not merged with `set`
+    expect(r.sort).toBe('priority,impact:desc');                                            // order untouched
+  });
+
+  it('lets --sort replace the preset order outright', () => {
+    expect(planr.applyRanking(ranked, 'default', { sort: 'impact' }).sort).toBe('impact');
+    expect(planr.applyRanking(ranked, 'triage', {}).sort).toBe('');
+  });
+
+  it('is a pass-through with no ranking named', () => {
+    expect(planr.applyRanking(ranked, null, { where: { priority: { in: ['p0'] } }, sort: 'priority' }))
+      .toEqual({ where: { priority: { in: ['p0'] } }, sort: 'priority' });
+  });
+
+  it('refuses an unknown ranking, listing the declared ones', () => {
+    expect(() => planr.applyRanking(ranked, 'nope', {}))
+      .toThrow(/unknown ranking 'nope' — declared: default, triage/);
+  });
+});
+
+describe('a ranking is validated by the code that runs it', () => {
+  const core = () => planr.parseSchema({
+    fields: {
+      status:   { type: 'enum', values: ['draft', 'implemented'] },
+      priority: { type: 'enum', values: ['p0', 'p1'] },
+      area:     { type: 'list' },
+    },
+  }, 'core.json');
+  const merge = (rankings) => planr.mergeSchemas(core(), planr.parseSchema({ rankings }, 'consumer.json'));
+
+  it('accepts every operator the query implements', () => {
+    expect(() => merge({ r: {
+      where: { status: { ne: 'implemented' }, priority: { set: true, ge: 'p0' }, area: { contains: 'crm' } },
+      order: ['priority', 'status:desc'],
+    } })).not.toThrow();
+  });
+
+  it('refuses an operator the query does not implement, naming the file and the ranking', () => {
+    expect(() => merge({ r: { where: { priority: { gte: 'p0' } } } }))
+      .toThrow(/consumer\.json: ranking 'r' where on 'priority': unknown operator 'gte' — valid: eq, ne, ge, le, gt, lt, in, contains, set/);
+  });
+
+  it('refuses a literal the field cannot hold, and an ordered repeatable', () => {
+    expect(() => merge({ r: { where: { priority: { eq: 'urgent' } } } }))
+      .toThrow(/consumer\.json: ranking 'r' where on 'priority': .*'urgent' is not a declared value/);
+    expect(() => merge({ r: { where: { area: { ge: 'crm' } } } }))
+      .toThrow(/consumer\.json: ranking 'r' where on 'area': 'ge' needs an order/);
+  });
+
+  it('still refuses an unknown field and a bad direction in `order`', () => {
+    expect(() => merge({ r: { order: ['nope'] } }))
+      .toThrow(/consumer\.json: ranking 'r' order names unknown field 'nope'/);
+    expect(() => merge({ r: { order: ['priority:sideways'] } }))
+      .toThrow(/direction must be asc or desc/);
+    expect(() => merge({ r: { order: ['area'] } }))
+      .toThrow(/consumer\.json: ranking 'r' order names 'area', which is repeatable/);
+    expect(() => merge({ r: { where: { nope: { set: true } } } }))
+      .toThrow(/consumer\.json: ranking 'r' where names unknown field 'nope'/);
+  });
+});
+
+describe('planQuery', () => {
+  const DOCS = () => [
+    { path: 'a/p0.html', html: QDOC({ priority: 'p0', area: 'crm, celery' }, 'title="Zero" status="draft"') },
+    { path: 'a/p1.html', html: QDOC({ priority: 'p1' }, 'title="One" status="review"') },
+    { path: 'a/none.html', html: QDOC({}, 'title="None" status="draft"') },
+    { path: 'a/mockup.html', html: '<html><body>mock</body></html>' },
+  ];
+  const Q = (opts) => planr.planQuery(DOCS(), { schema: QS, target: 'a', ...opts });
+
+  it('prints an aligned table, a dash for an unset value, and a trailing count', () => {
+    expect(Q({ fields: 'path,priority,area' }).report).toBe([
+      'path         priority  area',
+      'a/p0.html    p0        crm, celery',
+      'a/p1.html    p1        -',
+      'a/none.html  -         -',
+      '',
+      '3 of 4 document(s) match',
+      '',
+    ].join('\n'));
+  });
+
+  it('says so when nothing matches, and still reports the scan', () => {
+    const r = Q({ where: ['priority=p3'] });
+    expect(r.report).toBe('no documents match\n\n0 of 4 document(s) match\n');
+    expect(r.matched).toBe(0);
+  });
+
+  it('notes the limit and the ranking in the trailing line', () => {
+    expect(Q({ fields: 'path', sort: 'priority', limit: '1' }).report)
+      .toContain('3 of 4 document(s) match, showing 1');
+  });
+
+  it('carries the skip list on the returned object, never in the report', () => {
+    const r = Q({ fields: 'path' });
+    expect(r.report).not.toContain('mockup');
+    expect(r.skipped).toEqual([{ path: 'a/mockup.html', reason: 'not a plan document — no <plan-*> markup' }]);
+    expect(r.scanned).toBe(4);
+  });
+
+  it('emits paths alone, newline-terminated, and nothing at all when empty', () => {
+    expect(Q({ format: 'paths', sort: 'priority' }).report).toBe('a/p0.html\na/p1.html\na/none.html\n');
+    expect(Q({ format: 'paths', where: ['priority=p3'] }).report).toBe('');
+  });
+
+  it('emits a header row and tab-separated values, with an EMPTY cell for unset', () => {
+    expect(Q({ format: 'tsv', fields: 'path,priority' }).report)
+      .toBe('path\tpriority\na/p0.html\tp0\na/p1.html\tp1\na/none.html\t\n');
+  });
+
+  it('emits the orchestrator payload under --format json', () => {
+    const out = JSON.parse(Q({
+      format: 'json', fields: 'path,priority', where: ['priority=p0,p1'], sort: 'priority',
+      limit: '1', schemaSources: ['C:\\x\\core.json'],
+    }).report);
+    expect(out).toMatchObject({
+      target: 'a', rank: null, scanned: 4, matched: 2, returned: 1,
+      fields: ['path', 'priority'], schema: ['C:/x/core.json'],
+    });
+    expect(out.results[0].path).toBe('a/p0.html');
+    expect(out.results[0].fields.priority).toEqual({ value: 'p0', raw: 'p0', source: 'meta', type: 'enum', rank: 0 });
+    expect(out.skipped).toEqual([{ path: 'a/mockup.html', reason: 'not a plan document — no <plan-*> markup' }]);
+  });
+
+  it('projects the default columns when --fields is absent', () => {
+    const out = JSON.parse(Q({ format: 'json' }).report);
+    expect(out.fields).toEqual(['path', 'title', 'status', 'priority', 'area']);
+  });
+
+  it('gives every result the WHOLE record — every declared field, whatever --fields says', () => {
+    // `fields` is the column list; `results[].fields` is the record, and it is
+    // the same shape `meta --format json` and `next --format json` emit. A key
+    // set that varied with the projection, or with what the corpus happened to
+    // resolve, would read as `undefined` — indistinguishable from "no value" —
+    // in a consumer walking a partly-backfilled corpus.
+    const declared = Object.keys(QS.fields);
+    for (const opts of [{}, { fields: 'path' }, { fields: 'path,priority' }, { where: ['priority=p0'] }]) {
+      const out = JSON.parse(Q({ format: 'json', ...opts }).report);
+      for (const r of out.results) expect(Object.keys(r.fields), JSON.stringify(opts)).toEqual(declared);
+    }
+    // ...including the fields NO matched document resolves, as an explicit null.
+    const one = JSON.parse(Q({ format: 'json', fields: 'path' }).report).results[0];
+    expect(one.fields.owner).toEqual({ value: null, raw: null, source: null, type: 'string', rank: null });
+    expect(one.fields.points).toEqual({ value: null, raw: null, source: null, type: 'number', rank: null });
+  });
+
+  it('applies a ranking, and lets an explicit flag override it per field', () => {
+    const rankedSchema = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:    { type: 'string', from: 'header:title' },
+        status:   { type: 'enum', values: ['draft', 'review', 'implemented'], from: 'header:status' },
+        priority: { type: 'enum', values: ['p0', 'p1', 'p2', 'p3'] },
+      },
+      rankings: { queue: { where: { priority: { set: true } }, order: ['priority:desc'] } },
+    }, 'probe.json'));
+    const R = (opts) => planr.planQuery(DOCS(), { schema: rankedSchema, format: 'paths', rank: 'queue', ...opts });
+    expect(R({}).report).toBe('a/p1.html\na/p0.html\n');                       // preset filter + preset order
+    expect(R({ where: ['priority=p0'] }).report).toBe('a/p0.html\n');          // flag replaces the preset's field
+    expect(R({ sort: 'priority' }).report).toBe('a/p0.html\na/p1.html\n');     // --sort replaces the order
+    expect(() => planr.planQuery(DOCS(), { schema: rankedSchema, rank: 'nope' }))
+      .toThrow(/unknown ranking 'nope' — declared: queue/);
+  });
+
+  it('blames the origin a bad condition actually came from, not whichever ran last', () => {
+    const bad = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        status:   { type: 'enum', values: ['draft', 'implemented'], from: 'header:status' },
+        priority: { type: 'enum', values: ['p0', 'p1'] },
+        area:     { type: 'list' },
+      },
+      rankings: { queue: { where: { status: { ne: 'implemented' } }, order: [] } },
+    }, 'probe.json'));
+    // The flag is at fault, even with a ranking in play.
+    expect(() => planr.planQuery(DOCS(), { schema: bad, rank: 'queue', where: ['priority=urgent'] }))
+      .toThrow(/^filter on 'priority': /);
+    expect(() => planr.planQuery(DOCS(), { schema: bad, rank: 'queue', where: ['area>=x'] }))
+      .toThrow(/^filter on 'area': 'ge' needs an order/);
+    // And with no ranking at all, the label is still the flag.
+    expect(() => planr.planQuery(DOCS(), { schema: bad, where: ['priority=urgent'] }))
+      .toThrow(/^filter on 'priority': /);
+    // The ranking is at fault only for a condition the flags never named. A
+    // ranking this broken is refused at schema load; reaching it here takes a
+    // schema built in memory, which is exactly what a consumer test does.
+    const rotten = planr.parseSchema({
+      fields: { priority: { type: 'enum', values: ['p0', 'p1'] } },
+    }, 'probe.json');
+    rotten.rankings = { queue: { where: { priority: { ge: 'urgent' } }, order: [], origin: 'probe.json' } };
+    expect(() => planr.planQuery(DOCS(), { schema: rotten, rank: 'queue' }))
+      .toThrow(/^ranking 'queue' where on 'priority': /);
+    // ...and the flag overriding that field takes the blame back.
+    expect(() => planr.planQuery(DOCS(), { schema: rotten, rank: 'queue', where: ['priority=nonsense'] }))
+      .toThrow(/^filter on 'priority': /);
+  });
+
+  it('refuses an unknown format, --fields beside --format paths, and a bad limit', () => {
+    expect(() => Q({ format: 'yaml' })).toThrow(/unknown --format 'yaml' — valid: table, json, tsv, paths/);
+    expect(() => Q({ format: 'paths', fields: 'path' }))
+      .toThrow(/--format paths prints paths only — drop --fields, or pick table, tsv or json/);
+    expect(() => Q({ limit: 'many' })).toThrow(/--limit 'many' must be a positive whole number/);
+  });
+});
+
+describe('skipReport', () => {
+  it('is empty for a clean scan, and lists each file with its reason otherwise', () => {
+    expect(planr.skipReport([])).toBe('');
+    expect(planr.skipReport([{ path: 'a.html', reason: 'unreadable — EACCES' }]))
+      .toBe('1 file(s) skipped — scanned, not queryable:\n  a.html: unreadable — EACCES');
+  });
+});
+
+// A document with real nesting and statuses, so `next`'s outline has something
+// to say: every section at every depth, and the unfinished subset.
+const NDOC = (meta = {}) => [
+  '<plan-header title="Quota cache" status="draft" date="2026-01-02"></plan-header>',
+  '<main>',
+  '  <plan-meta>',
+  ...Object.entries(meta).map(([k, v]) => `    <plan-field key="${k}">${v}</plan-field>`),
+  '  </plan-meta>',
+  '  <plan-section id="overview" title="Overview"></plan-section>',
+  '  <plan-section id="steps" title="Steps">',
+  '    <plan-section id="step-1" title="First" status="done"></plan-section>',
+  '    <plan-section id="step-2" title="Second" status="todo"></plan-section>',
+  '  </plan-section>',
+  '  <plan-section id="wrap" title="Wrap" status="in-progress"></plan-section>',
+  '</main>',
+].join('\n');
+
+describe('docOutline', () => {
+  it('lists every section at every depth by its dot-path address', () => {
+    const o = planr.docOutline(NDOC());
+    expect(o.sections).toEqual([
+      { addr: 'overview', num: '1', title: 'Overview', status: null },
+      { addr: 'steps', num: '2', title: 'Steps', status: null },
+      { addr: 'steps.step-1', num: '2.1', title: 'First', status: 'done' },
+      { addr: 'steps.step-2', num: '2.2', title: 'Second', status: 'todo' },
+      { addr: 'wrap', num: '3', title: 'Wrap', status: 'in-progress' },
+    ]);
+  });
+
+  it('takes the open subset by the `tasks` rule, and names the first as the start', () => {
+    const o = planr.docOutline(NDOC());
+    expect(o.open.map(s => s.addr)).toEqual(['steps.step-2', 'wrap']);   // `done` is not open
+    expect(o.next).toBe('steps.step-2');
+  });
+
+  it('reports no start when nothing carries an unfinished status', () => {
+    const o = planr.docOutline('<main><plan-section id="a" title="A"></plan-section></main>');
+    expect(o.open).toEqual([]);
+    expect(o.next).toBeNull();
+  });
+});
+
+describe('planNext', () => {
+  let NS;
+  beforeAll(() => {
+    NS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:    { type: 'string', from: 'header:title' },
+        status:   { type: 'enum', values: ['draft', 'review', 'implemented'], from: 'header:status' },
+        priority: { type: 'enum', values: ['p0', 'p1', 'p2'] },
+      },
+      rankings: {
+        default: { where: { status: { ne: 'implemented' } }, order: ['priority'] },
+        empty:   { where: { priority: { in: ['p2'] } }, order: [] },
+      },
+    }, 'probe.json'));
+  });
+  const DOCS = () => [
+    { path: 'a/p1.html', html: NDOC({ priority: 'p1' }) },
+    { path: 'a/p0.html', html: NDOC({ priority: 'p0' }) },
+    { path: 'a/mockup.html', html: '<html><body>mock</body></html>' },
+  ];
+  const N = (opts) => planr.planNext(DOCS(), { schema: NS, target: 'a', ...opts });
+
+  it('prints the top document, its resolved metadata and where to start', () => {
+    expect(N({}).report).toBe([
+      'a/p0.html',
+      'Quota cache',
+      '',
+      '  status    draft  (header)',
+      '  priority  p0     (meta)',
+      '',
+      "  ranking 'default' — 1 of 2 matching, 3 scanned",
+      '',
+      'open sections:',
+      '  steps.step-2  [todo       ]  Second',
+      '  wrap          [in-progress]  Wrap',
+      '',
+      'start at: steps.step-2',
+      '',
+    ].join('\n'));
+  });
+
+  it('hands an agent the whole address space plus the open subset under --format json', () => {
+    const out = JSON.parse(N({ format: 'json', schemaSources: ['C:\\x\\core.json'] }).report);
+    expect(out).toMatchObject({ target: 'a', rank: 'default', scanned: 3, matched: 2, schema: ['C:/x/core.json'] });
+    expect(out.document.path).toBe('a/p0.html');
+    expect(out.document.title).toBe('Quota cache');
+    expect(out.document.fields.priority)
+      .toEqual({ value: 'p0', raw: 'p0', source: 'meta', type: 'enum', rank: 0 });
+    expect(out.document.sections.map(s => s.addr))
+      .toEqual(['overview', 'steps', 'steps.step-1', 'steps.step-2', 'wrap']);
+    expect(out.document.open.map(s => s.addr)).toEqual(['steps.step-2', 'wrap']);
+    expect(out.document.next_section).toBe('steps.step-2');
+    expect(out.skipped).toEqual([{ path: 'a/mockup.html', reason: 'not a plan document — no <plan-*> markup' }]);
+  });
+
+  it('treats an empty queue as an answer, not a failure', () => {
+    expect(N({ rank: 'empty' }).report).toBe("no document matches ranking 'empty' — 3 scanned\n");
+    expect(JSON.parse(N({ rank: 'empty', format: 'json' }).report).document).toBeNull();
+  });
+
+  it('refuses an unknown ranking, and says what `default` means when it is missing', () => {
+    expect(() => N({ rank: 'nope' })).toThrow(/unknown ranking 'nope' — declared: default, empty/);
+    const bare = planr.mergeSchemas(planr.parseSchema({ fields: { owner: { type: 'string' } } }, 'probe.json'));
+    expect(() => planr.planNext([], { schema: bare }))
+      .toThrow(/unknown ranking 'default' — declared: \(none\)[\s\S]*declare one named 'default', or pass --rank/);
+  });
+
+  it('refuses a format it does not have', () => {
+    expect(() => N({ format: 'tsv' })).toThrow(/unknown --format 'tsv' — valid: text, json/);
+  });
+});

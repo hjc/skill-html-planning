@@ -655,3 +655,218 @@ describe('metadata documentation', () => {
     expect(c).toContain('One writable home per fact');
   });
 });
+
+// ── query / next wiring ───────────────────────────────────
+// A staged skill plus a consumer .claude/planr-schema.json is the only way to
+// exercise a real ranking end to end: rankings are schema data, and the shipped
+// core schema declares none.
+const CONSUMER_SCHEMA = {
+  fields: {
+    priority: { type: 'enum', values: ['p0', 'p1', 'p2', 'p3'] },
+    impact: { type: 'enum', values: ['low', 'medium', 'high'] },
+  },
+  rankings: {
+    default: { where: { status: { ne: 'implemented' }, priority: { set: true } },
+               order: ['priority', 'impact:desc'] },
+    triage: { where: { priority: { set: false } }, order: ['date:asc'] },
+  },
+};
+
+// Stage the skill, write the consumer schema, and scaffold an issue corpus.
+// Returns { planr, dir } where dir is the issues directory, relative to root.
+function stageCorpus(root) {
+  const staged = stageSkill(root, 'skills/html-planning');
+  writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify(CONSUMER_SCHEMA));
+  const issues = join(root, '.claude', 'plans', 'issues');
+  mkdirSync(issues, { recursive: true });
+  const make = (name, title, meta) => {
+    const out = join(issues, name);
+    expect(runAt(staged, ['new', out, '--template', 'issue', '--title', title]).code, name).toBe(0);
+    const sets = Object.entries(meta).flatMap(([k, v]) => ['--set', `${k}=${v}`]);
+    if (sets.length) expect(runAt(staged, ['meta', out, ...sets]).code, name).toBe(0);
+    return out;
+  };
+  const quota = make('quota.html', 'Quota cache', { priority: 'p0', impact: 'high' });
+  make('webhook.html', 'Webhook retry', { priority: 'p1', impact: 'high' });
+  make('pgp.html', 'PGP filename', { priority: 'p2', impact: 'low' });
+  const untriaged = make('splits.html', 'Overlapping splits', {});
+  expect(runAt(staged, ['set', join(issues, 'pgp.html'), 'header.status=implemented']).code).toBe(0);
+  expect(runAt(staged, ['set', quota, 'remediation.status=todo']).code).toBe(0);
+  // one non-document and one that does not balance, so the skip report has work
+  writeFileSync(join(issues, 'mockup.html'), '<html><body><h1>mock</h1></body></html>\n');
+  writeFileSync(join(issues, 'broken.html'),
+    readFileSync(untriaged, 'utf8').replace('</plan-section>', ''));
+  return { planr: staged, issues };
+}
+
+describe('query (wiring)', () => {
+  it('scans a directory, prints the table on stdout and the skip list on stderr, exit 0', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const r = runAt(P, ['query', issues, '--fields', 'path,priority']);
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toMatch(/^path\s+priority$/m);
+      expect(r.stdout).toContain('4 of 6 document(s) match');
+      expect(r.stdout).not.toContain('mockup');
+      expect(r.stderr).toContain('2 file(s) skipped');
+      expect(r.stderr).toContain('not a plan document');
+      expect(r.stderr).toContain('structure does not balance');
+    } finally { rmTmp(root); }
+  });
+
+  it('runs a consumer-declared ranking, and lets a flag override it per field', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const paths = (args) => runAt(P, ['query', issues, '--format', 'paths', ...args])
+        .stdout.trim().split('\n').map(s => s.replace(/^.*[\\/]/, ''));
+      expect(paths(['--rank', 'default'])).toEqual(['quota.html', 'webhook.html']);
+      expect(paths(['--rank', 'default', '--where', 'priority=p1'])).toEqual(['webhook.html']);
+      expect(paths(['--rank', 'triage'])).toEqual(['splits.html']);
+      expect(paths(['--where', 'impact>=high', '--sort', 'priority:desc']))
+        .toEqual(['webhook.html', 'quota.html']);
+      expect(runAt(P, ['query', issues, '--rank', 'nope']).stderr)
+        .toContain("unknown ranking 'nope' — declared: default, triage");
+    } finally { rmTmp(root); }
+  });
+
+  it('emits parseable JSON with the counts, the schema in force and the skip list', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const r = runAt(P, ['query', issues, '--format', 'json', '--rank', 'default',
+        '--limit', '1', '--fields', 'path']);
+      expect(r.code, r.stderr).toBe(0);
+      const out = JSON.parse(r.stdout);
+      expect(out).toMatchObject({ rank: 'default', scanned: 6, matched: 2, returned: 1 });
+      expect(out.results[0].fields.priority.value).toBe('p0');
+      // The whole record, not just the projected columns: a field no document
+      // in the corpus has yet is an explicit null, never a missing key.
+      expect(out.fields).toEqual(['path']);
+      expect(Object.keys(out.results[0].fields))
+        .toEqual(['title', 'type', 'status', 'date', 'owner', 'area', 'blocked-by', 'priority', 'impact']);
+      expect(out.results[0].fields.owner).toEqual(
+        { value: null, raw: null, source: null, type: 'string', rank: null });
+      expect(out.schema.map(s => s.replace(/^.*\//, ''))).toEqual(['planr-schema.json', 'planr-schema.json']);
+      expect(out.skipped).toHaveLength(2);
+    } finally { rmTmp(root); }
+  });
+
+  it('gates on --strict, resolves a glob, and refuses a target that is not there', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      expect(runAt(P, ['query', issues, '--strict']).code).toBe(1);
+      expect(runAt(P, ['query', `${issues.replace(/\\/g, '/')}/q*.html`, '--format', 'paths'])
+        .stdout.trim().replace(/^.*[\\/]/, '')).toBe('quota.html');
+      const gone = runAt(P, ['query', join(root, 'nowhere')]);
+      expect(gone.code).toBe(1);
+      expect(gone.stderr).toContain('no such file or directory');
+      expect(runAt(P, ['query']).stderr).toContain("'query' requires a <dir|glob> argument");
+    } finally { rmTmp(root); }
+  });
+
+  it('is listed in the usage text and the skill command table', () => {
+    expect(run(['--help']).stdout).toContain('query ');
+    expect(readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8')).toContain('| `query` |');
+  });
+});
+describe('a ranking is validated when the schema is READ', () => {
+  it('fails every command that loads the schema, naming the file and the operator', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify({
+        fields: { priority: { type: 'enum', values: ['p0', 'p1'] } },
+        rankings: { default: { where: { priority: { gte: 'p1' } }, order: [] } },
+      }));
+      const doc = join(root, '.claude', 'plans', 'x.html');
+      for (const args of [['new', doc, '--title', 'X'], ['templates'], ['query', join(root, '.claude')]]) {
+        const r = runAt(staged, args);
+        expect(r.code, args[0]).toBe(1);
+        expect(r.stderr, args[0]).toMatch(/planr-schema\.json: ranking 'default' where on 'priority': unknown operator 'gte'/);
+      }
+    } finally { rmTmp(root); }
+  });
+});
+
+describe('next (wiring)', () => {
+  it('hands over the top-ranked document, its metadata and its open sections', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const r = runAt(P, ['next', issues]);
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toContain('quota.html');
+      expect(r.stdout).toContain('Quota cache');
+      expect(r.stdout).toMatch(/^ +priority +p0 +\(meta\)$/m);
+      expect(r.stdout).toContain("ranking 'default' — 1 of 2 matching, 6 scanned");
+      expect(r.stdout).toMatch(/^ +remediation +\[todo\] +Remediation$/m);
+      expect(r.stdout).toContain('start at: remediation');
+
+      const j = JSON.parse(runAt(P, ['next', issues, '--format', 'json']).stdout);
+      expect(j.document.next_section).toBe('remediation');
+      expect(j.document.sections.map(s => s.addr))
+        .toEqual(['overview', 'root-cause', 'impact', 'remediation', 'not-affected', 'open']);
+    } finally { rmTmp(root); }
+  });
+
+  it('treats an empty queue as an answer: exit 0, and a null document in JSON', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      expect(runAt(P, ['meta', join(issues, 'splits.html'), '--set', 'priority=p3']).code).toBe(0);
+      const r = runAt(P, ['next', issues, '--rank', 'triage']);
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain("no document matches ranking 'triage' — 6 scanned");
+      expect(JSON.parse(runAt(P, ['next', issues, '--rank', 'triage', '--format', 'json']).stdout).document).toBeNull();
+    } finally { rmTmp(root); }
+  });
+
+  it('refuses to guess a queue when the schema declares no ranking', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');   // core schema only
+      const doc = join(root, '.claude', 'plans', 'x.html');
+      expect(runAt(staged, ['new', doc, '--title', 'X']).code).toBe(0);
+      const r = runAt(staged, ['next', join(root, '.claude', 'plans')]);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("unknown ranking 'default' — declared: (none)");
+      expect(r.stderr).toContain("declare one named 'default', or pass --rank");
+    } finally { rmTmp(root); }
+  });
+
+  it('is listed in the usage text and the skill command table', () => {
+    expect(run(['--help']).stdout).toContain('next ');
+    expect(readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8')).toContain('| `next` |');
+  });
+});
+
+describe('querying documentation', () => {
+  const skillDoc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
+
+  it('SKILL.md carries a Querying section covering the operators, the formats and the ranking', () => {
+    const s = skillDoc('SKILL.md');
+    expect(s).toContain('## Querying');
+    for (const op of ['--where', '--has', '--missing', "!=", '>=', '~']) expect(s, op).toContain(op);
+    for (const f of ['table', 'json', 'tsv', 'paths']) expect(s, f).toContain(`\`${f}\``);
+    for (const t of ['--rank', '--limit', '--strict', 'planr next', 'next_section'])
+      expect(s, t).toContain(t);
+    // the trap a reader gets wrong: >= compares DECLARED ORDER, not importance
+    expect(s).toMatch(/declared order/i);
+  });
+
+  it('the README names both commands and what JSON is for', () => {
+    const r = readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8');
+    expect(r).toContain('planr query');
+    expect(r).toContain('planr next');
+  });
+
+  it('the repo CLAUDE.md records the query invariants a change must not break', () => {
+    const c = readFileSync(join(SKILL_DIR, '..', '..', 'CLAUDE.md'), 'utf8');
+    expect(c).toContain('compileWhere');
+    expect(c).toContain('queryDocs');
+    expect(c).toContain('NEEDS_TARGET');
+  });
+});

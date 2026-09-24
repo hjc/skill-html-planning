@@ -14,6 +14,10 @@
      node planr.js read        <file> <address> [--body] [--text]
      node planr.js meta        <file> [--format text|json]
      node planr.js meta        <file> --set <k>=<v> [...] [--unset <k> ...]
+     node planr.js query       <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>]
+                               [--rank <name>] [--sort <k[:asc|desc],...>] [--fields <cols>]
+                               [--limit N] [--format table|json|tsv|paths]
+     node planr.js next        <dir|glob> [--rank <name>] [--format text|json]
      node planr.js set         <file> <path>=<value> [<path>=<value> ...]
      node planr.js set-body    <file> <address> [--file <f>] [--append]
      node planr.js prepend     <file> <address> [--file <f>] [--into <sel>]
@@ -79,6 +83,16 @@ function flagValue(flags, key) {
   const v = key ? flags[key] : undefined;
   if (v == null || v === true) return null;
   return String(Array.isArray(v) ? v[v.length - 1] : v);
+}
+// Every value a repeatable flag was given, in order. A bare occurrence is a
+// mistake, not an empty value: parseFlags records it as `true`, and dropping
+// it silently is exactly the class of bug BOOLEAN_FLAGS exists to prevent.
+function flagList(flags, key) {
+  if (flags[key] == null) return [];
+  return [].concat(flags[key]).map((v) => {
+    if (v === true) throw new PlanError(`--${key} was given with no value`);
+    return String(v);
+  });
 }
 function readStdin() {
   if (process.stdin.isTTY) throw new PlanError('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
@@ -1069,13 +1083,15 @@ function validateSchemaRefs(schema) {
       const problem = validateField(schema, name, String(value));
       if (problem) schemaFail(rule.origin, `infer rule /${rule.match}/: ${problem}`);
     }
+  // A ranking is validated by the very functions the query runs it through, so
+  // a ranking that LOADS is a ranking `query --rank` can execute.
   for (const [rname, r] of Object.entries(schema.rankings)) {
-    for (const name of Object.keys(r.where)) need(r.origin, `ranking '${rname}' where`, name);
-    for (const spec of r.order) {
-      const [name, dir] = spec.split(':');
-      need(r.origin, `ranking '${rname}' order`, name);
-      if (dir !== undefined && dir !== 'asc' && dir !== 'desc')
-        schemaFail(r.origin, `ranking '${rname}': order '${spec}' — direction must be asc or desc`);
+    try {
+      compileWhere(schema, r.where, `ranking '${rname}' where`);
+      parseSort(schema, r.order.join(','), `ranking '${rname}' order`);
+    } catch (e) {
+      if (e instanceof PlanError) schemaFail(r.origin, e.message);
+      throw e;
     }
   }
 }
@@ -2048,6 +2064,433 @@ function warningReport(warnings) {
     ...warnings.map(w => `  line ${w.line}: ${w.text}`)].join('\n');
 }
 
+// A glob -> an anchored RegExp. `**` crosses directory separators, `*` and `?`
+// do not; everything else is literal. Zero-dep by construction — the shipped
+// skill carries no runtime dependency and a query target does not earn one.
+function globToRegExp(pattern) {
+  let out = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '*') {
+      if (pattern[i + 1] === '*') { out += '.*'; i++; if (pattern[i + 1] === '/') i++; }
+      else out += '[^/]*';
+    } else if (c === '?') out += '[^/]';
+    else out += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${out}$`);
+}
+function hasGlobMeta(s) { return /[*?]/.test(String(s)); }
+// The longest leading run of a glob with no metacharacter — the directory a
+// walk starts from, so `.claude/plans/**/tdds/*.html` never walks the repo.
+function globBase(pattern) {
+  const segs = String(pattern).replace(/\\/g, '/').split('/');
+  const keep = [];
+  for (const s of segs) { if (hasGlobMeta(s)) break; keep.push(s); }
+  if (keep.length === segs.length) keep.pop();      // the last segment is the file
+  return keep.join('/') || '.';
+}
+
+/* ── corpus query ─────────────────────────────────────────
+   A read-only core over a SET of documents. The shell collects { path, html }
+   pairs; everything below is pure, so the whole filter / sort / format surface
+   is unit-testable in-process. Every comparison runs on the `rank` resolveMeta
+   already computed — the total order the schema declares — so nothing here
+   reads an enum's values to decide an ordering.
+
+   A condition travels in two shapes. The DECLARED shape is what a schema
+   ranking writes and what the CLI flags parse into: { field: { op: literal } }.
+   compileWhere turns that into the EXECUTABLE shape, with every literal
+   validated and pre-ranked once. matchWhere reads only the executable shape and
+   never sees the schema, so a `--where` flag and a ranking's `where` cannot
+   drift apart: there is one evaluator and one validator. */
+const WHERE_OPS = ['eq', 'ne', 'ge', 'le', 'gt', 'lt', 'in', 'contains', 'set'];
+// The CLI's comparison tokens, LONGEST FIRST: `>=` must be tried before `>`, or
+// `priority>=p1` parses as `priority` `>` `=p1`.
+const WHERE_SYNTAX = [
+  ['>=', 'ge'], ['<=', 'le'], ['!=', 'ne'], ['~', 'contains'], ['=', 'eq'], ['>', 'gt'], ['<', 'lt'],
+];
+
+/* Pure: the CLI's filter flags -> the DECLARED where shape, identical to what a
+   schema ranking writes. Syntax and field existence are checked here; operators
+   and literals are checked by compileWhere, which every path goes through. */
+function parseWhere(schema, { where = [], has = [], missing = [] } = {}) {
+  const out = {};
+  const put = (key, op, value) => {
+    // `path` is a projectable COLUMN, never a filter: the target glob is the
+    // one way to narrow by path, so there is one mechanism rather than two.
+    if (key === 'path') throw new PlanError(
+      "filter on 'path': narrow by path with the target glob instead, e.g. `planr query '.claude/plans/**/tdds/*.html'`");
+    if (!schema.fields[key])
+      throw new PlanError(`unknown field '${key}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`);
+    out[key] = { ...(out[key] || {}), [op]: value };
+  };
+  for (const raw of where) {
+    const expr = String(raw);
+    const hit = WHERE_SYNTAX.find(([tok]) => expr.includes(tok));
+    if (!hit) throw new PlanError(`--where '${expr}' has no comparison — write ` +
+      'key=value, key!=value, key>=value, key<=value, key>value, key<value or key~text');
+    const [tok, op] = hit;
+    const at = expr.indexOf(tok);
+    const key = expr.slice(0, at).trim();
+    const value = expr.slice(at + tok.length).trim();
+    if (!key) throw new PlanError(`--where '${expr}' names no field`);
+    if (!value) throw new PlanError(`--where '${expr}' has no value`);
+    // A comma-separated list is an OR on `=` and a none-of on `!=`; both carry
+    // the same `in`/`ne` operator whether one value or several were written.
+    if (op === 'eq' || op === 'ne') put(key, op === 'eq' ? 'in' : 'ne', value.split(',').map(s => s.trim()));
+    else put(key, op, value);
+  }
+  for (const key of has) put(String(key), 'set', true);
+  for (const key of missing) put(String(key), 'set', false);
+  return out;
+}
+
+/* Pure: the declared shape -> the executable shape, refusing anything the field
+   cannot hold. `label` names where the condition came from, so a typo in a
+   ranking says so. Called by planQuery for the CLI's flags and by
+   validateSchemaRefs at schema-load time, so a bad operator in a ranking is
+   caught when the schema is READ, not when someone finally uses that ranking. */
+function compileWhere(schema, where, label) {
+  const out = [];
+  for (const [key, cond] of Object.entries(where || {})) {
+    const def = schema.fields[key];
+    if (!def) throw new PlanError(
+      `${label} names unknown field '${key}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`);
+    for (const [op, value] of Object.entries(cond)) {
+      if (!WHERE_OPS.includes(op))
+        throw new PlanError(`${label} on '${key}': unknown operator '${op}' — valid: ${WHERE_OPS.join(', ')}`);
+      if (op === 'set') {
+        if (typeof value !== 'boolean') throw new PlanError(`${label} on '${key}': \`set\` takes true or false`);
+        out.push({ key, op, want: value });
+        continue;
+      }
+      if (op === 'contains') {                    // a substring is deliberately not a whole value
+        out.push({ key, op, text: String(value).toLowerCase() });
+        continue;
+      }
+      const items = (Array.isArray(value) ? value : [value]).map(v => String(v).trim());
+      for (const v of items) {
+        const problem = validateField(schema, key, v);
+        if (problem) throw new PlanError(`${label} on '${key}': ${problem}`);
+      }
+      if (op === 'eq' || op === 'in' || op === 'ne') {
+        out.push({
+          key, op: op === 'ne' ? 'ne' : 'in',
+          items: items.map(v => v.toLowerCase()),
+          ranks: items.map(v => fieldRank(def, v)),
+        });
+        continue;
+      }
+      // An ordering comparison needs a field WITH an order and a literal that
+      // takes a position in it. A repeatable field has neither.
+      if (def.repeatable) throw new PlanError(
+        `${label} on '${key}': '${op}' needs an order, and a repeatable field has none — use =, != or ~`);
+      out.push({ key, op, rank: fieldRank(def, items[0]) });
+    }
+  }
+  return out;
+}
+
+// Pure: does one resolved record satisfy every compiled condition? An unset
+// field fails every comparison except `set: false` and `!=` — "no value" is
+// never quietly treated as a matching one.
+function matchWhere(rec, compiled) {
+  for (const c of compiled) {
+    const f = rec.fields[c.key];
+    const items = Array.isArray(f.value) ? f.value.map(v => String(v).toLowerCase()) : null;
+    const holds = (i) => (items ? items.includes(c.items[i])
+      : f.rank !== null && c.ranks[i] !== null && cmpRank(f.rank, c.ranks[i]) === 0);
+    switch (c.op) {
+      case 'set':
+        if ((f.source !== null) !== c.want) return false;
+        break;
+      case 'in':
+        if (!c.items.some((_, i) => holds(i))) return false;
+        break;
+      case 'ne':
+        if (c.items.some((_, i) => holds(i))) return false;
+        break;
+      case 'contains': {
+        const hay = items ? items.join('\u0000') : (f.raw === null ? null : String(f.raw).toLowerCase());
+        if (hay === null || !hay.includes(c.text)) return false;
+        break;
+      }
+      default: {
+        if (f.rank === null || c.rank === null) return false;
+        const d = cmpRank(f.rank, c.rank);
+        if (c.op === 'ge' && !(d >= 0)) return false;
+        if (c.op === 'le' && !(d <= 0)) return false;
+        if (c.op === 'gt' && !(d > 0)) return false;
+        if (c.op === 'lt' && !(d < 0)) return false;
+      }
+    }
+  }
+  return true;
+}
+// One comparator for every rank kind: a number against a number, otherwise the
+// strings an enum index, an ISO date and a lower-cased string all sort as.
+function cmpRank(a, b) {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  const x = String(a), y = String(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* Pure: "priority,impact:desc" -> [{ name, dir }]. The default direction is
+   ASC for every field type — one rule, and on an enum it means "the order the
+   schema declares", which is why a ranking whose enum runs least-to-most
+   (`impact: low, medium, high`) writes `:desc` explicitly. */
+function parseSort(schema, spec, label = '--sort') {
+  const out = [];
+  for (const part of String(spec).split(',').map(s => s.trim()).filter(Boolean)) {
+    const [name, dir = 'asc'] = part.split(':');
+    if (!schema.fields[name]) throw new PlanError(
+      `${label} names unknown field '${name}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`);
+    if (dir !== 'asc' && dir !== 'desc') throw new PlanError(`${label} '${part}': direction must be asc or desc`);
+    if (schema.fields[name].repeatable) throw new PlanError(
+      `${label} names '${name}', which is repeatable and so has no single position — sort on a scalar field`);
+    out.push({ name, dir });
+  }
+  return out;
+}
+
+/* Pure: ([{ path, html } | { path, error }], opts) -> { results, skipped,
+   scanned, matched }. `results` is sorted and limited; `matched` is the count
+   BEFORE the limit. A file that cannot be read, is not a plan document, or does
+   not balance is reported in `skipped` rather than dropped — the corpus is
+   other people's files, and a silent omission reads as "nothing matched". */
+function queryDocs(docs, { schema, where = [], order = [], limit = null } = {}) {
+  const results = [];
+  const skipped = [];
+  for (const doc of docs) {
+    if (doc.error) { skipped.push({ path: doc.path, reason: doc.error }); continue; }
+    if (!/<plan-[a-z]/i.test(doc.html)) {
+      skipped.push({ path: doc.path, reason: 'not a plan document — no <plan-*> markup' });
+      continue;
+    }
+    if (!checkStructure(doc.html).ok) {
+      skipped.push({ path: doc.path, reason: 'structure does not balance — run `planr check` on it' });
+      continue;
+    }
+    const rec = resolveMeta(doc.html, { schema, docPath: doc.path });
+    if (matchWhere(rec, where)) results.push(rec);
+  }
+  const matched = results.length;
+  // Stable by construction: the shell hands documents over in sorted path
+  // order and Array#sort is stable, so ties keep that order on every platform.
+  results.sort((a, b) => {
+    for (const { name, dir } of order) {
+      const ar = a.fields[name].rank, br = b.fields[name].rank;
+      if (ar === null && br === null) continue;
+      if (ar === null) return 1;        // nulls last in BOTH directions
+      if (br === null) return -1;
+      const c = cmpRank(ar, br);
+      if (c) return dir === 'desc' ? -c : c;
+    }
+    return 0;
+  });
+  return { results: limit === null ? results : results.slice(0, limit), skipped, scanned: docs.length, matched };
+}
+
+/* Pure: the columns to print. `path`, then every schema field at least one
+   matched document resolves, in schema-declaration order. Derived, so no field
+   name is written into this file (contract C2), and a column that would be
+   empty for every row never appears. */
+function defaultFields(schema, results) {
+  return ['path', ...Object.keys(schema.fields).filter(n => results.some(r => r.fields[n].source))];
+}
+function parseFields(schema, spec) {
+  const out = [];
+  for (const name of String(spec).split(',').map(s => s.trim()).filter(Boolean)) {
+    if (name !== 'path' && !schema.fields[name]) throw new PlanError(
+      `--fields names unknown column '${name}' — valid: path, ${Object.keys(schema.fields).join(', ')}`);
+    out.push(name);
+  }
+  if (!out.length) throw new PlanError('--fields is empty — name at least one column');
+  return out;
+}
+// One cell. A repeatable field joins with ", "; an unset one is a dash in the
+// table a human reads and empty in the TSV a pipeline reads, so a column never
+// collapses and an absent value never reads as a present one.
+function cellText(rec, name, blank) {
+  if (name === 'path') return rec.path === null ? blank : rec.path;
+  const f = rec.fields[name];
+  if (f.source === null) return blank;
+  return Array.isArray(f.value) ? f.value.join(', ') : String(f.value);
+}
+function parseLimit(raw) {
+  if (raw === null) return null;
+  if (!/^\d+$/.test(String(raw).trim()) || Number(raw) < 1)
+    throw new PlanError(`--limit '${raw}' must be a positive whole number`);
+  return Number(raw);
+}
+const projected = (f) => ({ value: f.value, raw: f.raw, source: f.source, type: f.type, rank: f.rank });
+
+/* Pure: a named ranking's `where` and `order`, with the CLI's flags over the
+   top. An explicit flag replaces the preset's conditions on the SAME FIELD and
+   leaves every other preset condition standing; `--sort`, when given, replaces
+   the preset's order outright. Both halves stay in the declared shape, so the
+   single compileWhere call downstream validates preset and flag alike. */
+function applyRanking(schema, name, { where = {}, sort = null } = {}) {
+  if (name === null) return { where, sort };
+  const r = schema.rankings[name];
+  if (!r) throw new PlanError(
+    `unknown ranking '${name}' — declared: ${Object.keys(schema.rankings).join(', ') || '(none)'}`);
+  return {
+    where: { ...r.where, ...where },                 // per FIELD, not per operator
+    sort: sort !== null ? sort : r.order.join(','),
+  };
+}
+
+const QUERY_FORMATS = ['table', 'json', 'tsv', 'paths'];
+
+
+/* Pure: ([{ path, html }], opts) -> the `query` report. `table` is the default
+   and is what a human reads; `json` is what an orchestrator dispatches from and
+   carries the counts, the schema in force and the skip list alongside the rows;
+   `tsv` and `paths` feed a pipeline. */
+function planQuery(docs, {
+  schema, target = null, where = [], has = [], missing = [], sort = null,
+  fields = null, format = 'table', limit = null, rank = null, schemaSources = [],
+} = {}) {
+  if (!QUERY_FORMATS.includes(format))
+    throw new PlanError(`unknown --format '${format}' — valid: ${QUERY_FORMATS.join(', ')}`);
+  if (format === 'paths' && fields !== null)
+    throw new PlanError('--format paths prints paths only — drop --fields, or pick table, tsv or json');
+  const cli = parseWhere(schema, { where, has, missing });
+  const plan = applyRanking(schema, rank, { where: cli, sort });
+  // Compile the two halves SEPARATELY so each condition is attributed to where
+  // it actually came from. Merged under one label, a bad `--where` literal read
+  // as the ranking's fault and sent the reader to edit the schema.
+  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
+  const q = queryDocs(docs, {
+    schema,
+    where: [
+      ...compileWhere(schema, cli, 'filter'),
+      ...compileWhere(schema, preset, `ranking '${rank}' where`),
+    ],
+    order: plan.sort === null ? [] : parseSort(schema, plan.sort),
+    limit: parseLimit(limit),
+  });
+  const use = fields === null ? defaultFields(schema, q.results) : parseFields(schema, fields);
+  const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
+
+  const done = (report) => ({ report, skipped: q.skipped, scanned: q.scanned, matched: q.matched, returned: q.results.length });
+
+  // `fields` is the COLUMN list — what a table would print. `results[].fields`
+  // is the whole projected record, every declared schema field present with its
+  // source, exactly as `meta` and `next` emit it: a consumer reading
+  // `r.fields.urgency.value` must get null for "unset", never undefined for
+  // "this column was not selected".
+  if (format === 'json') return done(JSON.stringify({
+    target, rank, scanned: q.scanned, matched: q.matched, returned: q.results.length,
+    fields: use, schema: sources,
+    results: q.results.map(r => ({
+      path: r.path,
+      fields: Object.fromEntries(Object.entries(r.fields).map(([k, f]) => [k, projected(f)])),
+    })),
+    skipped: q.skipped,
+  }, null, 2) + '\n');
+
+  if (format === 'paths') return done(q.results.map(r => r.path).join('\n') + (q.results.length ? '\n' : ''));
+  if (format === 'tsv')
+    return done([use.join('\t'), ...q.results.map(r => use.map(c => cellText(r, c, '')).join('\t'))].join('\n') + '\n');
+
+  const rows = [use, ...q.results.map(r => use.map(c => cellText(r, c, '-')))];
+  const w = use.map((_, i) => Math.max(...rows.map(row => row[i].length)));
+  const out = q.results.length
+    ? rows.map(row => row.map((cell, i) => (i === row.length - 1 ? cell : cell.padEnd(w[i]))).join('  '))
+    : ['no documents match'];
+  out.push('', `${q.matched} of ${q.scanned} document(s) match` +
+    (q.matched > q.results.length ? `, showing ${q.results.length}` : '') +
+    (rank ? ` — ranking '${rank}'` : ''));
+  return done(out.join('\n') + '\n');
+}
+
+// The skipped-file block, shaped like warningReport: what the scan found and
+// could not use. It goes to stderr, so stdout stays exactly the result set.
+function skipReport(skipped) {
+  if (!skipped.length) return '';
+  return [`${skipped.length} file(s) skipped — scanned, not queryable:`,
+    ...skipped.map(s => `  ${s.path}: ${s.reason}`)].join('\n');
+}
+
+const NEXT_FORMATS = ['text', 'json'];
+
+
+/* Pure: (html) -> the address space an agent needs to act on the document.
+   `sections` is every section at every depth, keyed by the SAME dot-path
+   address every other planr command takes, so a caller can `read`, flip a
+   `status` or `append` without a `list` round-trip first. `open` is the subset
+   carrying a status other than `done` — the `tasks` rule — which is where the
+   work is. Those are the only two questions a dispatching agent asks of a
+   document it has not read. */
+function docOutline(html) {
+  const sections = [];
+  walkSections(html, ({ el, addr, num }) => sections.push({
+    addr, num,
+    title: decodeEntities(getAttr(el.attrsRaw, 'title') || ''),
+    status: getAttr(el.attrsRaw, 'status') || null,
+  }));
+  const open = sections.filter(s => s.status && s.status !== 'done');
+  return { sections, open, next: open.length ? open[0].addr : null };
+}
+
+/* Pure: the single top-ranked document, with the metadata and the addresses an
+   agent dispatches on. An EMPTY queue is not a failure — `next` returns its
+   report and exits 0 — because an orchestrator polling "is there anything to
+   do" must be able to tell "nothing" from "broken". */
+function planNext(docs, { schema, target = null, rank = 'default', format = 'text', schemaSources = [] } = {}) {
+  if (!NEXT_FORMATS.includes(format))
+    throw new PlanError(`unknown --format '${format}' — valid: ${NEXT_FORMATS.join(', ')}`);
+  if (!schema.rankings[rank]) throw new PlanError(
+    `unknown ranking '${rank}' — declared: ${Object.keys(schema.rankings).join(', ') || '(none)'}` +
+    (rank === 'default' ? "\nnext is driven by a schema-declared ranking: declare one named 'default', or pass --rank <name>" : ''));
+  const plan = applyRanking(schema, rank, {});
+  const q = queryDocs(docs, {
+    schema,
+    where: compileWhere(schema, plan.where, `ranking '${rank}' where`),
+    order: parseSort(schema, plan.sort, `ranking '${rank}' order`),
+    limit: 1,
+  });
+  const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
+  const top = q.results[0] || null;
+  const outline = top ? docOutline(docs.find(d => d.path === top.path).html) : null;
+  // The headline is whichever field the schema binds to the header's title —
+  // `from: header:title`, not a field NAME, so nothing here is hardcoded (C2).
+  const titleKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:title') || null;
+  const document = top ? {
+    path: top.path,
+    title: titleKey && top.fields[titleKey].source ? top.fields[titleKey].value : null,
+    fields: Object.fromEntries(Object.entries(top.fields).map(([k, f]) => [k, projected(f)])),
+    sections: outline.sections, open: outline.open, next_section: outline.next,
+  } : null;
+
+  const done = (report) => ({ report, skipped: q.skipped, scanned: q.scanned, matched: q.matched, document });
+
+  if (format === 'json') return done(JSON.stringify({
+    target, rank, scanned: q.scanned, matched: q.matched, schema: sources, document, skipped: q.skipped,
+  }, null, 2) + '\n');
+
+  if (!document) return done(`no document matches ranking '${rank}' — ${q.scanned} scanned\n`);
+  const set = Object.entries(top.fields).filter(([k, f]) => f.source && k !== titleKey);
+  const kw = Math.max(...set.map(([k]) => k.length));
+  const vw = Math.max(...set.map(([, f]) => f.raw.length));
+  const out = [document.path];
+  if (document.title) out.push(document.title);
+  out.push('', ...set.map(([k, f]) => `  ${k.padEnd(kw)}  ${f.raw.padEnd(vw)}  (${f.source})`));
+  out.push('', `  ranking '${rank}' — 1 of ${q.matched} matching, ${q.scanned} scanned`);
+  if (document.open.length) {
+    const aw = Math.max(...document.open.map(s => s.addr.length));
+    const sw = Math.max(...document.open.map(s => s.status.length));
+    out.push('', 'open sections:',
+      ...document.open.map(s => `  ${s.addr.padEnd(aw)}  [${s.status.padEnd(sw)}]  ${s.title}`),
+      '', `start at: ${document.next_section}`);
+  } else {
+    out.push('', `no open sections — ${document.sections.length} section(s), none carrying an unfinished status`);
+  }
+  return done(out.join('\n') + '\n');
+}
+
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
@@ -2534,6 +2977,69 @@ function cmdMeta(file, flags) {
   write(file, html); process.stdout.write(message + '\n');
 }
 
+/* The one filesystem boundary for a corpus: a directory, a single file, or a
+   glob -> [{ path, html } | { path, error }], sorted by path so every run
+   orders ties identically. No index and no cache — query reads the documents
+   (contract C6). Paths come back with forward slashes on every platform. */
+function collectDocs(target) {
+  const t = String(target).replace(/\\/g, '/').replace(/\/+$/, '') || '.';
+  const walk = (dir, take, out = []) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (e) { throw new PlanError(`cannot read '${dir}': ${e.message}`); }
+    for (const e of entries) {
+      const p = `${dir}/${e.name}`;
+      if (e.isDirectory()) walk(p, take, out);
+      else if (take(p)) out.push(p);
+    }
+    return out;
+  };
+  let paths;
+  if (!hasGlobMeta(t)) {
+    if (!fs.existsSync(t)) throw new PlanError(`no such file or directory '${target}'`);
+    paths = fs.statSync(t).isDirectory() ? walk(t, (p) => /\.html$/i.test(p)) : [t];
+  } else {
+    const base = globBase(t);
+    if (!fs.existsSync(base)) throw new PlanError(`no such directory '${base}' — from the target '${target}'`);
+    const re = globToRegExp(t);
+    paths = walk(base, (p) => re.test(p));
+  }
+  if (!paths.length) throw new PlanError(`no documents matched '${target}'`);
+  return paths.sort().map((p) => {
+    try { return { path: p, html: fs.readFileSync(p, 'utf8') }; }
+    catch (e) { return { path: p, error: `unreadable — ${e.message}` }; }
+  });
+}
+
+
+function cmdQuery(target, flags) {
+  const { schema, sources } = loadSchema();
+  const { report, skipped } = planQuery(collectDocs(target), {
+    schema, target: String(target).replace(/\\/g, '/'),
+    where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
+    sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'),
+    format: flagValue(flags, 'format') || 'table', limit: flagValue(flags, 'limit'),
+    rank: flagValue(flags, 'rank'), schemaSources: sources,
+  });
+  process.stdout.write(report);
+  if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
+  if (flags.strict && skipped.length)
+    throw new PlanError(`query --strict: ${skipped.length} file(s) skipped, listed above`);
+}
+
+function cmdNext(target, flags) {
+  const { schema, sources } = loadSchema();
+  const { report, skipped } = planNext(collectDocs(target), {
+    schema, target: String(target).replace(/\\/g, '/'),
+    rank: flagValue(flags, 'rank') || 'default',
+    format: flagValue(flags, 'format') || 'text', schemaSources: sources,
+  });
+  process.stdout.write(report);
+  if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
+  if (flags.strict && skipped.length)
+    throw new PlanError(`next --strict: ${skipped.length} file(s) skipped, listed above`);
+}
+
 function cmdNew(outPath, flags) {
   if (!outPath) throw new PlanError('new requires an output path, e.g. `new plan.html --template tdd`');
   const template = flagValue(flags, 'template') || 'basic';
@@ -2673,6 +3179,10 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   meta         <file> [--format text|json]                (resolved metadata, with each value's source)
   meta         <file> --set <k>=<v> [...] [--unset <k> ...]
+  query        <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
+                          [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
+                          [--format table|json|tsv|paths] [--strict]
+  next         <dir|glob> [--rank <name>] [--format text|json] [--strict]
   set          <file> <path>=<value> [<path>=<value> ...]
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   prepend      <file> <address> [--file <f>] [--into <sel>]
@@ -2700,6 +3210,11 @@ address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth; a
          (plan-section, plan-subsection, plan-header).
 new --set: a DOTTED key is a node address applied to the generated file
          (--set header.status=review); a BARE key fills a {{placeholder}}.
+--where: key=a,b (any of) | key!=v | key>=v | key<=v | key>v | key<v | key~text
+         (substring). Several --where flags AND together; >= and friends compare
+         on the order the schema declares. --rank applies a schema-declared
+         ranking's where+order; an explicit flag replaces the preset's
+         conditions on the same field, and --sort replaces its order outright.
 round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`;
 
 function main() {
@@ -2711,9 +3226,14 @@ function main() {
   // enforce the <file> arg only for commands that take one.
   const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
     'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
+  // The corpus commands take a <dir|glob> in the same slot, so they need their
+  // own required-argument message rather than one that says <file>.
+  const NEEDS_TARGET = ['query', 'next'];
   try {
-    if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
+    if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd) && !NEEDS_TARGET.includes(cmd))
+      throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
+    if (NEEDS_TARGET.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <dir|glob> argument`);
     switch (cmd) {
       case 'new':          return cmdNew(file, flags);
       case 'templates':    return cmdTemplates(positional[0]);
@@ -2721,6 +3241,8 @@ function main() {
       case 'check':        return cmdCheck(file, flags);
       case 'tasks':        return cmdTasks(file, flags);
       case 'meta':         return cmdMeta(file, flags);
+      case 'query':        return cmdQuery(file, flags);
+      case 'next':         return cmdNext(file, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
       // read as success.
@@ -2758,6 +3280,12 @@ module.exports = {
   PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS, FIELD_TYPES,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
+  WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
+  parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
+  applyRanking,
+  QUERY_FORMATS, planQuery, skipReport,
+  globToRegExp, globBase, collectDocs, flagList,
+  NEXT_FORMATS, docOutline, planNext,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };
