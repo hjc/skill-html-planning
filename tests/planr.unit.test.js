@@ -417,3 +417,14 @@ describe('nestingProblems (parent legality backing `check`)', () => {
                 '<plan-callout type="info">x</plan-callout>')).toEqual([]);
   });
 });
+
+describe('spliceRuns', () => {
+  it('splices ascending runs and measures each span in the output', () => {
+    const html = 'aXXbYcc';
+    const runs = [{ start: 4, end: 5 }, { start: 1, end: 3 }];
+    const { out, spans } = planr.spliceRuns(html, runs, '<z>');
+    expect(out).toBe('a<z>b<z>cc');
+    expect(spans.map(s => [s.start, s.end, out.slice(s.start, s.end)])).toEqual([[1, 4, '<z>'], [5, 8, '<z>']]);
+    expect(spans[0].run).toBe(runs[1]);
+  });
+});

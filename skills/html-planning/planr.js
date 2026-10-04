@@ -1893,18 +1893,26 @@ function assertOneElement(html, runs, raw, verb) {
     `narrow the match (${runContext(html, bad)})`);
 }
 
+// Splice `replacement` over every run, ascending, and report where each landed
+// in the OUTPUT: the one place the offsets are computed.
+function spliceRuns(html, runs, replacement) {
+  let out = '', at = 0;
+  const spans = [];
+  for (const run of [...runs].sort((a, b) => a.start - b.start)) {
+    out += html.slice(at, run.start);
+    spans.push({ run, start: out.length, end: out.length + replacement.length });
+    out += replacement;
+    at = run.end;
+  }
+  return { out: out + html.slice(at), spans };
+}
+
 // A replacement is markup spliced into a text run, so it can open a block
 // element inside the run's own parent: balanced, and dropped by the browser.
 // Refused on ANY document — assertIntact only refuses a write that turns a
 // passing document failing, and a document already failing must not get worse.
-function assertSplicedNesting(before, after, runs, replacement) {
-  let delta = 0;
-  const spans = [...runs].sort((a, b) => a.start - b.start).map(run => {
-    const start = run.start + delta;
-    delta += replacement.length - (run.end - run.start);
-    return { run, start, end: start + replacement.length };
-  });
-  for (const p of nestingProblems(after)) {
+function assertSplicedNesting(before, out, spans) {
+  for (const p of nestingProblems(out)) {
     const hit = spans.find(s => s.start <= p.index && p.index < s.end);
     if (!hit) continue;
     throw new PlanError(`replace would open <${p.tag}> inside <${p.parent}> — the match sits in <${p.parent}> ` +
@@ -3079,10 +3087,8 @@ function planReplace(html, address, body, flags = {}) {
     raw, sel, noun: 'text run', where, describe: r => runContext(html, r),
   });
   assertOneElement(html, picked, raw, 'replace');
-  let out = html;
-  for (const r of [...picked].sort((a, b) => b.start - a.start))
-    out = out.slice(0, r.start) + replacement + out.slice(r.end);
-  assertSplicedNesting(html, out, picked, replacement);
+  const { out, spans } = spliceRuns(html, picked, replacement);
+  assertSplicedNesting(html, out, spans);
   assertIntact(html, out, 'replace');
   return {
     html: out,
@@ -3524,7 +3530,7 @@ module.exports = {
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
   childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,
-  buildSection, sectionIds, allSectionIds, walkSections, walkTags, nestingProblems, LEGAL_PARENTS, INLINE_HOSTS,
+  buildSection, sectionIds, allSectionIds, walkSections, walkTags, spliceRuns, nestingProblems, LEGAL_PARENTS, INLINE_HOSTS,
   sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
