@@ -180,6 +180,17 @@ plan-header .meta-row {
 .dot.tone-ok     { background: var(--green); }
 .dot.tone-final  { background: var(--purple); }
 .dot.tone-muted  { background: var(--text-muted); }
+/* A metadata chip (PlanHeader, from <plan-meta>): the key, muted and
+   monospaced, then the value. A long value is cut with an ellipsis; the chip's
+   title carries `key: value` whole. */
+.meta-field .meta-key { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.meta-field .meta-value {
+  color: var(--text);
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ── main (container) ─────────────────────────────────── */
 /* Centered, capped column by default (comfortable reading measure). The gear's
@@ -302,34 +313,9 @@ plan-table td.mono { font-family: var(--mono); font-size: 13px; }
 plan-table .row-total { background: var(--accent-dim) !important; }
 
 /* ── plan-meta / plan-field ───────────────────────────── */
-/* The document's own metadata: an understated strip directly below the header,
-   one chip per field. CSS-only, exactly like plan-defs — the key is generated
-   from the `key` attribute, so no JS runs. */
-plan-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  margin: 0 0 28px;
-  padding: 10px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 13px;
-  line-height: 1.5;
-}
-plan-field {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-plan-field::before {
-  content: attr(key);
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-muted);
-}
+/* The document's metadata STORE. planr reads it; PlanHeader renders its fields
+   as chips in the header's meta-row. The block itself shows nothing. */
+plan-meta { display: none; }
 
 /* ── plan-defs / plan-def ─────────────────────────────── */
 /* A sub-record of name → value pairs. CSS table display: every key shares one

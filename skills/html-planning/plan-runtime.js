@@ -18,9 +18,11 @@ class PlanHeader extends HTMLElement {
     const chips = this.getAttribute('chips') || '';
     const tone = STATUS_TONES[status];
 
-    const extraChips = chips
+    // Free-text chips are deprecated (planr check warns on them) but still
+    // rendered, after the typed metadata, until every document has migrated.
+    const legacyChips = chips
       .split('|').filter(Boolean)
-      .map(c => `<span class="meta-chip">${c.trim()}</span>`)
+      .map(c => `<span class="meta-chip meta-legacy">${c.trim()}</span>`)
       .join('');
 
     this.innerHTML = `
@@ -29,10 +31,34 @@ class PlanHeader extends HTMLElement {
       <div class="meta-row">
         <span class="meta-chip meta-status"><span class="dot${tone ? ` tone-${tone}` : ''}"></span> ${status.charAt(0).toUpperCase() + status.slice(1)}</span>
         ${date ? `<span class="meta-chip">${date}</span>` : ''}
-        ${extraChips}
+        ${_metaChips()}
+        ${legacyChips}
       </div>
     `;
   }
+}
+
+/* The document's metadata as header chips: one per <plan-field> in the FIRST
+   <plan-meta>, the block planr reads. The page is schema-free — the chip's
+   colour is the field's stamped `tone`, and a field stamped `hidden` is
+   skipped. A field with no stamp (written before stamps existed) renders as an
+   untoned chip. A repeated key renders once, the first, as planr reads it. The
+   key is shown, so a metadata chip never reads as the status chip. */
+function _metaChips() {
+  const meta = document.querySelector('plan-meta');
+  if (!meta) return '';
+  const seen = new Set();
+  return [...meta.querySelectorAll('plan-field')].map((f) => {
+    const key = (f.getAttribute('key') || '').trim();
+    if (!key || seen.has(key)) return '';
+    seen.add(key);
+    const value = f.textContent.replace(/\s+/g, ' ').trim();
+    if (!value || f.hasAttribute('hidden')) return '';
+    const tone = f.getAttribute('tone') || '';
+    const dot = /^[a-z]+$/.test(tone) ? `<span class="dot tone-${tone}"></span>` : '';
+    return `<span class="meta-chip meta-field" title="${_escapeAttr(`${key}: ${value}`)}">${dot}` +
+      `<span class="meta-key">${_escapeHtml(key)}</span><span class="meta-value">${_escapeHtml(value)}</span></span>`;
+  }).join('');
 }
 
 /* ── plan-nav ─────────────────────────────────────────── */
@@ -301,10 +327,10 @@ class PlanBadge extends HTMLElement {
 class PlanTable extends HTMLElement {} // Pure CSS wrapper
 
 /* ── plan-meta / plan-field ───────────────────────────── */
-// The document's own metadata: an understated strip below the header, one chip
-// per field. Pure CSS, like plan-defs: the key renders from `key` via ::before.
-class PlanMeta extends HTMLElement {}  // CSS strip; keys render from attr(key)
-class PlanField extends HTMLElement {} // key rendered by CSS attr(key)
+// The document's metadata STORE. planr reads it; PlanHeader renders its fields
+// as chips (_metaChips). The block itself shows nothing (display: none).
+class PlanMeta extends HTMLElement {}  // store only — rendered by PlanHeader
+class PlanField extends HTMLElement {} // store only — rendered by PlanHeader
 
 /* ── plan-defs / plan-def ─────────────────────────────── */
 // A sub-record of name → value pairs. Pure CSS: plan-styles.css lays the pairs
@@ -346,6 +372,8 @@ function _sectionNumber(el) {
 function _escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+// For a value interpolated into a double-quoted attribute.
+function _escapeAttr(s) { return _escapeHtml(s).replace(/"/g, '&quot;'); }
 
 // Trim the blank leading/trailing lines that come from authoring a
 // component across multiple HTML lines, WITHOUT touching the indentation

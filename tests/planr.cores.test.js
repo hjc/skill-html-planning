@@ -1255,14 +1255,15 @@ describe('<plan-meta> component', () => {
     expect([...registered].sort()).toEqual([...planr.PLAN_TAGS].sort());
   });
 
-  it('is styled CSS-only, with the key generated from the attribute', () => {
+  it('is a store the page never shows: the block is hidden, and the header styles its chips', () => {
     const css = skillFile('plan-styles.css');
-    expect(css).toMatch(/^plan-meta\s*\{[^}]*display:\s*flex;/m);
-    expect(css).toMatch(/^plan-field\s*\{[^}]*display:\s*inline-flex;/m);
-    expect(css).toMatch(/^plan-field::before\s*\{[^}]*content:\s*attr\(key\);/m);
-    // No JS: the runtime classes are empty, like PlanDefs/PlanDef.
+    expect(css).toMatch(/^plan-meta\s*\{\s*display:\s*none;\s*\}/m);
+    expect(css).not.toMatch(/^plan-field(::before)?\s*\{/m);
+    expect(css).toMatch(/^\.meta-field \.meta-value\s*\{[^}]*text-overflow:\s*ellipsis;/m);
+    // The store runs no JS of its own: PlanHeader renders the fields.
     expect(skillFile('plan-runtime.js')).toMatch(/class PlanMeta extends HTMLElement \{\}/);
     expect(skillFile('plan-runtime.js')).toMatch(/class PlanField extends HTMLElement \{\}/);
+    expect(skillFile('plan-runtime.js')).toMatch(/class PlanHeader[\s\S]*?\$\{_metaChips\(\)\}/);
   });
 
   it('reads as text: one `key: value` line per field', () => {
