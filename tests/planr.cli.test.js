@@ -113,6 +113,14 @@ describe('check', () => {
     expect(bad.code).toBe(1);
     expect(bad.stderr).toContain('structure check FAILED');
   });
+  it('exits 1 on a balanced but misnested document', () => {
+    freshPlan();
+    writeFileSync(P(), readPlan().replace('</main>',
+      '  <p><code><plan-callout type="info">x</plan-callout></code></p>\n</main>'));
+    const bad = run(['check', P()]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('<plan-callout> inside inline <code>');
+  });
 });
 
 describe('templates', () => {

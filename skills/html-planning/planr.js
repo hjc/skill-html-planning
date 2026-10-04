@@ -2007,7 +2007,7 @@ function planList(html, flags = {}) {
    which counts literal strings and so miscounts a commented example, balanced,
    in the way that never reads as a failure. assertIntact gates every write on
    this alone: a warning never blocks a write. */
-function checkStructure(html) {
+function checkStructure(html, { nesting = true } = {}) {
   const watched = new Set(BALANCED_HTML_TAGS);
   const problems = [];
   const counts = {};
@@ -2034,6 +2034,10 @@ function checkStructure(html) {
   });
   for (const open of stack)
     problems.push({ line: lineOf(html, open.index), text: `<${open.tag}> is never closed` });
+  // Parent legality reads a balanced document only: past a break, every
+  // ancestor chain is a guess.
+  const misnested = nesting && !problems.length ? nestingProblems(html) : [];
+  for (const p of misnested) problems.push({ line: lineOf(html, p.index), text: p.text });
 
   // Ids are address segments and browser anchor targets, so a duplicate makes
   // one of the two unreachable — a silent failure `list` alone won't surface.
@@ -2058,14 +2062,17 @@ function checkStructure(html) {
       report: [
         `structure check FAILED — ${problems.length} problem(s)`,
         ...problems.map(p => `  line ${p.line}: ${p.text}`),
-        `An unescaped '<' in code content is the usual cause — escape < > & inside`,
-        `<plan-file>, <plan-diff>, <pre><code> and inline <code>.`,
+        ...(misnested.length
+          ? ['A misnested tag is usually a `replace` whose match sat inside an inline element —',
+             'rewrite the element with `read --body` → edit → `set-body`.']
+          : [`An unescaped '<' in code content is the usual cause — escape < > & inside`,
+             `<plan-file>, <plan-diff>, <pre><code> and inline <code>.`]),
       ].join('\n'),
     };
   }
   return {
     ok: true,
-    report: ['structure OK — every <plan-*> and table tag is balanced', sectionLine, `tags: ${tagLine}`].join('\n'),
+    report: ['structure OK — every <plan-*> and table tag is balanced and legally nested', sectionLine, `tags: ${tagLine}`].join('\n'),
   };
 }
 
@@ -2477,7 +2484,9 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null } = {}) 
       skipped.push({ path: doc.path, reason: 'not a plan document — no <plan-*> markup' });
       continue;
     }
-    if (!checkStructure(doc.html).ok) {
+    // Balance only: a misnested element leaves findElement — and so every
+    // metadata read — intact, and a rendering defect must not hide a document.
+    if (!checkStructure(doc.html, { nesting: false }).ok) {
       skipped.push({ path: doc.path, reason: 'structure does not balance — run `planr check` on it' });
       continue;
     }

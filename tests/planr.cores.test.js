@@ -364,6 +364,42 @@ describe('planCheck', () => {
   });
 });
 
+describe('planCheck — parent legality', () => {
+  const SPLICED = [
+    '<plan-section id="rows" title="Rows">',
+    '  <plan-table><table><tbody>',
+    '    <tr><td><code><tr><td><code>other.html</code></td><td>replaced</td></tr></code></td><td>a note</td></tr>',
+    '  </tbody></table></plan-table>',
+    '</plan-section>',
+  ].join('\n');
+  it('fails a balanced row spliced into a cell, naming the line and the inline parent', () => {
+    const { ok, report, warnings } = planr.planCheck(SPLICED);
+    expect(ok).toBe(false);
+    expect(report).toMatch(/line 3: <tr> inside <code> — a <tr> belongs directly in <table>, <thead>, <tbody>, <tfoot>/);
+    expect(report).toContain('A misnested tag is usually a `replace` whose match sat inside an inline element');
+    expect(warnings).toEqual([]);
+  });
+  it('fails a block component inside inline code', () => {
+    const html = '<plan-section id="s">\n  <p><code><plan-callout type="info">x</plan-callout></code></p>\n</plan-section>';
+    expect(planr.planCheck(html).report)
+      .toMatch(/line 2: <plan-callout> inside inline <code> — a block element cannot sit in running text/);
+  });
+  it('says so on a sound document', () => {
+    expect(planr.planCheck(RICH).report).toContain('structure OK — every <plan-*> and table tag is balanced and legally nested');
+    expect(planr.planCheck(DEFS_DOC).ok).toBe(true);
+  });
+  it('reports nesting only once the tags balance', () => {
+    const { report } = planr.planCheck(SPLICED.replace('</plan-table>', ''));
+    expect(report).toMatch(/<plan-table> is never closed/);
+    expect(report).not.toMatch(/inside <code>/);
+    expect(report).toContain("An unescaped '<' in code content is the usual cause");
+  });
+  it('refuses a write that would nest a row in a row, on a document that passes check', () => {
+    expect(() => planr.planInsert(RICH, 'map', '<tr><td>new</td></tr>', { where: 'end', into: 'tr:1' }))
+      .toThrow(/insert would break the plan[\s\S]*<tr> inside <tr>/);
+  });
+});
+
 // A plan body placed inside <main>, below a header: the body's first line is line 3.
 const inMain = (body) => ['<plan-header title="T" status="draft"></plan-header>', '<main>', body, '</main>'].join('\n');
 
@@ -728,7 +764,7 @@ describe('planInsert', () => {
     expect(html).toContain('<ul><li>Nested list.</li></ul>');   // untouched
   });
   it('--into accepts <tag>:<n> and #<id>', () => {
-    const byNth = planr.planInsert(RICH, 'map', '<tr><td>new</td></tr>', { where: 'end', into: 'tr:1' });
+    const byNth = planr.planInsert(RICH, 'map', '<td>new</td>', { where: 'end', into: 'tr:1' });
     expect(byNth.message).toContain('→ tr:1 of 2');
     const byId = planr.planInsert(RICH, 'map', '<tbody></tbody>', { where: 'end', into: '#tickets' });
     expect(byId.message).toContain('→ #tickets');
@@ -2111,6 +2147,15 @@ describe('queryDocs', () => {
       { path: 'a/broken.html', reason: 'structure does not balance — run `planr check` on it' },
       { path: 'a/gone.html', reason: 'unreadable — ENOENT' },
     ]);
+  });
+
+  it('keeps a document whose only problem is nesting — its metadata still resolves', () => {
+    const html = QDOC({ priority: 'p0' }).replace('</plan-section>',
+      '<p><code><plan-callout type="info">x</plan-callout></code></p></plan-section>');
+    expect(planr.planCheck(html).ok).toBe(false);
+    const q = planr.queryDocs([{ path: 'a/nested.html', html }], { schema: QS });
+    expect(q.skipped).toEqual([]);
+    expect(q.matched).toBe(1);
   });
 
   it('sorts on rank, puts nulls last in BOTH directions, and is stable on a tie', () => {
