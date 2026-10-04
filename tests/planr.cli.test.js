@@ -74,13 +74,14 @@ describe('read --body | set-body round-trip (crosses the process boundary)', () 
 describe('new --set (one-command scaffold)', () => {
   it('fills the shipped shell from repeated --set flags, bare and dotted', () => {
     const r = run(['new', P(), '--title', 'Probe', '--set', 'lang=fr',
-      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'header.chips=A | B']);
+      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'header.date=2026-01-02']);
     expect(r.code, r.stderr).toBe(0);
     const html = readPlan();
     expect(html).toContain('<html lang="fr">');
     expect(html).toContain('subtitle="SUB"');
     expect(html).toContain('status="review"');
-    expect(html).toContain('chips="A | B"');
+    expect(html).toContain('date="2026-01-02"');
+    expect(html).not.toContain('chips=');      // the shell no longer emits the deprecated attribute
     expect(html).not.toContain('{{');           // every declared var resolved
   });
   it('exits 1 on an unknown key and on an invalid value, by either key shape', () => {
@@ -313,12 +314,12 @@ describe('end-to-end editing flow', () => {
   });
   it('applies every positional assignment `set` is given', () => {
     freshPlan();
-    const r = run(['set', P(), 'header.status=review', 'header.chips=A | B | C', 'overview.status=done']);
+    const r = run(['set', P(), 'header.status=review', 'header.subtitle=A | B | C', 'overview.status=done']);
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout.trim().split('\n')).toHaveLength(3);
     const html = readPlan();
     expect(html).toContain('status="review"');
-    expect(html).toContain('chips="A | B | C"');
+    expect(html).toContain('subtitle="A | B | C"');
     expect(run(['read', P(), 'overview']).stdout).toContain('status="done"');
   });
 });

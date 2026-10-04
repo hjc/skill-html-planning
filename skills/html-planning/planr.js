@@ -1858,9 +1858,9 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [], sche
     if (key.includes('.')) { nodeSets.push(`${key}=${value}`); continue; }
     const offered = templateVars(composed).filter(v => v.name !== 'body');
     if (!offered.some(v => v.name === key)) {
-      const hint = NODE_ATTRS['plan-header'].includes(key)
-        ? ` — or address the node directly: --set header.${key}=…`
-        : '';
+      const hint = key === 'chips'
+        ? ' — header chips are deprecated; declare a metadata field and use `planr meta --set`'
+        : NODE_ATTRS['plan-header'].includes(key) ? ` — or address the node directly: --set header.${key}=…` : '';
       throw new PlanError(`--set key '${key}' matches no {{placeholder}}${hint}\n` +
         `this template offers: ${offered.map(v => [v.name, varDefault(v)].filter(Boolean).join(' ')).join(', ')}`);
     }
@@ -2061,6 +2061,7 @@ function lintPlan(html, schema = null) {
     ...lintSectionRefs(html),
     ...lintBadgeLabels(html),
     ...lintHeadTitle(html),
+    ...lintHeaderChips(html),
   ].sort((a, b) => a.line - b.line);
 }
 // The text-carrying comment a template opens with, left at the top of <main>.
@@ -2176,6 +2177,20 @@ function lintHeadTitle(html) {
   return [{
     line: lineOf(html, head.outerStart),
     text: `<title> reads "${tab}" but the header title is "${plain(title)}" — \`set header.title=…\` rewrites both`,
+  }];
+}
+// Free-text header chips are deprecated: every recurring chip belongs in a
+// schema field, where it is typed, queryable and rendered in the header. An
+// EMPTY attribute is not a chip — every 1.3.0 scaffold carries chips="".
+function lintHeaderChips(html) {
+  const header = findElement(html, 'plan-header');
+  const chips = header && getAttr(header.attrsRaw, 'chips');
+  if (typeof chips !== 'string' || !chips.trim()) return [];
+  return [{
+    line: lineOf(html, header.outerStart),
+    text: `<plan-header chips="${decodeEntities(chips)}"> — free-text chips are deprecated; declare each recurring ` +
+          'chip as a metadata field in .claude/planr-schema.json and write it with ' +
+          '`planr meta <file> --set <field>=<value>`',
   }];
 }
 // Pure: warnings -> the text `check` prints after its structure report ('' for none).
@@ -2743,6 +2758,9 @@ function planSet(html, specs) {
         messages.push(`set <title> = "${value}"`);
       }
     }
+    // Still writable, so automation keeps working until it migrates; check warns too.
+    if (node.tag === 'plan-header' && attr === 'chips' && value.trim())
+      messages.push('note: header chips are deprecated — declare a metadata field in the schema and write it with `planr meta <file> --set`');
   }
   return { html: out, message: messages.join('\n') };
 }

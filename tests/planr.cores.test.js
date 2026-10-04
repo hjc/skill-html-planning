@@ -196,13 +196,14 @@ describe('planSet', () => {
     expect(message).toBe('set a.a1.status = "done"');
   });
   it('applies EVERY assignment, not just the first', () => {
-    // The live failure: a ticket claim sets status + chips together, the chips
-    // were dropped, and the command still exited 0 printing a success line.
-    const { html, message } = planr.planSet(DOC, ['header.status=review', 'header.chips=A | B | C']);
+    // The live failure: a ticket claim set status plus a second header attribute
+    // together, the second was dropped, and the command still exited 0 printing
+    // a success line.
+    const { html, message } = planr.planSet(DOC, ['header.status=review', 'header.subtitle=A | B | C']);
     const hdr = planr.findElement(html, 'plan-header').attrsRaw;
     expect(planr.getAttr(hdr, 'status')).toBe('review');
-    expect(planr.getAttr(hdr, 'chips')).toBe('A | B | C');
-    expect(message).toBe('set header.status = "review"\nset header.chips = "A | B | C"');
+    expect(planr.getAttr(hdr, 'subtitle')).toBe('A | B | C');
+    expect(message).toBe('set header.status = "review"\nset header.subtitle = "A | B | C"');
   });
   it('re-resolves between assignments, so two writes to one node both land', () => {
     const { html } = planr.planSet(DOC, ['a.title=Renamed', 'a.status=done', 'a.a1.status=blocked']);
@@ -2631,5 +2632,36 @@ describe('stamps — the writer carries tone and hidden onto the page', () => {
     });
     expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
     expect(html).toContain('<plan-field key="area" hidden>crm</plan-field>');
+  });
+});
+
+describe('free-text header chips are deprecated', () => {
+  it('check warns on a header carrying chips, pointing at a metadata field', () => {
+    const html = '<plan-header title="T" status="draft"\n  chips="Bug | Production">\n</plan-header>\n<main></main>';
+    const { ok, warnings } = planr.planCheck(html);
+    expect(ok).toBe(true);
+    expect(warnings).toEqual([{ line: 1, text:
+      '<plan-header chips="Bug | Production"> — free-text chips are deprecated; declare each recurring chip as a ' +
+      'metadata field in .claude/planr-schema.json and write it with `planr meta <file> --set <field>=<value>`' }]);
+    // Every 1.3.0 scaffold carries an empty attribute: that is not a chip.
+    expect(planr.planCheck('<plan-header title="T" chips=""></plan-header>\n<main></main>').warnings).toEqual([]);
+  });
+
+  it('set still writes chips, and notes the deprecation only when it writes some', () => {
+    const { html, message } = planr.planSet(DOC, 'header.chips=A | B');
+    expect(planr.getAttr(planr.findElement(html, 'plan-header').attrsRaw, 'chips')).toBe('A | B');
+    expect(message).toBe('set header.chips = "A | B"\n' +
+      'note: header chips are deprecated — declare a metadata field in the schema and write it with `planr meta <file> --set`');
+    expect(planr.planSet(DOC, 'header.chips=').message).toBe('set header.chips = ""');
+  });
+
+  it('new steers a bare chips key to metadata, not to the deprecated attribute', () => {
+    expect(() => planr.planNew(SHELL, BODY, { title: 'T', date: '2026-01-01', skillSubpath: 's', sets: ['chips=A'] }))
+      .toThrow(/--set key 'chips' matches no \{\{placeholder\}\} — header chips are deprecated; declare a metadata field and use `planr meta --set`/);
+  });
+
+  it('no shipped template emits or suggests chips', () => {
+    for (const t of ['_shell.html', 'issue.html', 'tdd.html', 'basic.html'])
+      expect(skillFile(`templates/${t}`), t).not.toMatch(/chips/);
   });
 });
