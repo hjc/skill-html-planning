@@ -676,6 +676,25 @@ describe('metadata documentation', () => {
     expect(c).toContain('resolveMeta');
     expect(c).toContain('headerOwnedProblem');
     expect(c).toContain('One writable home per fact');
+    expect(c).toContain('fieldStamp');
+    expect(c).toContain('TONES');
+  });
+
+  it('SKILL.md documents tones, the stamps, the hidden flag and the chips deprecation', () => {
+    const s = skillDoc('SKILL.md');
+    expect(s).toContain('### Tones and the header');
+    for (const t of ['danger', 'warn', 'info', 'ok', 'final', 'muted']) expect(s, t).toContain(`\`${t}\``);
+    expect(s).toContain('"tones"');
+    expect(s).toContain('"hidden"');
+    expect(s).toContain('planr meta <file> --stamp');
+    expect(s).toMatch(/`chips` is deprecated/);
+    expect(s).not.toMatch(/--set "?(header\.)?chips=/);
+  });
+
+  it('the README carries the 1.4.0 release notes and no chips example', () => {
+    const r = readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8');
+    expect(r).toContain("## What's new in 1.4.0");
+    expect(r).not.toMatch(/chips="|--set "?chips=/);
   });
 });
 

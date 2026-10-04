@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.3.0
+version: 1.4.0
 ---
 
 # html-planning
@@ -31,8 +31,9 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    Set header attributes in the **same command** with dotted `--set` keys — they use the ordinary address grammar, so there is no follow-up `set`:
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan" --template issue \
-     --set header.subtitle="What it covers" --set header.status=review --set "header.chips=Bug | Production"
+     --set header.subtitle="What it covers" --set header.status=review
    ```
+   Typed facts — priority, owner, area — go into the document's metadata afterwards with `planr meta <file> --set`, and render as header chips (see "Metadata").
 2. **Read the generated file.**
 3. **Use `planr`** (or `Edit`) to add sections, cards, tables, and other components using the Web Component tags below.
 4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count. Read the warnings it prints after the structure report; each names a line that will not render as written.
@@ -42,17 +43,20 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
 ### Layout & Navigation
 
 #### `<plan-header>`
-Page header with title, status badge, and metadata chips.
+Page header with title, subtitle, and a row of chips: the status, the date, and the document's metadata.
 ```html
 <plan-header
   title="Feature Plan"
   subtitle="Optional subtitle line"
   status="draft"
-  date="2026-05-24"
-  chips="Backend | Frontend | Phase 1">
+  date="2026-05-24">
 </plan-header>
 ```
-**Attributes:** `title`, `subtitle`, `status`, `date`, `chips` (pipe-delimited).
+**Attributes:** `title`, `subtitle`, `status`, `date`.
+
+**The chip row** shows, in order: the status chip (a tone-coloured dot and the status), the date, then **one chip per field of the document's `<plan-meta>`** — `key value`, with a dot in the field's tone when its schema declares one. A field declared `hidden` is not shown, and a long value is cut with an ellipsis (hover for the whole). The status chip never shows a key, so `priority p1` cannot be mistaken for it.
+
+**`chips` is deprecated.** A pipe-delimited `chips` attribute still renders, after the metadata chips, but no template writes it and `check` warns on it. Declare each recurring chip as a schema field and set it with `planr meta --set`.
 
 **`status` values:** `draft` · `review` · `approved` · `implemented` · `rejected` — the full set, each with its own dot colour. This is the **header's own** enum and is different from a section's (`todo`/`in-progress`/`done`/`blocked`); `planr set` validates each against the right one. Use `review` for claimed-but-unresolved work.
 
@@ -139,9 +143,9 @@ Standalone it is a compact bordered block with the keys in one column. **Inside 
 - **`planr read --text` prints each pair as `key: value`** — one line per pair, joined with `; ` inside a table cell.
 
 #### `<plan-meta>` / `<plan-field>`
-The document's own **metadata** — a small, understated strip of `key → value` pairs directly under the header, holding
-the facts a tool can filter and sort a whole directory of documents by. Each `<plan-field>` is one pair: its `key`
-attribute names the field, its content is the value.
+The document's own **metadata** — the `key → value` facts a tool can filter and sort a whole directory of documents by.
+Each `<plan-field>` is one pair: its `key` attribute names the field, its content is the value. **The block itself
+shows nothing**: `<plan-header>` renders each field as a chip in its meta-row.
 
 ```html
 <plan-meta>
@@ -151,7 +155,9 @@ attribute names the field, its content is the value.
 </plan-meta>
 ```
 
-**Attributes:** `key` on `<plan-field>` — plain text. CSS renders it, so markup written in it shows literally.
+**Attributes:** `key` on `<plan-field>` — plain text; the header shows it verbatim, so markup written in it shows
+literally. `tone` and `hidden` are **stamps written by `planr`** from the schema, never by hand (see "Tones and the
+header" below).
 
 - **It is the first element inside `<main>`**, before the first section. Anywhere else and `check` warns.
 - **One block per document.** A second one is not read.
@@ -193,7 +199,7 @@ Inline status badge.
 <plan-badge type="decided"></plan-badge>  <!-- Auto-fills "Decided" -->
 <plan-badge type="open">Custom Text</plan-badge>
 ```
-**Attributes:** `type` (decided/open/deferred/high/medium/low).
+**Attributes:** `type` (decided/open/deferred/high/medium/low). Each type colours with a tone (see "Tones and the header"): `decided` and `high` → `ok`, `open` and `medium` → `warn`, `deferred` → `muted`, `low` → `danger`.
 
 Leave a status badge **empty** unless it needs words its type cannot say: an empty badge derives its label from `type`, so it stays correct through every `planr badge --set`. A badge with its own text keeps that text, which is why `badge --set` refuses to flip one without `--text`.
 
@@ -424,13 +430,13 @@ tr:2          the 2nd <tr>, 1-based
 
 | Command | Positional args | Flags | What it does |
 |---------|-----------------|-------|--------------|
-| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `chips`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. Run `templates <name>` for the variables a template offers. |
+| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `area`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. A template's metadata fields are stamped from the schema. Run `templates <name>` for the variables a template offers. |
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
-| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`. Warnings exit **0**; `--strict` exits **1** when there are any. |
+| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`, a header carrying free-text `chips`, and a `<plan-field>` stamp that disagrees with the schema. Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
-| `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value. See "Metadata" below. |
+| `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
 | `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
 | `next` | `<dir\|glob>` | `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
@@ -475,7 +481,7 @@ tr:2          the 2nd <tr>, 1-based
 ```bash
 node .../planr.js new plan.html --title "My Plan" --template tdd      # generate
 node .../planr.js new issue.html --template issue --title "Bug" \
-                  --set header.status=review --set "header.chips=Bug | Prod"   # header in one command
+                  --set header.status=review --set header.subtitle="Prod"   # header in one command
 node .../planr.js list plan.html                                      # sections + their headings
 node .../planr.js check plan.html                                     # is it still structurally sound
 node .../planr.js tasks plan.html                                     # what's open
@@ -559,7 +565,7 @@ node .claude/skills/html-planning/planr.js templates tdd      # what tdd is for,
 
 **Setting values.** `new --set` takes two key shapes, told apart by whether the key has a dot:
 
-- **bare** — `--set lang=fr` — fills a `{{placeholder}}` the template declares. The shell offers `lang`, `title`, `subtitle`, `status`, `chips`, `date`, `skillSubpath`; `templates <name>` lists any others, with defaults.
+- **bare** — `--set lang=fr` — fills a `{{placeholder}}` the template declares. The shell offers `lang`, `title`, `subtitle`, `status`, `date`, `skillSubpath`; `templates <name>` lists any others, with defaults.
 - **dotted** — `--set header.status=review` — is a node address applied to the rendered document, reaching any `<plan-*>` node whether or not the template parameterised it.
 
 Both are validated identically (`--set status=aproved` and `--set header.status=aproved` both fail), and a key that matches nothing is an error listing the ones that exist — never a silent drop.
@@ -579,8 +585,8 @@ A document's **metadata** is the small set of facts a tool filters and sorts a w
 ```json
 {
   "fields": {
-    "priority": { "type": "enum", "values": ["p0", "p1", "p2"] },
-    "area":     { "type": "list" },
+    "priority": { "type": "enum", "values": ["p0", "p1", "p2"], "tones": { "p0": "danger", "p1": "warn" } },
+    "area":     { "type": "list", "hidden": true },
     "due":      { "type": "date" }
   },
   "infer":    [{ "match": "/issues/", "set": { "priority": "p1" } }],
@@ -612,6 +618,35 @@ $ planr meta plan.html --unset owner
 **One writable home per fact.** A field declared `from: "header:…"` — `title`, `status`, `date` in the shipped core — is a **read-only view** of that header attribute, not a second place to store it. `planr meta --set` refuses to write one and names the real writer: `planr set <file> header.status=…`. A template may not declare one either, and `check` warns when a hand edit puts one in a block anyway.
 
 **Template defaults.** A template declares metadata defaults by writing a literal `<plan-meta>` block at the top of its body, using `{{name:default}}` wherever the value should be fillable at scaffold time — no new template syntax. A placeholder left empty is dropped rather than written as an empty field, and a template may not declare a header-owned field. See **`references/template-authoring.md`** for the full convention.
+
+### Tones and the header
+
+Every coloured mark a document draws — a badge, the header status dot, a metadata chip's dot — colours by one of six
+**tones**, each mapped onto the theme's own colours:
+
+| Tone | Colour | Drawn by |
+|---|---|---|
+| `danger` | red | `rejected` status · `low` badge |
+| `warn` | amber | `draft` status · `open`, `medium` badges |
+| `info` | blue | `review` status |
+| `ok` | green | `approved` status · `decided`, `high` badges |
+| `final` | purple | `implemented` status |
+| `muted` | grey | `deferred` badge |
+
+The set is fixed: a schema **picks** a tone and never declares a colour.
+
+- **An enum declares a tone per value** with `"tones"` beside `"values"`. A partial map is fine; a value with no tone
+  renders as an untoned chip.
+- **Any field opts out of the header** with `"hidden": true`. It stays fully queryable.
+- **Refused at schema load:** a tone outside the six, a tone for an undeclared value, `tones` on anything but a
+  single-valued enum, a non-boolean `hidden`, and either key on a header-owned field (the header draws those itself).
+- **The writer stamps; the page stays schema-free.** The browser cannot read the schema, so `planr` writes what
+  rendering needs onto each `<plan-field>` as `tone="…"` and `hidden`. `planr meta --set` stamps every field of the
+  block it rebuilds, and `planr new` stamps a template's declared fields. **`planr meta <file> --stamp`** rewrites an
+  existing document's stamps from the current schema without touching a value: run it after changing a schema's tones
+  or `hidden` flags, and once over documents written before 1.4.0.
+- **`check` warns when a stamp disagrees with the schema**, and names `planr meta <file> --stamp` as the fix. A
+  document with no stamps still renders: every field shows, untoned.
 
 ### Rich content
 
