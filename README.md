@@ -245,7 +245,7 @@ planr strike  plan.html resolution --match "retry hourly"           # strike sup
 planr replace plan.html resolution --match "hourly" --with "daily"  # rewrite text in place
 ```
 
-Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it. It also warns, by line, on markup that balances but will not render as written (an unescaped tag in a code block, a diff line with no gutter, a stale `<title>`); `planr check --strict` makes those fatal too.
+Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break — an unbalanced tag, or a balanced one in a parent it cannot sit in — so CI can gate on it. It also warns, by line, on markup that balances but will not render as written (an unescaped tag in a code block, a diff line with no gutter, a stale `<title>`); `planr check --strict` makes those fatal too.
 
 `planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. `planr query` and `planr next` read a whole directory of plans by their metadata rather than one file; `planr meta` reads and writes a single document's. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
 
@@ -253,6 +253,7 @@ Every command that writes re-verifies the document afterwards and **aborts witho
 
 **One colour system, and metadata in the header**
 
+- `replace` refuses a replacement that would open a block element inside its match's parent — a `<tr>` spliced into a cell's `<code>` — and names the parent. `check` now fails on a balanced tag in a parent it cannot sit in, so no writing command can introduce one into a sound document.
 - **Tones.** Every coloured mark — a badge, the header status dot, a metadata chip — colours by one of six tones (`danger`, `warn`, `info`, `ok`, `final`, `muted`), each mapped onto the theme's own colours. Badges and status dots look exactly as before.
 - **A schema enum declares a tone per value** (`"tones": { "p0": "danger" }`), and any field can stay out of the header with `"hidden": true` while remaining queryable. An unknown tone, or a tone for an undeclared value, is refused when the schema loads.
 - **Metadata renders in the header.** `<plan-header>` shows each `<plan-meta>` field as a chip — key, value and a tone dot — beside the status and date, and the separate metadata strip is gone. The status chip stays visibly distinct.

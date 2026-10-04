@@ -935,3 +935,16 @@ describe('querying documentation', () => {
     expect(c).toContain('NEEDS_TARGET');
   });
 });
+
+describe('nesting documentation', () => {
+  const doc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
+  it('SKILL.md documents the parent-legality check and the replace refusal', () => {
+    const skill = doc('SKILL.md');
+    expect(skill).toContain('a legal parent for every balanced tag');
+    expect(skill).toContain('refuses a replacement that would open a block element inside the match');
+    expect(skill).toContain('**`replace` rewrites text inside an element, never the element.**');
+  });
+  it('the authoring-traps reference carries the row-rewrite trap', () => {
+    expect(doc('references/authoring-traps.md')).toMatch(/^## Rewriting a table row$/m);
+  });
+});
