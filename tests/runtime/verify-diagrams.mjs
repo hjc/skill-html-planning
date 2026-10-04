@@ -62,6 +62,30 @@ export default async (page) => {
     return text;
   });
 
+  // Colours come from tones. A probe span resolves each token to the rgb()
+  // string getComputedStyle reports, so every comparison is exact. The sample's
+  // header status is `draft`.
+  const colours = await page.evaluate(() => {
+    const token = (v) => {
+      const p = document.createElement('span');
+      p.style.color = `var(${v})`;
+      document.body.appendChild(p);
+      const c = getComputedStyle(p).color;
+      p.remove();
+      return c;
+    };
+    const badge = (type) => getComputedStyle(document.querySelector(`plan-tab plan-badge[type="${type}"]`)).color;
+    return {
+      statusDot: getComputedStyle(document.querySelector('plan-header .meta-row .meta-chip:first-child .dot')).backgroundColor,
+      badges: {
+        decided: badge('decided'), open: badge('open'), deferred: badge('deferred'),
+        high: badge('high'), medium: badge('medium'), low: badge('low'),
+      },
+      token: { amber: token('--amber'), red: token('--red'), green: token('--green'), muted: token('--text-muted') },
+    };
+  });
+  const b = colours.badges, k = colours.token;
+
   const good = (m) => m.svg === m.diagrams && m.errors.length === 0;
   return {
     pass: {
@@ -72,10 +96,14 @@ export default async (page) => {
       wideNaturalSize: cold.wideRendered === cold.wideNatural && cold.wideBodyScroll > cold.wideBodyClient,
       movedRerenders: moved.svg && !moved.error,
       emptySourceLoud: typeof empty === 'string' && empty.includes('not a content error'),
+      statusDotToned: colours.statusDot === k.amber,
+      badgeColoursKept: b.decided === k.green && b.open === k.amber && b.deferred === k.muted
+        && b.high === k.green && b.medium === k.amber && b.low === k.red,
     },
     cold,
     warm: warm.map((m) => ({ svg: m.svg, errors: m.errors.length })),
     moved,
     empty,
+    colours,
   };
 };

@@ -5,6 +5,10 @@
    ═══════════════════════════════════════════════════════════ */
 
 /* ── plan-header ──────────────────────────────────────── */
+// Header status → tone. A copy of planr's HEADER_STATUS_TONES (a test asserts
+// the two agree); a status with no entry draws an uncoloured dot.
+const STATUS_TONES = { draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger' };
+
 class PlanHeader extends HTMLElement {
   connectedCallback() {
     const title = this.getAttribute('title') || 'Untitled';
@@ -12,6 +16,7 @@ class PlanHeader extends HTMLElement {
     const status = this.getAttribute('status') || 'draft';
     const date = this.getAttribute('date') || '';
     const chips = this.getAttribute('chips') || '';
+    const tone = STATUS_TONES[status];
 
     const extraChips = chips
       .split('|').filter(Boolean)
@@ -22,7 +27,7 @@ class PlanHeader extends HTMLElement {
       <h1>${title}</h1>
       ${subtitle ? `<div class="plan-subtitle">${subtitle}</div>` : ''}
       <div class="meta-row">
-        <span class="meta-chip"><span class="dot ${status}"></span> ${status.charAt(0).toUpperCase() + status.slice(1)}</span>
+        <span class="meta-chip meta-status"><span class="dot${tone ? ` tone-${tone}` : ''}"></span> ${status.charAt(0).toUpperCase() + status.slice(1)}</span>
         ${date ? `<span class="meta-chip">${date}</span>` : ''}
         ${extraChips}
       </div>
@@ -279,9 +284,16 @@ class PlanBadge extends HTMLElement {
       decided: 'Decided', open: 'Open', deferred: 'Deferred',
       high: 'High', medium: 'Medium', low: 'Low'
     };
+    // The tone each type colours with — a copy of planr's BADGE_TONES (a test
+    // asserts the two agree). CSS styles the class; an unknown type gets none.
+    const tones = {
+      decided: 'ok', open: 'warn', deferred: 'muted',
+      high: 'ok', medium: 'warn', low: 'danger'
+    };
     if (!this.textContent.trim()) {
       this.textContent = labels[type] || type;
     }
+    if (tones[type]) this.classList.add('tone-' + tones[type]);
   }
 }
 

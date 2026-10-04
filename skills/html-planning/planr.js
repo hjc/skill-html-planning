@@ -868,18 +868,27 @@ const NODE_ATTRS = {
   'plan-subsection': ['id', 'num', 'title', 'status'],
 };
 const SECTION_STATUS = ['todo', 'in-progress', 'done', 'blocked'];
-// The header's own status enum. Distinct from SECTION_STATUS — a plan moves
+// The tone vocabulary. Every coloured mark the runtime draws — a badge, the
+// header status dot, a metadata chip's dot — colours by one of these, and each
+// has a `.dot.tone-<t>` and a `plan-badge.tone-<t>` rule in plan-styles.css
+// mapped onto an existing colour token (a test asserts the sets agree). Fixed:
+// a schema picks among them and never declares a colour.
+const TONES = ['danger', 'warn', 'info', 'ok', 'final', 'muted'];
+// The header's own status enum, and the tone each status's dot draws in.
+// Distinct from SECTION_STATUS — a plan moves
 // draft → review → approved → implemented (or rejected), while a section is a
-// unit of work. Every value here has a `.dot.<value>` rule in plan-styles.css;
-// keep the two sets in step or a status renders with an uncolored dot.
-const HEADER_STATUS = ['draft', 'review', 'approved', 'implemented', 'rejected'];
+// unit of work. A copy of plan-runtime.js's STATUS_TONES (a test asserts the two agree).
+const HEADER_STATUS_TONES = { draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger' };
+const HEADER_STATUS = Object.keys(HEADER_STATUS_TONES);
 function statusEnum(tag) { return tag === 'plan-header' ? HEADER_STATUS : SECTION_STATUS; }
 // The label an EMPTY <plan-badge> renders, per type — a copy of the `labels`
-// map in plan-runtime.js's PlanBadge (a test asserts the two agree). Every type
-// has a `plan-badge[type="…"]` rule in plan-styles.css; an unknown type renders
-// unstyled, so `badge` refuses to write one.
+// map in plan-runtime.js's PlanBadge (a test asserts the two agree). An unknown
+// type renders unstyled, so `badge` refuses to write one.
 const BADGE_LABELS = { decided: 'Decided', open: 'Open', deferred: 'Deferred', high: 'High', medium: 'Medium', low: 'Low' };
 const BADGE_TYPES = Object.keys(BADGE_LABELS);
+// The tone each badge type colours with — a copy of the `tones` map in
+// plan-runtime.js's PlanBadge (a test asserts the two agree).
+const BADGE_TONES = { decided: 'ok', open: 'warn', deferred: 'muted', high: 'ok', medium: 'warn', low: 'danger' };
 // PlanBadge falls back to the type itself for a type it has no label for, and
 // treats a missing type as `open`.
 function badgeLabel(type) { return BADGE_LABELS[type] || type; }
@@ -3277,7 +3286,8 @@ module.exports = {
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
-  PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS, FIELD_TYPES,
+  PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
+  PLAN_TAGS, FIELD_TYPES,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,

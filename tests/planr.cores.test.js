@@ -218,14 +218,6 @@ describe('planSet', () => {
     // …and a section still gets the SECTION enum, not the header's.
     expect(() => planr.planSet(DOC, 'a.status=review')).toThrow(/invalid status 'review' for <plan-section>/);
   });
-  it('every HEADER_STATUS value has a .dot rule, and every .dot rule is in the enum', () => {
-    // The pair that drifted in BOTH directions: `review` was styled but
-    // undocumented, `rejected` documented but unstyled (no dot colour). The
-    // enum and the stylesheet are the two halves; assert they agree.
-    const css = readFileSync(join(SKILL_DIR, 'plan-styles.css'), 'utf8');
-    const styled = [...css.matchAll(/^\.dot\.([\w-]+)\s*\{/gm)].map(m => m[1]);
-    expect([...styled].sort()).toEqual([...planr.HEADER_STATUS].sort());
-  });
   it('throws PlanError on bad spec / attr / status', () => {
     expect(() => planr.planSet(DOC, 'a.a1.status')).toThrow(planr.PlanError);
     expect(() => planr.planSet(DOC, 'a.color=red')).toThrow(/unknown attribute 'color'/);
@@ -2429,5 +2421,46 @@ describe('planNext', () => {
 
   it('refuses a format it does not have', () => {
     expect(() => N({ format: 'tsv' })).toThrow(/unknown --format 'tsv' — valid: text, json/);
+  });
+});
+
+describe('tones — one colour vocabulary', () => {
+  const css = () => skillFile('plan-styles.css');
+  // A `key: 'value'` object literal in plan-runtime.js, found by `re`.
+  const runtimeMap = (re) => {
+    const block = re.exec(skillFile('plan-runtime.js'));
+    expect(block, `${re} not found in plan-runtime.js`).toBeTruthy();
+    return Object.fromEntries([...block[1].matchAll(/([\w-]+):\s*'([^']*)'/g)].map(m => [m[1], m[2]]));
+  };
+
+  it('every tone has a dot rule and a badge rule, and no rule names a tone outside the set', () => {
+    const dots = [...css().matchAll(/^\.dot\.tone-([\w-]+)\s*\{/gm)].map(m => m[1]);
+    const badges = [...css().matchAll(/^plan-badge\.tone-([\w-]+)\s*\{/gm)].map(m => m[1]);
+    expect([...dots].sort()).toEqual([...planr.TONES].sort());
+    expect([...badges].sort()).toEqual([...planr.TONES].sort());
+  });
+
+  it('every badge type maps to a tone, and PlanBadge colours from the same map', () => {
+    expect(Object.keys(planr.BADGE_TONES)).toEqual(planr.BADGE_TYPES);
+    for (const t of Object.values(planr.BADGE_TONES)) expect(planr.TONES).toContain(t);
+    expect(runtimeMap(/class PlanBadge[\s\S]*?const tones = \{([\s\S]*?)\};/)).toEqual(planr.BADGE_TONES);
+  });
+
+  it('keeps every existing badge colour meaning, and styles badges per tone, never per type', () => {
+    expect(planr.BADGE_TONES).toEqual({
+      decided: 'ok', open: 'warn', deferred: 'muted', high: 'ok', medium: 'warn', low: 'danger',
+    });
+    expect(css()).not.toMatch(/plan-badge\[type=/);
+  });
+
+  it('every header status maps to a tone, and PlanHeader colours its dot from the same map', () => {
+    expect(Object.keys(planr.HEADER_STATUS_TONES)).toEqual(planr.HEADER_STATUS);
+    for (const t of Object.values(planr.HEADER_STATUS_TONES)) expect(planr.TONES).toContain(t);
+    expect(runtimeMap(/const STATUS_TONES = \{([\s\S]*?)\};/)).toEqual(planr.HEADER_STATUS_TONES);
+    // The colours the per-status dot rules drew, kept.
+    expect(planr.HEADER_STATUS_TONES).toEqual({
+      draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger',
+    });
+    expect(css()).not.toMatch(/^\.dot\.(draft|review|approved|implemented|rejected)\b/m);
   });
 });
