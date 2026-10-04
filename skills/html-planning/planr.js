@@ -2041,7 +2041,11 @@ function lintMeta(html, schema) {
     const owned = headerOwnedProblem(schema, f.key);
     if (owned) { out.push({ line: f.line, text: `${owned}; remove the field from <plan-meta>` }); continue; }
     const problem = validateField(schema, f.key, f.raw);
-    if (problem) out.push({ line: f.line, text: problem });
+    if (problem) { out.push({ line: f.line, text: problem }); continue; }
+    // A valid value's stamp must match the schema, or the header renders what
+    // the schema does not say.
+    const drift = stampDrift(fieldStamp(schema, f.key, f.raw), f.el.attrsRaw, f.raw);
+    if (drift) out.push({ line: f.line, text: `<plan-field key="${f.key}">: ${drift} — run \`planr meta <file> --stamp\`` });
   }
   return out;
 }

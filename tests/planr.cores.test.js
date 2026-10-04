@@ -1764,6 +1764,46 @@ describe('planCheck warnings — metadata', () => {
   });
 });
 
+describe('planCheck warnings — stamps', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'], tones: { p0: 'danger', p1: 'warn' } },
+      area:     { type: 'list', hidden: true },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+  // Line 4 is the first field.
+  const wrap = (...fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+  const warn = (...fields) => planr.planCheck(wrap(...fields), schema()).warnings.map(w => [w.line, w.text]);
+
+  it('warns on a missing, a wrong, a stale and an unknown tone, naming the fix — and is silent when every stamp matches', () => {
+    expect(warn('<plan-field key="priority" tone="danger">p0</plan-field>',
+                '<plan-field key="area" hidden>crm</plan-field>',
+                '<plan-field key="owner">h</plan-field>')).toEqual([]);
+    expect(warn('<plan-field key="priority">p0</plan-field>')).toEqual([[4,
+      '<plan-field key="priority">: carries no tone, but the schema gives \'p0\' the tone \'danger\' — ' +
+      'run `planr meta <file> --stamp`']]);
+    expect(warn('<plan-field key="priority" tone="warn">p0</plan-field>')[0][1])
+      .toMatch(/stamped tone 'warn', but the schema gives 'p0' the tone 'danger'/);
+    expect(warn('<plan-field key="priority" tone="danger">p2</plan-field>')[0][1])
+      .toMatch(/stamped tone 'danger', but the schema gives 'p2' no tone/);
+    expect(warn('<plan-field key="priority" tone="pink">p0</plan-field>')[0][1])
+      .toMatch(/tone 'pink' is not a tone \(valid: danger, warn, info, ok, final, muted\)/);
+  });
+
+  it('warns when hidden disagrees, in either direction — never failing the structure, and never over a bad value', () => {
+    expect(warn('<plan-field key="area">crm</plan-field>')[0][1])
+      .toMatch(/<plan-field key="area">: is not stamped hidden, but the schema hides it/);
+    expect(warn('<plan-field key="owner" hidden>h</plan-field>')[0][1])
+      .toMatch(/<plan-field key="owner">: is stamped hidden, but the schema shows it/);
+    // A bad value is reported as a value problem, and its stamp is not judged.
+    const { ok, warnings } = planr.planCheck(wrap('<plan-field key="priority" tone="danger">p9</plan-field>'), schema());
+    expect(ok).toBe(true);
+    expect(warnings.map(w => w.text)).toEqual([expect.stringMatching(/'p9' is not a declared value/)]);
+  });
+});
+
 it('warns when a header-owned field appears in the block, and says who owns it', () => {
   const withHeader = planr.mergeSchemas(planr.parseSchema({
     fields: { status: { type: 'enum', values: ['draft', 'review'], from: 'header:status' },
