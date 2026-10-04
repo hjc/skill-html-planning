@@ -1323,6 +1323,42 @@ describe('parseSchema', () => {
   });
 });
 
+describe('parseSchema — tones and hidden', () => {
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+  const P = (extra) => ({ fields: { priority: { type: 'enum', values: ['p0', 'p1', 'p2'], ...extra } } });
+
+  it('accepts a tone per declared value — a partial map included — and a hidden flag', () => {
+    const s = S({ fields: {
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'], tones: { p0: 'danger', p1: 'warn' } },
+      area:     { type: 'list', hidden: true },
+    } });
+    expect(s.fields.priority.tones).toEqual({ p0: 'danger', p1: 'warn' });
+    expect(s.fields.area.hidden).toBe(true);
+    expect(() => planr.mergeSchemas(s)).not.toThrow();
+  });
+
+  it('refuses an unknown tone, a tone for an undeclared value, and tones off a single-valued enum', () => {
+    expect(() => S(P({ tones: { p0: 'pink' } })))
+      .toThrow(/probe\.json: field 'priority': tone 'pink' for 'p0' is not a tone — valid: danger, warn, info, ok, final, muted/);
+    expect(() => S(P({ tones: { p9: 'danger' } })))
+      .toThrow(/field 'priority': `tones` names 'p9', which is not a declared value — declared: p0, p1, p2/);
+    expect(() => S({ fields: { owner: { type: 'string', tones: { a: 'ok' } } } }))
+      .toThrow(/field 'owner': `tones` applies only to type enum/);
+    expect(() => S(P({ tones: ['danger'] }))).toThrow(/field 'priority': `tones` must be an object of value → tone/);
+    expect(() => S(P({ repeatable: true, tones: { p0: 'ok' } })))
+      .toThrow(/field 'priority': `tones` needs a single-valued field — a repeatable one has no single tone/);
+  });
+
+  it('refuses a non-boolean hidden, and either key on a header-owned field', () => {
+    expect(() => S(P({ hidden: 'yes' }))).toThrow(/field 'priority': `hidden` must be true or false/);
+    expect(() => S({ fields: { status: {
+      type: 'enum', values: ['draft'], from: 'header:status', tones: { draft: 'warn' } } } }))
+      .toThrow(/field 'status': `tones` and `hidden` do not apply to a header field — the header renders it in its own chip/);
+    expect(() => S({ fields: { title: { type: 'string', from: 'header:title', hidden: true } } }))
+      .toThrow(/field 'title': `tones` and `hidden` do not apply to a header field/);
+  });
+});
+
 describe('mergeSchemas', () => {
   const core = () => planr.parseSchema({
     fields: { type: { type: 'enum', values: ['doc', 'issue'] }, owner: { type: 'string' } },

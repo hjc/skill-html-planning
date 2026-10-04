@@ -967,7 +967,7 @@ function resolveConsumerSchemaPath(invoked = process.argv[1] || __filename) {
   return root ? `${root}/${CONSUMER_SCHEMA_FILENAME}` : null;
 }
 const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
-const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label'];
+const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden'];
 const SCHEMA_KEYS = ['fields', 'infer', 'defaults', 'rankings'];
 const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
 const HEADER_SOURCE = /^header:(title|subtitle|status|date|chips)$/;
@@ -1016,9 +1016,32 @@ function parseSchema(data, origin) {
       schemaFail(origin, `field '${name}': \`from\` must be header:title|subtitle|status|date|chips, got '${def.from}'`);
     if (def.label !== undefined && typeof def.label !== 'string')
       schemaFail(origin, `field '${name}': \`label\` must be a string`);
+    // Rendering keys. `tones` gives an enum value its colour in the header chip;
+    // `hidden` keeps a field out of the header while leaving it queryable. Both
+    // are read only from this def, so they are SHAPE checks, made here.
+    if (def.hidden !== undefined && typeof def.hidden !== 'boolean')
+      schemaFail(origin, `field '${name}': \`hidden\` must be true or false`);
+    if (def.tones !== undefined) {
+      if (def.type !== 'enum') schemaFail(origin, `field '${name}': \`tones\` applies only to type enum`);
+      if (def.repeatable === true)
+        schemaFail(origin, `field '${name}': \`tones\` needs a single-valued field — a repeatable one has no single tone`);
+      if (!isPlainObject(def.tones)) schemaFail(origin, `field '${name}': \`tones\` must be an object of value → tone`);
+      for (const [v, t] of Object.entries(def.tones)) {
+        if (!def.values.includes(v))
+          schemaFail(origin, `field '${name}': \`tones\` names '${v}', which is not a declared value — declared: ${def.values.join(', ')}`);
+        if (!TONES.includes(t))
+          schemaFail(origin, `field '${name}': tone '${t}' for '${v}' is not a tone — valid: ${TONES.join(', ')}`);
+      }
+    }
+    // A header-owned field never sits in <plan-meta>: the header draws it.
+    if (def.from !== undefined && (def.tones !== undefined || def.hidden !== undefined))
+      schemaFail(origin, `field '${name}': \`tones\` and \`hidden\` do not apply to a header field — the header renders it in its own chip`);
     // `list` IS `string` + repeatable; normalising here gives one code path for
     // splitting, validating and normalising a multi-valued field.
-    fields[name] = { ...def, repeatable: def.type === 'list' || def.repeatable === true, origin };
+    fields[name] = {
+      ...def, ...(def.tones ? { tones: { ...def.tones } } : {}),
+      repeatable: def.type === 'list' || def.repeatable === true, origin,
+    };
   }
   const infer = [];
   if (data.infer !== undefined) {
