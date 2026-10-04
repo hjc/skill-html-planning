@@ -14,6 +14,7 @@
      node planr.js read        <file> <address> [--body] [--text]
      node planr.js meta        <file> [--format text|json]
      node planr.js meta        <file> --set <k>=<v> [...] [--unset <k> ...]
+     node planr.js meta        <file> --stamp
      node planr.js query       <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>]
                                [--rank <name>] [--sort <k[:asc|desc],...>] [--fields <cols>]
                                [--limit N] [--format table|json|tsv|paths]
@@ -1356,7 +1357,11 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
     messages.push('removed <plan-meta> — no fields left');
   } else {
     const indent = block ? elementIndent(html, block.el) : metaIndent(html);
-    const body = '\n' + order.map(k => `${indent}  <plan-field key="${k}">${valueOf(k)}</plan-field>`).join('\n') + `\n${indent}`;
+    // The whole block is rebuilt, so every field — not only the ones set — is
+    // stamped from the schema as it stands now.
+    const body = '\n' + order.map(k =>
+      `${indent}  <plan-field key="${k}"${stampAttrs(fieldStamp(schema, k, valueOf(k)))}>${valueOf(k)}</plan-field>`,
+    ).join('\n') + `\n${indent}`;
     const rebuilt = `${indent}<plan-meta>${body}</plan-meta>`;
     if (block) out = html.slice(0, lineStart(html, block.el.outerStart)) + rebuilt + html.slice(block.el.outerEnd);
     else { out = insertMetaBlock(html, rebuilt); messages.push('created <plan-meta>'); }
@@ -1365,6 +1370,83 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
   for (const key of drops) messages.push(`unset ${key}`);
   assertIntact(html, out, 'meta');
   return { html: out, message: messages.join('\n') };
+}
+/* ── stamps ───────────────────────────────────────────────
+   The page is schema-free: the runtime cannot read planr-schema.json, so the
+   writer STAMPS what rendering needs onto each <plan-field> — `tone="<t>"` when
+   the schema gives the value a tone, `hidden` when the field opts out of the
+   header. fieldStamp is the ONE stamping rule: planMetaSet and stampMetaFields
+   write through it, and lintMeta compares a document against it. An unknown
+   field gets no stamp (null): it is check's to report, not the writer's to
+   decorate. */
+function fieldStamp(schema, key, raw) {
+  const def = schema && schema.fields[key];
+  if (!def) return null;
+  const v = String(raw).trim();
+  const tone = def.tones && Object.prototype.hasOwnProperty.call(def.tones, v) ? def.tones[v] : null;
+  return { tone, hidden: def.hidden === true };
+}
+function stampAttrs(stamp) {
+  if (!stamp) return '';
+  return (stamp.tone ? ` tone="${stamp.tone}"` : '') + (stamp.hidden ? ' hidden' : '');
+}
+// What a field's stamped attributes say that the schema does not, or '' when
+// they agree. The ONE comparison: lintMeta reports it and `meta --stamp` fixes
+// it. A valueless `tone` attribute counts as no tone.
+function stampDrift(want, attrsRaw, raw) {
+  const t = getAttr(attrsRaw, 'tone');
+  const tone = typeof t === 'string' && t ? t : null;
+  const hidden = getAttr(attrsRaw, 'hidden') !== undefined;
+  const out = [];
+  if (tone && !TONES.includes(tone)) out.push(`tone '${tone}' is not a tone (valid: ${TONES.join(', ')})`);
+  else if (tone !== want.tone)
+    out.push(!want.tone ? `stamped tone '${tone}', but the schema gives '${raw}' no tone`
+      : tone ? `stamped tone '${tone}', but the schema gives '${raw}' the tone '${want.tone}'`
+      : `carries no tone, but the schema gives '${raw}' the tone '${want.tone}'`);
+  if (hidden !== want.hidden)
+    out.push(want.hidden ? 'is not stamped hidden, but the schema hides it' : 'is stamped hidden, but the schema shows it');
+  return out.join('; ');
+}
+// A field's attributes with `tone` and `hidden` replaced by `stamp`. Every
+// other attribute keeps its exact bytes and position; the stamp goes last.
+function restampAttrs(attrsRaw, stamp) {
+  const kept = scanAttrs(attrsRaw).filter(a => a.name !== 'tone' && a.name !== 'hidden')
+    .map(a => attrsRaw.slice(a.nameStart, a.end));
+  return ' ' + kept.join(' ') + stampAttrs(stamp);
+}
+// Brings each schema field's stamp in line, leaving its value bytes untouched.
+// "Already in line" is stampDrift's verdict, never a text comparison, so a tag
+// check calls clean (attributes in another order, other quoting, an extra
+// attribute) is left byte-for-byte. A drifting tag has only `tone`/`hidden`
+// rewritten. Back to front, so a rewrite never shifts a later field's offsets.
+// Returns the keys whose tag changed, in document order.
+function stampMetaFields(html, schema) {
+  const block = readMetaBlock(html);
+  if (!block) return { html, stamped: [] };
+  let out = html;
+  const stamped = [];
+  for (const f of [...block.fields].reverse()) {
+    const stamp = fieldStamp(schema, f.key, f.raw);
+    if (!stamp || !stampDrift(stamp, f.el.attrsRaw, f.raw)) continue;
+    out = out.slice(0, f.el.attrStart) + restampAttrs(f.el.attrsRaw, stamp) + out.slice(f.el.attrEnd);
+    stamped.unshift(f.key);
+  }
+  return { html: out, stamped };
+}
+/* Pure: (html, { schema, sets, unsets }) -> { html, message }. `meta --stamp`:
+   brings every field's stamp in line with the schema without touching a value.
+   It is the remedy check names when the two drift, and the migration for a
+   document written before stamps existed. A document already in line comes
+   back unchanged, so the shell writes nothing. `sets`/`unsets` are taken only
+   to refuse them: a --set already stamps the whole block it rebuilds. */
+function planMetaStamp(html, { schema, sets = [], unsets = [] } = {}) {
+  if (sets.length || unsets.length)
+    throw new PlanError('--stamp rewrites stamps only, and --set/--unset already stamp every field they write — use one or the other');
+  if (!readMetaBlock(html)) return { html, message: 'no <plan-meta> block — nothing to stamp' };
+  const { html: out, stamped } = stampMetaFields(html, schema);
+  if (!stamped.length) return { html, message: 'every field already matches the schema — nothing to stamp' };
+  assertIntact(html, out, 'meta --stamp');
+  return { html: out, message: stamped.map(k => `stamped ${k}`).join('\n') };
 }
 // The indentation a created block takes: whatever <main>'s first element uses,
 // else two spaces (the shell's own body indentation).
@@ -1786,6 +1868,9 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [], sche
   }
   let html = pruneEmptyFields(render(composed, vars));
   if (nodeSets.length) html = planSet(html, nodeSets).html;
+  // A template's declared fields are stamped exactly as `meta --set` would stamp
+  // them, so a fresh scaffold never drifts from the schema it was made under.
+  if (schema) html = stampMetaFields(html, schema).html;
   // A bare fill is substitution, not planSet, so the rendered document is held
   // to the same attribute rules — else `--set status=aproved` writes a typo.
   validateNodes(html, schema);
@@ -2999,6 +3084,13 @@ function cmdMeta(file, flags) {
   // `meta f.html --set` print the report and exit 0 — a silent no-op.
   if ([...sets, ...unsets].some(v => v === true))
     throw new PlanError('--set expects <key>=<value> and --unset expects a field name');
+  if (flags.stamp) {
+    const html = read(file);
+    const { html: out, message } = planMetaStamp(html, { schema, sets, unsets });
+    if (out !== html) write(file, out);
+    process.stdout.write(message + '\n');
+    return;
+  }
   if (!sets.length && !unsets.length) {
     process.stdout.write(planMeta(read(file), {
       schema, docPath: file, schemaSources: sources, format: flagValue(flags, 'format') || 'text',
@@ -3170,7 +3262,7 @@ function cmdMoveSection(file, address, flags) {
 // from one whose value follows, so `tasks --all plan.html` consumed the FILENAME
 // as --all's value and then reported a missing <file> — with the file right
 // there on the line. Declaring them keeps flag order free.
-const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict']);
+const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict', 'stamp']);
 // `--text` is the one flag name two commands share with different shapes:
 // `read --text` is a boolean (structure-preserving plain text), `badge --text
 // <T>` takes the replacement label, including `--text ""` to clear one. Scope
@@ -3211,6 +3303,7 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   meta         <file> [--format text|json]                (resolved metadata, with each value's source)
   meta         <file> --set <k>=<v> [...] [--unset <k> ...]
+  meta         <file> --stamp                             (rewrite each field's tone/hidden stamp from the schema)
   query        <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                           [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                           [--format table|json|tsv|paths] [--strict]
@@ -3313,6 +3406,7 @@ module.exports = {
   PLAN_TAGS, FIELD_TYPES,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
+  fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,

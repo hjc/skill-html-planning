@@ -587,6 +587,28 @@ describe('meta (write)', () => {
       expect(runAt(staged, ['meta', doc, '--set']).code).toBe(1);
     } finally { rmTmp(root); }
   });
+
+  it('--stamp brings a document in line with a consumer schema, and refuses --set beside it', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify({
+        fields: { priority: { type: 'enum', values: ['p0', 'p1'], tones: { p0: 'danger' } } },
+      }));
+      const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
+      expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'Quota']).code).toBe(0);
+      // A field written by hand, before stamps existed.
+      writeFileSync(doc, readFileSync(doc, 'utf8').replace('<plan-field key="type">issue</plan-field>',
+        '<plan-field key="type">issue</plan-field>\n    <plan-field key="priority">p0</plan-field>'));
+      const r = runAt(staged, ['meta', '--stamp', doc]);   // valueless flag BEFORE the file
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toBe('stamped priority\n');
+      expect(readFileSync(doc, 'utf8')).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
+      const both = runAt(staged, ['meta', doc, '--stamp', '--set', 'priority=p1']);
+      expect(both.code).toBe(1);
+      expect(both.stderr).toMatch(/--stamp rewrites stamps only/);
+    } finally { rmTmp(root); }
+  });
 });
 
 it('check reports a metadata problem as a warning, and --strict makes it fatal', () => {

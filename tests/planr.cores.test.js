@@ -2500,3 +2500,95 @@ describe('tones — one colour vocabulary', () => {
     expect(css()).not.toMatch(/^\.dot\.(draft|review|approved|implemented|rejected)\b/m);
   });
 });
+
+describe('stamps — the writer carries tone and hidden onto the page', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      type:     { type: 'enum', values: ['doc', 'issue'] },
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'], tones: { p0: 'danger', p1: 'warn' } },
+      area:     { type: 'list', hidden: true },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+  const BARE = ['<plan-header title="T"></plan-header>', '<main>', '',
+                '  <plan-section id="a" title="A"><p>Body.</p></plan-section>', '', '</main>'].join('\n');
+  const DOC = (fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+
+  it('fieldStamp is the one rule: a tone for a toned value, hidden for an opted-out field, null for an unknown one', () => {
+    const s = schema();
+    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false });
+    expect(planr.fieldStamp(s, 'priority', ' p1 ')).toEqual({ tone: 'warn', hidden: false });
+    expect(planr.fieldStamp(s, 'priority', 'p2')).toEqual({ tone: null, hidden: false });
+    expect(planr.fieldStamp(s, 'area', 'crm, celery')).toEqual({ tone: null, hidden: true });
+    expect(planr.fieldStamp(s, 'severity', 'x')).toBeNull();
+    expect(planr.stampAttrs({ tone: 'warn', hidden: true })).toBe(' tone="warn" hidden');
+    expect(planr.stampAttrs({ tone: null, hidden: false })).toBe('');
+    expect(planr.stampAttrs(null)).toBe('');
+  });
+
+  it('meta --set stamps every field it writes, and restamps the rest of the block', () => {
+    const { html } = planr.planMetaSet(BARE, { schema: schema(), sets: ['priority=p0', 'area=crm,celery', 'owner=h'] });
+    expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
+    expect(html).toContain('<plan-field key="area" hidden>crm,celery</plan-field>');
+    expect(html).toContain('<plan-field key="owner">h</plan-field>');
+    // A hand edit left a stale tone on priority; the next --set of ANOTHER field corrects it.
+    const again = planr.planMetaSet(html.replace('>p0<', '>p2<'), { schema: schema(), sets: ['owner=j'] }).html;
+    expect(again).toContain('<plan-field key="priority">p2</plan-field>');
+  });
+
+  it('planMetaStamp rewrites drifting stamps only — values byte-for-byte — and names what it changed', () => {
+    const before = DOC([
+      '<plan-field key="priority">p1</plan-field>',
+      '<plan-field key="area" tone="ok">crm, celery &amp; co</plan-field>',
+      '<plan-field key="owner">h</plan-field>',
+      '<plan-field key="severity" tone="warn">high</plan-field>',
+    ]);
+    const { html, message } = planr.planMetaStamp(before, { schema: schema() });
+    expect(html).toBe(DOC([
+      '<plan-field key="priority" tone="warn">p1</plan-field>',
+      '<plan-field key="area" hidden>crm, celery &amp; co</plan-field>',
+      '<plan-field key="owner">h</plan-field>',
+      '<plan-field key="severity" tone="warn">high</plan-field>',   // unknown: left exactly as written
+    ]));
+    expect(message).toBe('stamped priority\nstamped area');
+  });
+
+  it('planMetaStamp returns the document unchanged when it is in line, or has no block', () => {
+    const inLine = DOC(['<plan-field key="priority" tone="danger">p0</plan-field>']);
+    expect(planr.planMetaStamp(inLine, { schema: schema() }))
+      .toEqual({ html: inLine, message: 'every field already matches the schema — nothing to stamp' });
+    expect(planr.planMetaStamp(BARE, { schema: schema() }))
+      .toEqual({ html: BARE, message: 'no <plan-meta> block — nothing to stamp' });
+  });
+
+  it('planMetaStamp judges a tag by stampDrift: a clean tag in another shape is untouched, and extra attributes survive', () => {
+    const before = DOC([
+      '<plan-field tone="danger" key="priority">p0</plan-field>',   // reordered, already in line
+      '<plan-field key="area" class="x">crm</plan-field>',          // drifts: needs hidden
+    ]);
+    const { html, message } = planr.planMetaStamp(before, { schema: schema() });
+    expect(html).toBe(DOC([
+      '<plan-field tone="danger" key="priority">p0</plan-field>',
+      '<plan-field key="area" class="x" hidden>crm</plan-field>',
+    ]));
+    expect(message).toBe('stamped area');
+  });
+
+  it('planMetaStamp refuses --set or --unset beside it', () => {
+    expect(() => planr.planMetaStamp(BARE, { schema: schema(), sets: ['owner=h'] }))
+      .toThrow(/--stamp rewrites stamps only, and --set\/--unset already stamp every field they write — use one or the other/);
+    expect(() => planr.planMetaStamp(BARE, { schema: schema(), unsets: ['owner'] })).toThrow(/--stamp rewrites stamps only/);
+  });
+
+  it("new stamps a template's declared fields", () => {
+    const shell = '<title>{{title}}</title>\n<plan-header title="{{title}}"></plan-header>\n<main>\n{{body}}\n</main>';
+    const body = '  <plan-meta>\n    <plan-field key="priority">p0</plan-field>\n' +
+                 '    <plan-field key="area">{{area:}}</plan-field>\n  </plan-meta>';
+    const html = planr.planNew(shell, body, {
+      title: 'T', date: '2026-01-01', skillSubpath: 's', sets: ['area=crm'], schema: schema(),
+    });
+    expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
+    expect(html).toContain('<plan-field key="area" hidden>crm</plan-field>');
+  });
+});
