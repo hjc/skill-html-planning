@@ -793,6 +793,12 @@ function decodeEntities(s) {
   });
 }
 
+// The write half of decodeEntities for element content: & first, then the two
+// angle brackets, so a value can never open markup.
+function escapeText(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // Mirrors `_sectionNumber` in plan-runtime.js — the rendered number is derived
 // from document position, NOT stored. A `num` attribute overrides this level; a
 // DOTTED override is the complete number, so ancestors do not re-prefix it
@@ -1360,7 +1366,7 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
     // The whole block is rebuilt, so every field — not only the ones set — is
     // stamped from the schema as it stands now.
     const body = '\n' + order.map(k =>
-      `${indent}  <plan-field key="${k}"${stampAttrs(fieldStamp(schema, k, valueOf(k)))}>${valueOf(k)}</plan-field>`,
+      `${indent}  <plan-field key="${k}"${stampAttrs(fieldStamp(schema, k, valueOf(k)))}>${escapeText(valueOf(k))}</plan-field>`,
     ).join('\n') + `\n${indent}`;
     const rebuilt = `${indent}<plan-meta>${body}</plan-meta>`;
     if (block) out = html.slice(0, lineStart(html, block.el.outerStart)) + rebuilt + html.slice(block.el.outerEnd);
@@ -2149,6 +2155,10 @@ function lintMeta(html, schema) {
     // outrank it. Reported instead of the value check, not as well as it.
     const owned = headerOwnedProblem(schema, f.key);
     if (owned) { out.push({ line: f.line, text: `${owned}; remove the field from <plan-meta>` }); continue; }
+    if (html.slice(f.el.innerStart, f.el.innerEnd).includes('<')) {
+      out.push({ line: f.line, text: `<plan-field key="${f.key}">: raw \`<\` in the value is live markup — rewrite it with \`planr meta <file> --set ${f.key}=…\`` });
+      continue;
+    }
     const problem = validateField(schema, f.key, f.raw);
     if (problem) { out.push({ line: f.line, text: problem }); continue; }
     // A valid value's stamp must match the schema, or the header renders what

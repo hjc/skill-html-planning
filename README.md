@@ -258,6 +258,7 @@ Every command that writes re-verifies the document afterwards and **aborts witho
 - **A schema enum declares a tone per value** (`"tones": { "p0": "danger" }`), and any field can stay out of the header with `"hidden": true` while remaining queryable. An unknown tone, or a tone for an undeclared value, is refused when the schema loads.
 - **Metadata renders in the header.** `<plan-header>` shows each `<plan-meta>` field as a chip — key, value and a tone dot — beside the status and date, and the separate metadata strip is gone. The status chip stays visibly distinct.
 - **`planr meta <file> --stamp`.** `planr` writes each field's tone and hidden flag onto the page, so the browser never needs the schema. `--stamp` brings an existing document in line after a schema change, and `check` warns when a stamp disagrees with the schema.
+- **Fix: `meta --set` escapes field values.** `&`, `<` and `>` in a value are written as entities, so a value can no longer become live markup; reads decode them back to the exact original, and `check` warns on a raw `<` already on disk.
 - **Free-text header chips are deprecated.** No template writes them and `check` warns on a header carrying them. They still render, so nothing breaks before a repo moves them into schema fields.
 
 ## What's new in 1.3.0

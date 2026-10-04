@@ -1761,6 +1761,43 @@ describe('planMetaSet', () => {
     expect(() => set('<plan-header title="T"></plan-header>', ['owner=hayden']))
       .toThrow(/no <main>/);
   });
+
+  describe('field values are escaped on disk and decoded on read', () => {
+    const SRC = 'From: a <b> & c';
+    it('writes & < > as entities, so the value is never live markup', () => {
+      const { html } = set(BARE, [`owner=${SRC}`]);
+      expect(html).toContain('<plan-field key="owner">From: a &lt;b&gt; &amp; c</plan-field>');
+      expect(html).not.toContain('<b>');
+      expect(planr.planCheck(html, schema()).warnings).toEqual([]);
+    });
+
+    it('round-trips the exact original string through resolveMeta', () => {
+      const { html } = set(BARE, [`owner=${SRC}`]);
+      const rec = planr.resolveMeta(html, { schema: schema() });
+      expect(rec.fields.owner.value).toBe(SRC);
+      expect(rec.fields.owner.raw).toBe(SRC);
+    });
+
+    it('does not double-escape when a later --set rebuilds the block', () => {
+      const first = set(BARE, [`owner=${SRC}`]).html;
+      const { html } = set(first, ['type=issue']);
+      expect(html).toContain('From: a &lt;b&gt; &amp; c</plan-field>');
+      expect(planr.resolveMeta(html, { schema: schema() }).fields.owner.value).toBe(SRC);
+    });
+
+    it('keeps a literal entity-looking value literal', () => {
+      const { html } = set(BARE, ['owner=a &amp; b']);
+      expect(planr.resolveMeta(html, { schema: schema() }).fields.owner.value).toBe('a &amp; b');
+    });
+
+    it('lint warns on a raw `<` already on disk in a field value', () => {
+      const doc = ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+        '    <plan-field key="owner">a <b>x</b></plan-field>', '  </plan-meta>', '</main>'].join('\n');
+      const { ok, warnings } = planr.planCheck(doc, schema());
+      expect(ok).toBe(true);
+      expect(warnings.map(w => w.text).join('\n')).toMatch(/<plan-field key="owner">.*raw `<`/);
+    });
+  });
 });
 
 describe('planMetaSet — header-owned fields (C9)', () => {
