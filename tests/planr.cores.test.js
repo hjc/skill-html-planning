@@ -1108,6 +1108,73 @@ describe('planReplace', () => {
   });
 });
 
+describe("planReplace — a replacement never opens a block inside its match's parent", () => {
+  const ROWS = (extra = '') => [
+    '<plan-header title="T" status="draft"></plan-header>',
+    '<main>',
+    '  <plan-section id="rows" title="Rows">',
+    '    <plan-table><table><tbody>',
+    '      <tr><td><a href="some-issue.html"><code>some-issue.html</code></a></td><td>a note</td></tr>',
+    '      <tr><td>plain cell</td><td>b</td></tr>',
+    '    </tbody></table></plan-table>',
+    extra,
+    '  </plan-section>',
+    '</main>',
+  ].join('\n');
+  const ROW = '<tr><td><code>other.html</code></td><td>replaced</td></tr>';
+
+  it("refuses a row replacing a filename inside a cell's <code>, naming the inline parent", () => {
+    expect(() => planr.planReplace(ROWS(), 'rows', ROW, { match: 'some-issue.html' }))
+      .toThrow(/^replace would open <tr> inside <code> — the match sits in <code> \(line 5: \[some-issue\.html\] a note\)[\s\S]*`rm-item --match` then `append --into tbody`[\s\S]*Aborted; no changes written\.$/);
+  });
+  it('refuses it on a document that already fails check, where assertIntact lets writes through', () => {
+    const dirty = ROWS('    <p><code><plan-callout type="info">old damage</plan-callout></code></p>');
+    expect(planr.planCheck(dirty).ok).toBe(false);
+    expect(() => planr.planReplace(dirty, 'rows', ROW, { match: 'some-issue.html' }))
+      .toThrow(/^replace would open <tr> inside <code>/);
+  });
+  it("refuses a row replacing a cell's own text, naming the cell", () => {
+    expect(() => planr.planReplace(ROWS(), 'rows', ROW, { match: 'plain cell' }))
+      .toThrow(/^replace would open <tr> inside <td> — the match sits in <td> \(line 6: /);
+  });
+  it('refuses the whole write under --all when one run of several would misnest', () => {
+    const two = ROWS('    <p>See some-issue.html for the history.</p>');
+    expect(() => planr.planReplace(two, 'rows', '<plan-callout type="info">moved</plan-callout>', { match: 'some-issue.html', all: true }))
+      .toThrow(/^replace would open <plan-callout> inside <code> — the match sits in <code> \(line 5: /);
+  });
+});
+
+describe("planReplace — a replacement never opens a block inside its match's parent (guards)", () => {
+  // Baseline-green: these pass before and after the refusal lands, and pin
+  // what it must NOT refuse.
+  const ROWS = [
+    '<plan-header title="T" status="draft"></plan-header>',
+    '<main>',
+    '  <plan-section id="rows" title="Rows">',
+    '    <plan-table><table><tbody>',
+    '      <tr><td><a href="some-issue.html"><code>some-issue.html</code></a></td><td>a note</td></tr>',
+    '    </tbody></table></plan-table>',
+    '  </plan-section>',
+    '</main>',
+  ].join('\n');
+  it('accepts plain text inside the <code>, inline markup in a cell, and a block component in a cell', () => {
+    expect(planr.planReplace(ROWS, 'rows', null, { match: 'some-issue.html', with: 'other.html' }).html)
+      .toContain('<code>other.html</code>');
+    expect(planr.planReplace(ROWS, 'rows', null, { match: 'a note', with: 'see <code>x</code>' }).html)
+      .toContain('<td>see <code>x</code></td>');
+    const defs = planr.planReplace(ROWS, 'rows', '<plan-defs><plan-def key="k">v</plan-def></plan-defs>', { match: 'a note' }).html;
+    expect(planr.planCheck(defs).ok).toBe(true);
+  });
+  it("strike and rm-item share the matcher but cannot misnest: <s> is inline, and rm-item removes a whole item", () => {
+    const struck = planr.planStrike(ROWS, 'rows', { match: 'some-issue.html' }).html;
+    expect(struck).toContain('<code><s>some-issue.html</s></code>');
+    expect(planr.planCheck(struck).ok).toBe(true);
+    const removed = planr.planRmItem(ROWS, 'rows', { match: 'some-issue.html' }).html;
+    expect(removed).not.toContain('some-issue.html');
+    expect(planr.planCheck(removed).ok).toBe(true);
+  });
+});
+
 describe('planRead --text', () => {
   const TEXTY = [
     '<plan-section id="t" title="Scope &amp; Text">',

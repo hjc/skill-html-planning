@@ -1893,6 +1893,26 @@ function assertOneElement(html, runs, raw, verb) {
     `narrow the match (${runContext(html, bad)})`);
 }
 
+// A replacement is markup spliced into a text run, so it can open a block
+// element inside the run's own parent: balanced, and dropped by the browser.
+// Refused on ANY document — assertIntact only refuses a write that turns a
+// passing document failing, and a document already failing must not get worse.
+function assertSplicedNesting(before, after, runs, replacement) {
+  let delta = 0;
+  const spans = [...runs].sort((a, b) => a.start - b.start).map(run => {
+    const start = run.start + delta;
+    delta += replacement.length - (run.end - run.start);
+    return { run, start, end: start + replacement.length };
+  });
+  for (const p of nestingProblems(after)) {
+    const hit = spans.find(s => s.start <= p.index && p.index < s.end);
+    if (!hit) continue;
+    throw new PlanError(`replace would open <${p.tag}> inside <${p.parent}> — the match sits in <${p.parent}> ` +
+      `(${runContext(before, hit.run)}), and the replacement is spliced there verbatim. To rewrite a whole row, ` +
+      'use `rm-item --match` then `append --into tbody`, or `read --body` → edit → `set-body`. Aborted; no changes written.');
+  }
+}
+
 // Remove an item element. Alone on its line(s), the whole line goes with it —
 // indentation and newline included; sharing a line, only the element does.
 function removeItem(html, el) {
@@ -3062,6 +3082,7 @@ function planReplace(html, address, body, flags = {}) {
   let out = html;
   for (const r of [...picked].sort((a, b) => b.start - a.start))
     out = out.slice(0, r.start) + replacement + out.slice(r.end);
+  assertSplicedNesting(html, out, picked, replacement);
   assertIntact(html, out, 'replace');
   return {
     html: out,

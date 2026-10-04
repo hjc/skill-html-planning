@@ -435,6 +435,21 @@ describe('text-addressed writes', () => {
     expect(run(['--help']).stdout).toContain('replace');
     expect(skill()).toContain('| `replace` |');
   });
+  it("replace exits 1 rather than splice a row into a cell's <code>, and leaves the file untouched", () => {
+    freshPlan();
+    const rows = join(dir, 'rows.html');
+    writeFileSync(rows, '\n    <plan-table><table><tbody>\n' +
+                        '      <tr><td><code>some-issue.html</code></td><td>a note</td></tr>\n' +
+                        '    </tbody></table></plan-table>\n  ');
+    expect(run(['set-body', P(), 'overview', '--file', rows]).code).toBe(0);
+    const before = readPlan();
+    const row = join(dir, 'row.html');
+    writeFileSync(row, '<tr><td><code>other.html</code></td><td>replaced</td></tr>\n');
+    const r = run(['replace', P(), 'overview', '--match', 'some-issue.html', '--file', row]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('replace would open <tr> inside <code>');
+    expect(readPlan()).toBe(before);
+  });
 });
 
 describe('consumer template directory (.claude/planr-templates/)', () => {
