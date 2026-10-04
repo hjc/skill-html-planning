@@ -370,3 +370,50 @@ describe('globToRegExp() / globBase()', () => {
     expect(planr.globBase('a\\b\\*.html')).toBe('a/b');
   });
 });
+
+describe('nestingProblems (parent legality backing `check`)', () => {
+  const tags = (html) => planr.nestingProblems(html).map(p => `${p.tag}<${p.parent}`);
+  it('passes legal table markup, a nested table, an unclosed cell and a sub-record in a cell', () => {
+    expect(planr.nestingProblems(
+      '<plan-table><table><thead><tr><th>h</th></tr></thead><tbody><tr><td>a<td>b</tr>' +
+      '<tr><td><table><tr><td>inner</td></tr></table></td>' +
+      '<td><plan-defs><plan-def key="k">v</plan-def></plan-defs></td></tr></tbody></table></plan-table>')).toEqual([]);
+  });
+  it("reports a row spliced into a cell's <code> once, naming the inline parent", () => {
+    const html = '<table><tbody><tr><td><a href="x.html"><code><tr><td><code>y.html</code></td><td>new</td></tr>' +
+                 '</code></a></td><td>n</td></tr></tbody></table>';
+    const problems = planr.nestingProblems(html);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ tag: 'tr', parent: 'code', index: html.indexOf('<tr><td><code>y') });
+    expect(problems[0].text)
+      .toMatch(/^<tr> inside <code> — a <tr> belongs directly in <table>, <thead>, <tbody>, <tfoot>; the browser drops or moves it$/);
+  });
+  it('holds every table tag to its legal parents', () => {
+    expect(tags('<plan-table><tr><td>x</td></tr></plan-table>')).toEqual(['tr<plan-table']);
+    expect(tags('<table><tr><tbody></tbody></tr></table>')).toEqual(['tbody<tr']);
+    expect(tags('<plan-section id="s"><td>x</td></plan-section>')).toEqual(['td<plan-section']);
+    expect(planr.nestingProblems('<tr><td>x</td></tr>')[0].text).toMatch(/^<tr> inside no element — /);
+  });
+  it('refuses every block component inside an inline element, and allows an inline one', () => {
+    const blocks = planr.PLAN_TAGS.filter(t => planr.TEXT_RULES[t].kind !== 'inline');
+    for (const t of blocks) expect(tags(`<p><code><${t}></${t}></code></p>`), t).toEqual([`${t}<code`]);
+    expect(tags('<table><tr><td><strong><table></table></strong></td></tr></table>')).toEqual(['table<strong']);
+    expect(planr.nestingProblems('<p><code><plan-callout type="info">x</plan-callout></code></p>')[0].text)
+      .toBe('<plan-callout> inside inline <code> — a block element cannot sit in running text');
+    expect(tags('<code><plan-badge type="open"></plan-badge></code>')).toEqual([]);
+    expect(tags('<a href="x.html"><plan-card label="l"></plan-card></a>')).toEqual([]);   // <a> may wrap flow content
+    // INLINE_HOSTS agrees with TEXT_RULES: every inline plan-* is a host, and no host reads as a block.
+    for (const t of planr.PLAN_TAGS.filter(t => planr.TEXT_RULES[t].kind === 'inline')) expect(planr.INLINE_HOSTS.has(t), t).toBe(true);
+    for (const t of planr.INLINE_HOSTS) expect((planr.TEXT_RULES[t] || { kind: 'inline' }).kind, t).toBe('inline');
+  });
+  it('does not look inside code content or comments, nor past a closed inline element', () => {
+    expect(tags('<plan-file path="a.html"><tr><td>x</td></tr></plan-file>')).toEqual([]);
+    expect(tags('<pre><code><tr></tr></code></pre>')).toEqual([]);
+    expect(tags('<!-- <code><tr></tr></code> -->')).toEqual([]);
+    expect(tags('<p><code>x</code></p><plan-callout type="info">y</plan-callout>')).toEqual([]);
+  });
+  it('drops an inline element left open when its parent closes', () => {
+    expect(tags('<plan-section id="a"><p><code>never closed</p></plan-section>' +
+                '<plan-callout type="info">x</plan-callout>')).toEqual([]);
+  });
+});

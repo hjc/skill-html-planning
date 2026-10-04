@@ -1493,6 +1493,80 @@ const PLAN_TAGS = [
 // false-positive on legal markup.
 const BALANCED_HTML_TAGS = ['table', 'thead', 'tbody', 'tfoot', 'tr'];
 
+/* ── nesting (backs `check`'s parent-legality rule) ───────
+   Balanced is not well-formed: a <tr> spliced into a cell's <code> balances,
+   and the browser drops it. LEGAL_PARENTS says where each table tag may open;
+   INLINE_HOSTS names the phrasing-only elements no block may open inside. The
+   block set is derived — <table>, every LEGAL_PARENTS key, and every plan-*
+   component whose TEXT_RULES kind is not inline — so a new block component is
+   covered with no edit here. <a> is not a host: HTML lets it wrap flow content.
+   Read by checkStructure, so assertIntact refuses a write that introduces a
+   problem, and by planReplace, which refuses one on any document. */
+const LEGAL_PARENTS = {
+  thead: ['table'], tbody: ['table'], tfoot: ['table'],
+  tr: ['table', 'thead', 'tbody', 'tfoot'],
+  td: ['tr'], th: ['tr'],
+};
+const INLINE_HOSTS = new Set(['code', 'span', 'strong', 'em', 'b', 'i', 's', 'u', 'small', 'sub', 'sup',
+  'mark', 'kbd', 'samp', 'var', 'abbr', 'q', 'cite', 'label',
+  // Inline plan-* components are read from TEXT_RULES, the one tag classification —
+  // never listed here, so a new inline component is a host with no edit.
+  ...Object.keys(TEXT_RULES).filter(t => t.startsWith('plan-') && TEXT_RULES[t].kind === 'inline')]);
+const NESTING_BLOCKS = new Set(['table', ...Object.keys(LEGAL_PARENTS),
+  ...Object.keys(TEXT_RULES).filter(t => t.startsWith('plan-') && TEXT_RULES[t].kind !== 'inline')]);
+// Code content: a literal tag inside one is lintCodeBodies' to report, not this rule's.
+const NESTING_OPAQUE = new Set(Object.keys(TEXT_RULES).filter(t => TEXT_RULES[t].kind === 'code'));
+// No balance contract: </td> is optional, and an inline host left open is
+// dropped when its parent closes rather than reported.
+const NESTING_SOFT = new Set(['td', 'th', 'pre', ...INLINE_HOSTS]);
+const NESTING_TRACKED = new Set([...BALANCED_HTML_TAGS, ...NESTING_SOFT]);
+/* Pure: html -> [{ index, tag, parent, text }], in document order. One problem
+   per offending element — nothing inside a reported element is checked again,
+   so a spliced row reads as one problem rather than one per cell. Each stack
+   entry carries its nearest inline host and whether checks are off below it, so
+   every tag costs O(1). */
+function nestingProblems(html) {
+  const problems = [];
+  const stack = [];   // { tag, soft, host, quiet }
+  const keep = n => { const t = n.toLowerCase(); return NESTING_TRACKED.has(t) || t.startsWith('plan-'); };
+  walkTags(html, keep, ({ name, kind, index }) => {
+    const tag = name.toLowerCase();
+    const soft = NESTING_SOFT.has(tag);
+    if (kind === 'close') {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].tag === tag) { stack.length = i; return; }
+        if (soft && !stack[i].soft) return;   // a soft close never reaches past a hard element
+      }
+      return;
+    }
+    if (tag === 'td' || tag === 'th') {        // a new cell ends an unclosed one
+      for (let i = stack.length - 1; i >= 0 && stack[i].soft; i--)
+        if (stack[i].tag === 'td' || stack[i].tag === 'th') { stack.length = i; break; }
+    }
+    const top = stack.length ? stack[stack.length - 1] : null;
+    let bad = false;
+    if (!(top && top.quiet)) {
+      const parent = top ? top.tag : null;
+      if (tag in LEGAL_PARENTS && !LEGAL_PARENTS[tag].includes(parent)) {
+        bad = true;
+        problems.push({ index, tag, parent,
+          text: `<${tag}> inside ${parent ? `<${parent}>` : 'no element'} — a <${tag}> belongs directly in ` +
+                `${LEGAL_PARENTS[tag].map(t => `<${t}>`).join(', ')}; the browser drops or moves it` });
+      } else if (top && top.host && NESTING_BLOCKS.has(tag)) {
+        bad = true;
+        problems.push({ index, tag, parent: top.host,
+          text: `<${tag}> inside inline <${top.host}> — a block element cannot sit in running text` });
+      }
+    }
+    if (kind === 'open') stack.push({
+      tag, soft,
+      host: INLINE_HOSTS.has(tag) ? tag : (top ? top.host : null),
+      quiet: bad || NESTING_OPAQUE.has(tag) || !!(top && top.quiet),
+    });
+  });
+  return problems;
+}
+
 // Top-level ids only, and SHALLOW BY DESIGN: this backs assertIntact, which
 // must flag an accidental document collapse but NOT a nested child that a
 // `set-body` replacement legitimately removed (deep would false-positive).
@@ -3420,7 +3494,8 @@ module.exports = {
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
   childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,
-  buildSection, sectionIds, allSectionIds, walkSections, walkTags, sectionNumber, decodeEntities,
+  buildSection, sectionIds, allSectionIds, walkSections, walkTags, nestingProblems, LEGAL_PARENTS, INLINE_HOSTS,
+  sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
