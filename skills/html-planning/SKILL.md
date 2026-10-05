@@ -434,7 +434,7 @@ tr:2          the 2nd <tr>, 1-based
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
 | `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, a legal parent for every balanced tag — a `<tr>` directly in `<table>`/`<thead>`/`<tbody>`/`<tfoot>`, a cell in a `<tr>`, and no table tag or block component inside an inline element such as `<code>` — unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`, a header carrying free-text `chips`, and a `<plan-field>` stamp that disagrees with the schema. Warnings exit **0**; `--strict` exits **1** when there are any. |
-| `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
+| `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`; `--all` includes `done`, `--status` lists only the given statuses. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
 | `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
 | `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
@@ -444,7 +444,7 @@ tr:2          the 2nd <tr>, 1-based
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
 | `append` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **end** of that body / container, just above its closing tag. |
 | `insert` | `<file> <address>` | `--before-heading <T>` \| `--after-heading <T>` **(one required)** · `--file <f>` · `--into <sel>` | Insert a hunk relative to an authored heading, matched on visible text (case-insensitive substring). |
-| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. A label that is just the old type's own label is cleared; any other label is refused unless `--text` says what to do with it. |
+| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. `--in` scopes the row search to a node; `--all` sets every matching row; `--nth <n>` picks the n-th badge **within** a row that carries several. A label that is just the old type's own label is cleared; any other label is refused unless `--text` says what to do with it. |
 | `rm-item` | `<file> <address>` | `--match <text>` **(required)** · `--into <sel>` · `--nth <n>` \| `--all` | Remove the `<li>` or `<tr>` whose visible text contains `--match` — among the section's own items, or those inside the `--into` container. The innermost matching item is the one taken, and an item alone on its line takes the whole line with it. |
 | `strike` | `<file> <address>` | `--match <text>` **(required)** · `--into <sel>` · `--nth <n>` \| `--all` | Wrap the matched text run in `<s>…</s>` — the amendment convention's strike. Refuses a run that crosses an element boundary, one already struck, and one inside a code component. |
 | `replace` | `<file> <address>` | `--match <text>` **(required)** · `--with <T>` \| `--file <f>` (else stdin) · `--into <sel>` · `--nth <n>` \| `--all` | Replace the matched text run with the given markup, spliced verbatim. `--with ""` deletes the run. Refuses a run that crosses an element boundary, and refuses a replacement that would open a block element inside the match's parent — a `<tr>` landing in a cell's `<code>`. |
@@ -595,7 +595,23 @@ A document's **metadata** is the small set of facts a tool filters and sorts a w
 }
 ```
 
-Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enum`, the declared `values` order **is** the sort order — never alphabetical. `list` is a repeatable `string`; a `number` may declare `min`/`max`.
+Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enum`, the declared `values` order **is** the sort order — never alphabetical. `list` is a repeatable `string`.
+
+| Key | Applies to | Means |
+|---|---|---|
+| `fields.<name>.type` | every field | one of the six types (required) |
+| `.values` | `enum` | the allowed values, in sort order |
+| `.tones` | single-valued `enum` | value → tone for the header chip (see "Tones and the header") |
+| `.hidden` | any field | `true` keeps it out of the header; still queryable |
+| `.repeatable` | any type | the value is a comma-separated list, matched per item |
+| `.min` / `.max` | `number` | bounds |
+| `.from` | any field | `header:title\|subtitle\|status\|date\|chips` — a read-only view of that header attribute |
+| `.label` | any field | display label (string); accepted, not yet rendered |
+| `infer` | top level | `[{ "match": "<regex on path>", "set": { field: value } }]` |
+| `defaults` | top level | field → value, the last resort of the chain |
+| `rankings` | top level | name → `{ where, order }` (see "Rankings") |
+
+Field names match `^[a-z][a-z0-9-]*$`. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file.
 
 **`planr meta`** reads and writes the block. With no `--set`/`--unset`, it prints the resolved value of every field and where each one came from:
 

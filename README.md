@@ -95,11 +95,31 @@ For a minor size increase over plaintext Markdown plans, plans generated with `h
 2. GitHub-style diff markers for lines added and removed, presenting changes in a friendly and efficient manner.
 3. Sections and sub-sections, navigated by a resizable, collapsible side-panel tree (default) or a two-level top bar.
 4. Support for embedding Mermaid diagrams (lazy-loaded when diagrams are present).
-5. Plan metadata badges, arbitrarily configured and prominently presented at the top.
+5. Typed, schema-driven document metadata (`<plan-meta>`), shown as toned chips in the header and queryable across a whole directory of plans.
 6. Configurable line wrapping support for code snippets, plus adjustable view width.
 7. Interactive tabs, collapsible components, and callout components.
 8. Components for displaying structured data cleanly, such as timelines, cards, themed tables, key/value sub-records (`<plan-defs>`), document metadata (`<plan-meta>`), formulas, and principles.
 9. Per-section and per-step status pills (`todo`/`in-progress`/`done`/`blocked`) for tracking implementation progress in-place.
+
+| Component | Renders |
+|-----------|---------|
+| `<plan-header>` | Title, subtitle, status dot, date, and one chip per metadata field |
+| `<plan-nav>` | Navigation: side-panel tree (default) or a two-level top bar |
+| `<plan-section>` / `<plan-subsection>` | Nestable, auto-numbered, addressable sections with optional status pills |
+| `<plan-meta>` / `<plan-field>` | The document's queryable metadata (drawn by the header, not in place) |
+| `<plan-cards>` / `<plan-card>` | Metric / summary cards |
+| `<plan-table>` | A themed `<table>` |
+| `<plan-defs>` / `<plan-def>` | A key/value sub-record, chromeless inside a table cell |
+| `<plan-tabs>` / `<plan-tab>` | Tabbed panels |
+| `<plan-callout>` | Info / warn / success / danger callouts |
+| `<plan-badge>` | Inline status badges (`decided`, `open`, `deferred`, `high`, `medium`, `low`) |
+| `<plan-formula>` | A highlighted formula with a note |
+| `<plan-principles>` / `<plan-principle>` | A grid of principles or key decisions |
+| `<plan-timeline>` / `<plan-phase>` | A vertical phased timeline |
+| `<plan-file>` / `<plan-diff>` | GitHub-style code view and unified diff |
+| `<plan-diagram>` | A Mermaid diagram |
+
+Every coloured mark draws from one of six tones (`danger`, `warn`, `info`, `ok`, `final`, `muted`).
 
 In addition to the user-facing features mentioned above, `html-planning` comes with a CLI, `planr.js`, that serves as an interface an LLM can use to scaffold, edit, and manage plans.
 
@@ -247,7 +267,28 @@ planr replace plan.html resolution --match "hourly" --with "daily"  # rewrite te
 
 Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break — an unbalanced tag, or a balanced one in a parent it cannot sit in — so CI can gate on it. It also warns, by line, on markup that balances but will not render as written (an unescaped tag in a code block, a diff line with no gutter, a stale `<title>`); `planr check --strict` makes those fatal too.
 
-`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. `planr query` and `planr next` read a whole directory of plans by their metadata rather than one file; `planr meta` reads and writes a single document's. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
+`planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. The full surface:
+
+| Group | Commands |
+|-------|----------|
+| Generate | `new` (`--template`, `--set`), `templates [<name>]` |
+| Inspect | `list`, `check [--strict]`, `tasks`, `read [--body \| --text]` |
+| Metadata | `meta` (`--set`, `--unset`, `--stamp`, `--format json`) |
+| Corpus | `query <dir\|glob>` (`--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields`, `--limit`, `--format table\|json\|tsv\|paths`), `next <dir\|glob>` |
+| Edit by address | `set`, `set-body`, `prepend`, `append`, `insert`, `add-section`, `rm-section`, `move-section` |
+| Edit by text | `badge` (`--text`), `rm-item`, `strike`, `replace` |
+
+Every flag is in `planr --help` and `SKILL.md`.
+
+### Querying a corpus
+
+```bash
+planr query .claude/plans/issues --where 'status!=implemented' --sort priority
+planr query .claude/plans/issues --rank default --format json   # a schema-declared ranking, for an agent
+planr next  .claude/plans/issues --format json                  # the top document and the sections to act on
+```
+
+`--format json` is the machine surface: one record per document with every resolved field and its source. An empty queue exits 0, so "nothing to do" is distinguishable from "broken".
 
 ## What's new in 1.4.0
 
