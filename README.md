@@ -289,8 +289,11 @@ Every command that writes re-verifies the document afterwards and **aborts witho
 | Inspect | `list`, `check [--strict]`, `tasks`, `read [--body \| --text]` |
 | Metadata | `meta` (`--set`, `--unset`, `--stamp`, `--format json`) |
 | Corpus | `query <dir\|glob>` (`--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields`, `--limit`, `--format table\|json\|tsv\|paths`), `next <dir\|glob>` |
+| Prose | `wordy <file\|dir\|glob> …` (`--max-chars`, `--max-sentences`, `--max-sentence-chars`, `--format text\|json`) |
 | Edit by address | `set`, `set-body`, `prepend`, `append`, `insert`, `add-section`, `rm-section`, `move-section` |
 | Edit by text | `badge` (`--text`), `rm-item`, `strike`, `replace` |
+
+`planr wordy` flags long, dense and run-on lines in Markdown and plan documents for a rewriting pass — it detects only, and exits 1 when anything is flagged.
 
 Every flag is in `planr --help` and `SKILL.md`.
 
@@ -320,6 +323,7 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 - **Labels render.** A field's schema `label` is stamped onto its `<plan-field>` and shown in the header chip in place of the key; `meta --stamp` and `check` cover it like a tone.
 - **Blockers.** A document is blocked while a `blocked-by` target exists and is not `implemented` or `rejected`. Filter with `--where blocked=false` or a ranking's `"blocked": { "eq": false }`; `query --format json` and `next` show what holds a document. A missing target never blocks, and `check` warns on it.
 - **Unknown flags are refused.** A flag the command does not read is an error naming the valid ones, instead of being ignored. The dead `list --outline` flag is gone (listing headings is the default; `--no-outline` remains).
+- **`planr wordy`.** Detects wordy lines in Markdown, plain text and HTML plan documents: `long` (over 600 characters), `dense` (over five sentences) and `run-on` (a sentence over 300 characters), each limit overridable per run. Fenced code, front-matter and headings are exempt, and table cells are measured one by one. It never rewrites — `--format json` is the work list — and it exits 1 when anything is flagged.
 
 ## What's new in 1.3.0
 

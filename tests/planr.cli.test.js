@@ -1089,3 +1089,26 @@ describe('wordy (wiring)', () => {
     expect(run(['wordy']).stderr).toContain("'wordy' requires a <dir|glob> argument");
   });
 });
+
+describe('wordy documentation', () => {
+  const repoFile = (f) => readFileSync(join(SKILL_DIR, '..', '..', f), 'utf8');
+
+  it('SKILL.md carries the command row and a Wordy lines section: kinds, limits, exemptions, table cells', () => {
+    const s = readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+    for (const t of ['| `wordy` |', '## Wordy lines', '`long`', '`dense`', '`run-on`', '--max-chars', '--max-sentences',
+      '--max-sentence-chars', 'detects only', 'table col N', 'front-matter'])
+      expect(s, t).toContain(t);
+  });
+
+  it('the README lists wordy in the command table and in the 1.4.0 notes', () => {
+    const r = repoFile('README.md');
+    expect(r).toContain('`wordy <file\\|dir\\|glob> …`');
+    expect(r.slice(r.indexOf("## What's new in 1.4.0"), r.indexOf("## What's new in 1.3.0"))).toContain('**`planr wordy`.**');
+  });
+
+  it('the repo CLAUDE.md records the one sentence rule and the textLines reuse', () => {
+    const c = repoFile('CLAUDE.md');
+    for (const t of ['splitSentences', 'textLines', 'markdownUnits', 'htmlUnits', 'measureText', '`query`, `next` and `wordy`'])
+      expect(c, t).toContain(t);
+  });
+});
