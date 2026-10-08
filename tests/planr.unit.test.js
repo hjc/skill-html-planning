@@ -467,3 +467,47 @@ describe('spliceRuns', () => {
     expect(spans[0].run).toBe(runs[1]);
   });
 });
+
+describe('splitSentences — the one sentence rule', () => {
+  const split = (t) => planr.splitSentences(t);
+
+  it('splits on . ! ? followed by whitespace and a capital', () => {
+    expect(split('One thing. Two things! Three things? Four.')).toEqual(
+      ['One thing.', 'Two things!', 'Three things?', 'Four.']);
+  });
+
+  it('splits before an opening marker: a backtick, *, (, [ or a quote', () => {
+    expect(split('Ends. `code` starts. *bold* too. (paren) too. [link] too. "quote" too.')).toEqual(
+      ['Ends.', '`code` starts.', '*bold* too.', '(paren) too.', '[link] too.', '"quote" too.']);
+  });
+
+  it('carries a closing quote, bracket or emphasis marker with the sentence it ends', () => {
+    expect(split('Wrapped (see X.) Then more.')).toEqual(['Wrapped (see X.)', 'Then more.']);
+    expect(split('**Bold.** Next one.')).toEqual(['**Bold.**', 'Next one.']);
+  });
+
+  it('does not split after e.g., i.e., vs or cf', () => {
+    expect(split('Use one, e.g. The first. Or i.e. This one. A vs. B. See cf. Other.')).toEqual(
+      ['Use one, e.g. The first.', 'Or i.e. This one.', 'A vs. B.', 'See cf. Other.']);
+  });
+
+  it('does not split inside a file name, a version or a path', () => {
+    expect(split('Run planr.js now. Then stop.')).toEqual(['Run planr.js now.', 'Then stop.']);
+    expect(split('Version 1.4.0 ships. Then 1.5.0.')).toEqual(['Version 1.4.0 ships.', 'Then 1.5.0.']);
+    expect(split('See skills/html-planning/planr.js for it. Then go.'))
+      .toEqual(['See skills/html-planning/planr.js for it.', 'Then go.']);
+  });
+
+  it('masks a URL, keeping a sentence end that follows it', () => {
+    expect(split('See https://example.com/a. B. Then go.')).toEqual(['See https://example.com/a.', 'B.', 'Then go.']);  });
+
+  it('masks a backtick span, so a ". " inside one never ends a sentence', () => {
+    expect(split('Mask `a. B` here. Then go.')).toEqual(['Mask `a. B` here.', 'Then go.']);
+    expect(split('Twice ``a. `B` c`` here.')).toEqual(['Twice ``a. `B` c`` here.']);
+  });
+
+  it('keeps lower-case continuations and returns nothing for blank text', () => {
+    expect(split('No split. lower case here.')).toEqual(['No split. lower case here.']);
+    expect(split('   ')).toEqual([]);
+  });
+});
