@@ -1640,12 +1640,12 @@ function sectionIndent(html) {
 }
 function buildSection(fields, indent, body) {
   for (const attr of NODE_ATTRS['plan-section'])
-    if (fields[attr] != null && fields[attr] !== true) validateAttr('plan-section', attr, fields[attr]);
+    if (fields[attr] != null) validateAttr('plan-section', attr, fields[attr]);
   const attrs = [
     fields.id != null ? `id="${fields.id}"` : null,
-    fields.num != null && fields.num !== true ? `num="${fields.num}"` : null,
-    fields.title != null && fields.title !== true ? `title="${fields.title}"` : null,
-    fields.status != null && fields.status !== true ? `status="${fields.status}"` : null,
+    fields.num != null ? `num="${fields.num}"` : null,
+    fields.title != null ? `title="${fields.title}"` : null,
+    fields.status != null ? `status="${fields.status}"` : null,
   ].filter(Boolean).join(' ');
   // A provided body is spliced verbatim (it owns its own whitespace); otherwise
   // seed an empty paragraph to fill in later via `set-body`.
@@ -3113,7 +3113,7 @@ function planWordy(docs, { limits: given = {}, format = 'text' } = {}) {
 
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
-  const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
+  const want = flags.status ? String(flags.status).split(',') : null;
   const include = (st) => {
     if (!st) return false;
     if (want) return want.includes(st);
