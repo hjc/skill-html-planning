@@ -889,6 +889,9 @@ const TONES = ['danger', 'warn', 'info', 'ok', 'final', 'muted'];
 // unit of work. A copy of plan-runtime.js's STATUS_TONES (a test asserts the two agree).
 const HEADER_STATUS_TONES = { draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger' };
 const HEADER_STATUS = Object.keys(HEADER_STATUS_TONES);
+// The header statuses that END a document's work. A blocker in one of these no
+// longer holds the document it blocks.
+const CLOSED_STATUS = ['implemented', 'rejected'];
 function statusEnum(tag) { return tag === 'plan-header' ? HEADER_STATUS : SECTION_STATUS; }
 // The label an EMPTY <plan-badge> renders, per type — a copy of the `labels`
 // map in plan-runtime.js's PlanBadge (a test asserts the two agree). An unknown
@@ -976,7 +979,11 @@ function resolveConsumerSchemaPath(invoked = process.argv[1] || __filename) {
   return root ? `${root}/${CONSUMER_SCHEMA_FILENAME}` : null;
 }
 const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
-const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden'];
+const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden', 'blocks'];
+// Column names planr owns. Neither is a schema field nor a <plan-field>: `path`
+// is the document's own path, and `blocked` is derived from every field declared
+// `blocks` (see "blockers"). A field may not take either name.
+const BUILTIN_COLUMNS = ['path', 'blocked'];
 const SCHEMA_KEYS = ['fields', 'infer', 'defaults', 'rankings'];
 const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
 // The header attributes a field may view: the three that carry a queryable
@@ -1000,6 +1007,7 @@ function parseSchema(data, origin) {
   if (!isPlainObject(raw)) schemaFail(origin, '`fields` must be an object');
   for (const [name, def] of Object.entries(raw)) {
     if (!FIELD_NAME.test(name)) schemaFail(origin, `field name '${name}' must be lower-case letters, digits and hyphens`);
+    if (BUILTIN_COLUMNS.includes(name)) schemaFail(origin, `field name '${name}' is a built-in column — pick another name`);
     if (!isPlainObject(def)) schemaFail(origin, `field '${name}' must be an object`);
     for (const k of Object.keys(def))
       if (!FIELD_KEYS.includes(k)) schemaFail(origin, `field '${name}': unknown key '${k}' — valid: ${FIELD_KEYS.join(', ')}`);
@@ -1031,6 +1039,12 @@ function parseSchema(data, origin) {
     // from this def, so they are SHAPE checks, made here.
     if (def.label !== undefined && (typeof def.label !== 'string' || !def.label.trim()))
       schemaFail(origin, `field '${name}': \`label\` must be a non-empty string`);
+    // `blocks` makes each target an open-or-closed blocker of the document
+    // carrying it — which needs a path to resolve.
+    if (def.blocks !== undefined) {
+      if (typeof def.blocks !== 'boolean') schemaFail(origin, `field '${name}': \`blocks\` must be true or false`);
+      if (def.type !== 'path') schemaFail(origin, `field '${name}': \`blocks\` applies only to type path`);
+    }
     if (def.from !== undefined && def.label !== undefined)
       schemaFail(origin, `field '${name}': \`label\` does not apply to a header field — the header renders it in its own chip`);
     if (def.hidden !== undefined && typeof def.hidden !== 'boolean')
@@ -2360,6 +2374,61 @@ function globBase(pattern) {
   return keep.join('/') || '.';
 }
 
+/* ── blockers ─────────────────────────────────────────────
+   A document is BLOCKED while any target of a field declared `blocks: true` is
+   OPEN: the target file exists and its status — the field bound to
+   `header:status`, resolved like any other — is not in CLOSED_STATUS. A target
+   resolves against the directory of the document that names it, as an
+   <a href> does, so a sibling ticket is written as its bare file name. A
+   missing target never blocks; `check` warns on it so the stale entry gets
+   removed. `blocked` is a derived COLUMN like `path` — computed by queryDocs,
+   filterable and printable, never a <plan-field> — so nothing can write it. */
+const BLOCKED_DEF = { type: 'enum', values: ['false', 'true'], repeatable: false, derived: true };
+function blockerFields(schema) {
+  return Object.keys(schema.fields).filter(n => schema.fields[n].blocks === true);
+}
+// A target, resolved against the directory of the document naming it.
+function blockerPath(docPath, target) {
+  const dir = path.posix.dirname(String(docPath).replace(/\\/g, '/'));
+  return path.posix.normalize(path.posix.join(dir, String(target)));
+}
+// Every target a resolved record names, across every `blocks` field.
+function blockerTargets(schema, rec) {
+  return blockerFields(schema).flatMap((name) => {
+    const f = rec.fields[name];
+    if (f.source === null) return [];
+    return (Array.isArray(f.value) ? f.value : [f.value]).map(t => ({ field: name, target: t }));
+  });
+}
+// A condition's field definition: the schema's own, or the derived `blocked`
+// when the schema declares a field that feeds it. ONE lookup for every place a
+// condition, a sort key or a column is named, so the derived column is
+// accepted everywhere a field is and written nowhere.
+function conditionDef(schema, key) {
+  if (schema.fields[key]) return schema.fields[key];
+  if (key === 'blocked' && blockerFields(schema).length) return BLOCKED_DEF;
+  return null;
+}
+function conditionNames(schema) {
+  return [...Object.keys(schema.fields), ...(blockerFields(schema).length ? ['blocked'] : [])];
+}
+/* Pure: (rec, opts) -> the derived `blocked` value, in the per-field record
+   shape plus the targets that hold it. `lookup(path)` returns a target's html,
+   or null when there is no such file — the one thing the core cannot know. */
+function resolveBlocked(rec, { schema, lookup }) {
+  const statusKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:status') || null;
+  const blockers = [];
+  for (const { target } of blockerTargets(schema, rec)) {
+    const p = blockerPath(rec.path, target);
+    const html = lookup(p);
+    if (html === null) continue;                     // missing: never blocks
+    const status = statusKey ? resolveMeta(html, { schema, docPath: p }).fields[statusKey].value : null;
+    if (!CLOSED_STATUS.includes(status)) blockers.push({ path: p, status });
+  }
+  const value = blockers.length > 0;
+  return { value, raw: String(value), source: 'derived', type: 'boolean', rank: value ? 1 : 0, blockers };
+}
+
 /* ── corpus query ─────────────────────────────────────────
    A read-only core over a SET of documents. The shell collects { path, html }
    pairs; everything below is pure, so the whole filter / sort / format surface
@@ -2390,8 +2459,8 @@ function parseWhere(schema, { where = [], has = [], missing = [] } = {}) {
     // one way to narrow by path, so there is one mechanism rather than two.
     if (key === 'path') throw new PlanError(
       "filter on 'path': narrow by path with the target glob instead, e.g. `planr query '.claude/plans/**/tdds/*.html'`");
-    if (!schema.fields[key])
-      throw new PlanError(`unknown field '${key}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`);
+    if (!conditionDef(schema, key))
+      throw new PlanError(`unknown field '${key}' — declared: ${conditionNames(schema).join(', ') || '(none)'}`);
     out[key] = { ...(out[key] || {}), [op]: value };
   };
   for (const raw of where) {
@@ -2423,12 +2492,15 @@ function parseWhere(schema, { where = [], has = [], missing = [] } = {}) {
 function compileWhere(schema, where, label) {
   const out = [];
   for (const [key, cond] of Object.entries(where || {})) {
-    const def = schema.fields[key];
+    const def = conditionDef(schema, key);
     if (!def) throw new PlanError(
-      `${label} names unknown field '${key}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`);
+      `${label} names unknown field '${key}' — declared: ${conditionNames(schema).join(', ') || '(none)'}`);
     for (const [op, value] of Object.entries(cond)) {
       if (!WHERE_OPS.includes(op))
         throw new PlanError(`${label} on '${key}': unknown operator '${op}' — valid: ${WHERE_OPS.join(', ')}`);
+      // The derived column is always set and is only ever true or false.
+      if (def.derived && !['eq', 'in', 'ne'].includes(op))
+        throw new PlanError(`${label} on '${key}': '${op}' does not apply — '${key}' is true or false; use = or !=`);
       if (op === 'set') {
         if (typeof value !== 'boolean') throw new PlanError(`${label} on '${key}': \`set\` takes true or false`);
         out.push({ key, op, want: value });
@@ -2440,7 +2512,9 @@ function compileWhere(schema, where, label) {
       }
       const items = (Array.isArray(value) ? value : [value]).map(v => String(v).trim());
       for (const v of items) {
-        const problem = validateField(schema, key, v);
+        const problem = def.derived
+          ? (def.values.includes(v) ? null : `'${v}' is not true or false`)
+          : validateField(schema, key, v);
         if (problem) throw new PlanError(`${label} on '${key}': ${problem}`);
       }
       if (op === 'eq' || op === 'in' || op === 'ne') {
@@ -2461,12 +2535,18 @@ function compileWhere(schema, where, label) {
   return out;
 }
 
+// A record's value for a condition, sort key or column: a schema field, or the
+// derived `blocked` queryDocs attached.
+function recField(rec, key) {
+  return Object.prototype.hasOwnProperty.call(rec.fields, key) ? rec.fields[key] : rec.derived[key];
+}
+
 // Pure: does one resolved record satisfy every compiled condition? An unset
 // field fails every comparison except `set: false` and `!=` — "no value" is
 // never quietly treated as a matching one.
 function matchWhere(rec, compiled) {
   for (const c of compiled) {
-    const f = rec.fields[c.key];
+    const f = recField(rec, c.key);
     const items = Array.isArray(f.value) ? f.value.map(v => String(v).toLowerCase()) : null;
     const holds = (i) => (items ? items.includes(c.items[i])
       : f.rank !== null && c.ranks[i] !== null && cmpRank(f.rank, c.ranks[i]) === 0);
@@ -2513,10 +2593,11 @@ function parseSort(schema, spec, label = '--sort') {
   const out = [];
   for (const part of String(spec).split(',').map(s => s.trim()).filter(Boolean)) {
     const [name, dir = 'asc'] = part.split(':');
-    if (!schema.fields[name]) throw new PlanError(
-      `${label} names unknown field '${name}' — declared: ${Object.keys(schema.fields).join(', ') || '(none)'}`);
+    const def = conditionDef(schema, name);
+    if (!def) throw new PlanError(
+      `${label} names unknown field '${name}' — declared: ${conditionNames(schema).join(', ') || '(none)'}`);
     if (dir !== 'asc' && dir !== 'desc') throw new PlanError(`${label} '${part}': direction must be asc or desc`);
-    if (schema.fields[name].repeatable) throw new PlanError(
+    if (def.repeatable) throw new PlanError(
       `${label} names '${name}', which is repeatable and so has no single position — sort on a scalar field`);
     out.push({ name, dir });
   }
@@ -2527,10 +2608,20 @@ function parseSort(schema, spec, label = '--sort') {
    scanned, matched }. `results` is sorted and limited; `matched` is the count
    BEFORE the limit. A file that cannot be read, is not a plan document, or does
    not balance is reported in `skipped` rather than dropped — the corpus is
-   other people's files, and a silent omission reads as "nothing matched". */
-function queryDocs(docs, { schema, where = [], order = [], limit = null } = {}) {
+   other people's files, and a silent omission reads as "nothing matched".
+   Each result also carries `derived` — `{ blocked }` when the schema declares a
+   `blocks` field, else `{}`. A blocker target is read from `docs` when the scan
+   holds it, else through `readDoc(path)`, which returns its html or null when
+   there is no such file; each target is read once per run. */
+function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc = () => null } = {}) {
   const results = [];
   const skipped = [];
+  const seen = new Map(docs.map(d => [String(d.path).replace(/\\/g, '/'), d.error ? null : d.html]));
+  const lookup = (p) => {
+    if (!seen.has(p)) seen.set(p, readDoc(p));
+    return seen.get(p);
+  };
+  const blocking = blockerFields(schema).length > 0;
   for (const doc of docs) {
     if (doc.error) { skipped.push({ path: doc.path, reason: doc.error }); continue; }
     if (!/<plan-[a-z]/i.test(doc.html)) {
@@ -2544,6 +2635,7 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null } = {}) 
       continue;
     }
     const rec = resolveMeta(doc.html, { schema, docPath: doc.path });
+    rec.derived = blocking ? { blocked: resolveBlocked(rec, { schema, lookup }) } : {};
     if (matchWhere(rec, where)) results.push(rec);
   }
   const matched = results.length;
@@ -2551,7 +2643,7 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null } = {}) 
   // order and Array#sort is stable, so ties keep that order on every platform.
   results.sort((a, b) => {
     for (const { name, dir } of order) {
-      const ar = a.fields[name].rank, br = b.fields[name].rank;
+      const ar = recField(a, name).rank, br = recField(b, name).rank;
       if (ar === null && br === null) continue;
       if (ar === null) return 1;        // nulls last in BOTH directions
       if (br === null) return -1;
@@ -2573,8 +2665,8 @@ function defaultFields(schema, results) {
 function parseFields(schema, spec) {
   const out = [];
   for (const name of String(spec).split(',').map(s => s.trim()).filter(Boolean)) {
-    if (name !== 'path' && !schema.fields[name]) throw new PlanError(
-      `--fields names unknown column '${name}' — valid: path, ${Object.keys(schema.fields).join(', ')}`);
+    if (name !== 'path' && !conditionDef(schema, name)) throw new PlanError(
+      `--fields names unknown column '${name}' — valid: path, ${conditionNames(schema).join(', ')}`);
     out.push(name);
   }
   if (!out.length) throw new PlanError('--fields is empty — name at least one column');
@@ -2585,7 +2677,7 @@ function parseFields(schema, spec) {
 // collapses and an absent value never reads as a present one.
 function cellText(rec, name, blank) {
   if (name === 'path') return rec.path === null ? blank : rec.path;
-  const f = rec.fields[name];
+  const f = recField(rec, name);
   if (f.source === null) return blank;
   return Array.isArray(f.value) ? f.value.join(', ') : String(f.value);
 }
@@ -2596,6 +2688,10 @@ function parseLimit(raw) {
   return Number(raw);
 }
 const projected = (f) => ({ value: f.value, raw: f.raw, source: f.source, type: f.type, rank: f.rank });
+// The derived `blocked` as JSON: whether the document is blocked and the open
+// targets holding it. Absent when the schema declares no `blocks` field.
+const blockedJson = (rec) => (rec.derived.blocked
+  ? { blocked: { value: rec.derived.blocked.value, blockers: rec.derived.blocked.blockers } } : {});
 
 /* Pure: a named ranking's `where` and `order`, with the CLI's flags over the
    top. An explicit flag replaces the preset's conditions on the SAME FIELD and
@@ -2622,7 +2718,7 @@ const QUERY_FORMATS = ['table', 'json', 'tsv', 'paths'];
    `tsv` and `paths` feed a pipeline. */
 function planQuery(docs, {
   schema, target = null, where = [], has = [], missing = [], sort = null,
-  fields = null, format = 'table', limit = null, rank = null, schemaSources = [],
+  fields = null, format = 'table', limit = null, rank = null, schemaSources = [], readDoc = () => null,
 } = {}) {
   if (!QUERY_FORMATS.includes(format))
     throw new PlanError(`unknown --format '${format}' — valid: ${QUERY_FORMATS.join(', ')}`);
@@ -2642,6 +2738,7 @@ function planQuery(docs, {
     ],
     order: plan.sort === null ? [] : parseSort(schema, plan.sort),
     limit: parseLimit(limit),
+    readDoc,
   });
   const use = fields === null ? defaultFields(schema, q.results) : parseFields(schema, fields);
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
@@ -2659,6 +2756,7 @@ function planQuery(docs, {
     results: q.results.map(r => ({
       path: r.path,
       fields: Object.fromEntries(Object.entries(r.fields).map(([k, f]) => [k, projected(f)])),
+      ...blockedJson(r),
     })),
     skipped: q.skipped,
   }, null, 2) + '\n');
@@ -2711,7 +2809,7 @@ function docOutline(html) {
    agent dispatches on. An EMPTY queue is not a failure — `next` returns its
    report and exits 0 — because an orchestrator polling "is there anything to
    do" must be able to tell "nothing" from "broken". */
-function planNext(docs, { schema, target = null, rank = 'default', format = 'text', schemaSources = [] } = {}) {
+function planNext(docs, { schema, target = null, rank = 'default', format = 'text', schemaSources = [], readDoc = () => null } = {}) {
   if (!NEXT_FORMATS.includes(format))
     throw new PlanError(`unknown --format '${format}' — valid: ${NEXT_FORMATS.join(', ')}`);
   if (!schema.rankings[rank]) throw new PlanError(
@@ -2723,6 +2821,7 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
     where: compileWhere(schema, plan.where, `ranking '${rank}' where`),
     order: parseSort(schema, plan.sort, `ranking '${rank}' order`),
     limit: 1,
+    readDoc,
   });
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
   const top = q.results[0] || null;
@@ -2734,6 +2833,7 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
     path: top.path,
     title: titleKey && top.fields[titleKey].source ? top.fields[titleKey].value : null,
     fields: Object.fromEntries(Object.entries(top.fields).map(([k, f]) => [k, projected(f)])),
+    ...blockedJson(top),
     sections: outline.sections, open: outline.open, next_section: outline.next,
   } : null;
 
@@ -2751,6 +2851,10 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
   if (document.title) out.push(document.title);
   out.push('', ...set.map(([k, f]) => `  ${k.padEnd(kw)}  ${f.raw.padEnd(vw)}  (${f.source})`));
   out.push('', `  ranking '${rank}' — 1 of ${q.matched} matching, ${q.scanned} scanned`);
+  // A ranking that does not filter on `blocked` can hand over a blocked
+  // document: say what holds it, so the caller does not start blind.
+  if (document.blocked && document.blocked.value)
+    out.push('', 'blocked by:', ...document.blocked.blockers.map(b => `  ${b.path}  [${b.status || 'no status'}]`));
   if (document.open.length) {
     const aw = Math.max(...document.open.map(s => s.addr.length));
     const sw = Math.max(...document.open.map(s => s.status.length));
@@ -3293,6 +3397,13 @@ function collectDocs(target) {
 }
 
 
+// A blocker target's html, or null when no such file exists. The one
+// filesystem read behind the derived `blocked` column.
+function readBlocker(p) {
+  try { return fs.statSync(p).isFile() ? fs.readFileSync(p, 'utf8') : null; }
+  catch (e) { return null; }
+}
+
 function cmdQuery(target, flags) {
   const { schema, sources } = loadSchema();
   const { report, skipped } = planQuery(collectDocs(target), {
@@ -3300,7 +3411,7 @@ function cmdQuery(target, flags) {
     where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
     sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'),
     format: flagValue(flags, 'format') || 'table', limit: flagValue(flags, 'limit'),
-    rank: flagValue(flags, 'rank'), schemaSources: sources,
+    rank: flagValue(flags, 'rank'), schemaSources: sources, readDoc: readBlocker,
   });
   process.stdout.write(report);
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
@@ -3313,7 +3424,7 @@ function cmdNext(target, flags) {
   const { report, skipped } = planNext(collectDocs(target), {
     schema, target: String(target).replace(/\\/g, '/'),
     rank: flagValue(flags, 'rank') || 'default',
-    format: flagValue(flags, 'format') || 'text', schemaSources: sources,
+    format: flagValue(flags, 'format') || 'text', schemaSources: sources, readDoc: readBlocker,
   });
   process.stdout.write(report);
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
@@ -3561,11 +3672,12 @@ module.exports = {
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
-  PLAN_TAGS, FIELD_TYPES,
+  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
+  blockerPath, blockerFields, resolveBlocked,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport,

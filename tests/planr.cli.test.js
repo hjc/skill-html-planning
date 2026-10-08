@@ -908,6 +908,29 @@ describe('next (wiring)', () => {
   });
 });
 
+describe('blockers (wiring)', () => {
+  const names = (out) => out.trim().split('\n').filter(Boolean).map(p => p.replace(/^.*[\\/]/, ''));
+
+  it('query and next read a blocker from disk, inside the scan or not', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      // quota (p0) is blocked by webhook (p1, draft) — a sibling, named bare.
+      expect(runAt(P, ['meta', join(issues, 'quota.html'), '--set', 'blocked-by=webhook.html']).code).toBe(0);
+      const free = runAt(P, ['query', issues, '--rank', 'default', '--where', 'blocked=false', '--format', 'paths']);
+      expect(free.code, free.stderr).toBe(0);
+      expect(names(free.stdout)).toEqual(['webhook.html']);
+      // webhook.html is outside this glob, so it is read through the filesystem.
+      const held = runAt(P, ['query', `${issues.replace(/\\/g, '/')}/q*.html`, '--where', 'blocked=true', '--format', 'paths']);
+      expect(names(held.stdout)).toEqual(['quota.html']);
+      const next = runAt(P, ['next', issues]);
+      expect(next.code, next.stderr).toBe(0);
+      expect(next.stdout.split('\n')[0]).toMatch(/quota\.html$/);
+      expect(next.stdout).toMatch(/\nblocked by:\n {2}\S*webhook\.html {2}\[draft\]\n/);
+    } finally { rmTmp(root); }
+  });
+});
+
 describe('querying documentation', () => {
   const skillDoc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
 

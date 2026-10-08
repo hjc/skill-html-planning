@@ -1587,6 +1587,11 @@ describe('the shipped core schema', () => {
     expect(s.fields['blocked-by'].label).toBe('blocked by');
   });
 
+  it('makes blocked-by the field that blocks', () => {
+    expect(core().fields['blocked-by']).toMatchObject({ type: 'path', repeatable: true, blocks: true });
+    expect(planr.CLOSED_STATUS.every(st => planr.HEADER_STATUS.includes(st))).toBe(true);
+  });
+
   it("stamps the sample plan's fields exactly as the core schema says", () => {
     const sample = skillFile('examples/sample-plan.html');
     const { warnings } = planr.planCheck(sample, planr.mergeSchemas(core()));
@@ -2310,11 +2315,12 @@ describe('queryDocs', () => {
     expect(q.results.map(r => r.path)).toEqual(['a/p0.html', 'a/p1-a.html']);
   });
 
-  it('returns the resolveMeta record itself, unmodified', () => {
+  it('returns the resolveMeta record plus its derived columns', () => {
     const q = planr.queryDocs([{ path: 'a/p0.html', html: QDOC({ priority: 'p0' }) }], { schema: QS });
     expect(q.results[0].path).toBe('a/p0.html');
     expect(q.results[0].fields.priority).toEqual({ value: 'p0', raw: 'p0', source: 'meta', type: 'enum', rank: 0 });
-    expect(Object.keys(q.results[0])).toEqual(['path', 'fields', 'unknown', 'problems']);
+    expect(Object.keys(q.results[0])).toEqual(['path', 'fields', 'unknown', 'problems', 'derived']);
+    expect(q.results[0].derived).toEqual({});   // QS declares no `blocks` field
   });
 });
 
@@ -2676,6 +2682,122 @@ describe('planNext', () => {
 
   it('refuses a format it does not have', () => {
     expect(() => N({ format: 'tsv' })).toThrow(/unknown --format 'tsv' — valid: text, json/);
+  });
+});
+
+describe('blockers — blocked-by holds a document while its target is open', () => {
+  let BS;
+  beforeAll(() => {
+    BS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:        { type: 'string', from: 'header:title' },
+        status:       { type: 'enum', values: ['draft', 'review', 'implemented', 'rejected'], from: 'header:status' },
+        priority:     { type: 'enum', values: ['p0', 'p1', 'p2'] },
+        'blocked-by': { type: 'path', repeatable: true, blocks: true },
+      },
+      rankings: {
+        default: { where: { status: { ne: ['implemented', 'rejected'] }, blocked: { eq: false } }, order: ['priority'] },
+        any:     { where: { status: { ne: ['implemented', 'rejected'] } }, order: ['priority'] },
+      },
+    }, 'probe.json'));
+  });
+  // A document with a status and the given metadata.
+  const BDOC = (status, meta = {}) => QDOC(meta, `title="T ${status}" status="${status}" date="2026-01-02"`);
+  const CORPUS = () => [
+    { path: 'q/a.html', html: BDOC('draft', { priority: 'p0', 'blocked-by': 'b.html' }) },          // b is open
+    { path: 'q/b.html', html: BDOC('review', { priority: 'p1' }) },
+    { path: 'q/c.html', html: BDOC('draft', { priority: 'p0', 'blocked-by': 'done.html,gone.html' }) },
+    { path: 'q/done.html', html: BDOC('implemented', {}) },
+    { path: 'q/e.html', html: BDOC('draft', { priority: 'p2', 'blocked-by': '../other/x.html' }) },
+  ];
+  const byPath = (q) => Object.fromEntries(q.results.map(r => [r.path, r.derived.blocked]));
+
+  it('parseSchema takes `blocks` on a path field only, and reserves the built-in column names', () => {
+    const S = (o) => planr.parseSchema(o, 'probe.json');
+    expect(S({ fields: { dep: { type: 'path', blocks: true } } }).fields.dep.blocks).toBe(true);
+    expect(() => S({ fields: { dep: { type: 'path', blocks: 'yes' } } }))
+      .toThrow("field 'dep': `blocks` must be true or false");
+    expect(() => S({ fields: { dep: { type: 'string', blocks: true } } }))
+      .toThrow("field 'dep': `blocks` applies only to type path");
+    for (const name of ['blocked', 'path'])
+      expect(() => S({ fields: { [name]: { type: 'string' } } }), name)
+        .toThrow(`field name '${name}' is a built-in column — pick another name`);
+  });
+
+  it('blockerPath resolves a target against the directory of the document naming it', () => {
+    expect(planr.blockerPath('q/a.html', 'b.html')).toBe('q/b.html');
+    expect(planr.blockerPath('q/a.html', '../other/x.html')).toBe('other/x.html');
+    expect(planr.blockerPath('D:\\plans\\q\\a.html', 'sub/b.html')).toBe('D:/plans/q/sub/b.html');
+  });
+
+  it('an open target blocks; a closed or missing one never does', () => {
+    const b = byPath(planr.queryDocs(CORPUS(), { schema: BS }));
+    expect(b['q/a.html']).toEqual({ value: true, raw: 'true', source: 'derived', type: 'boolean', rank: 1,
+      blockers: [{ path: 'q/b.html', status: 'review' }] });
+    expect(b['q/c.html'].value).toBe(false);     // done.html is implemented, gone.html does not exist
+    expect(b['q/b.html']).toMatchObject({ value: false, blockers: [] });
+  });
+
+  it('reads a target outside the scan through readDoc, once per run', () => {
+    const calls = [];
+    const readDoc = (p) => { calls.push(p); return p === 'other/x.html' ? BDOC('draft') : null; };
+    const docs = [...CORPUS(), { path: 'q/f.html', html: BDOC('draft', { 'blocked-by': '../other/x.html' }) }];
+    const b = byPath(planr.queryDocs(docs, { schema: BS, readDoc }));
+    expect(b['q/e.html'].blockers).toEqual([{ path: 'other/x.html', status: 'draft' }]);
+    expect(b['q/f.html'].value).toBe(true);
+    expect(calls).toEqual(['q/gone.html', 'other/x.html']);
+  });
+
+  it('filters on blocked from the CLI and from a ranking, through the one evaluator', () => {
+    const paths = (o) => planr.planQuery(CORPUS(), { schema: BS, format: 'paths', ...o }).report.trim().split('\n');
+    expect(paths({ where: ['blocked=false', 'priority=p0'] })).toEqual(['q/c.html']);
+    expect(paths({ where: ['blocked=true'] })).toEqual(['q/a.html']);
+    expect(paths({ where: ['blocked!=true'], sort: 'priority' }))
+      .toEqual(['q/c.html', 'q/b.html', 'q/e.html', 'q/done.html']);
+    expect(paths({ rank: 'default' })).toEqual(['q/c.html', 'q/b.html', 'q/e.html']);
+    // An explicit flag replaces the preset's condition on the same field.
+    expect(paths({ rank: 'default', where: ['blocked=true'] })).toEqual(['q/a.html']);
+  });
+
+  it('refuses an ordering operator or a non-boolean literal on blocked, and blocked itself without a blocks field', () => {
+    expect(() => planr.compileWhere(BS, { blocked: { ge: 'true' } }, 'filter'))
+      .toThrow("filter on 'blocked': 'ge' does not apply — 'blocked' is true or false; use = or !=");
+    expect(() => planr.compileWhere(BS, { blocked: { in: ['yes'] } }, 'filter'))
+      .toThrow("filter on 'blocked': 'yes' is not true or false");
+    expect(() => planr.parseWhere(QS, { where: ['blocked=false'] }))
+      .toThrow(/^unknown field 'blocked' — declared: title, status, date/);
+    expect(() => planr.mergeSchemas(planr.parseSchema({
+      fields: { status: { type: 'enum', values: ['draft'], from: 'header:status' } },
+      rankings: { r: { where: { blocked: { eq: false } } } },
+    }, 'probe.json'))).toThrow(/probe\.json: ranking 'r' where names unknown field 'blocked'/);
+  });
+
+  it('carries blocked in JSON, prints it as a column, and sorts on it', () => {
+    const json = JSON.parse(planr.planQuery(CORPUS(), { schema: BS, format: 'json', fields: 'path,blocked' }).report);
+    const a = json.results.find(r => r.path === 'q/a.html');
+    expect(a.blocked).toEqual({ value: true, blockers: [{ path: 'q/b.html', status: 'review' }] });
+    expect(a.fields.blocked).toBeUndefined();          // a derived column, never a schema field
+    const tsv = planr.planQuery(CORPUS(), { schema: BS, format: 'tsv', fields: 'path,blocked', sort: 'blocked:desc' }).report;
+    expect(tsv.split('\n').slice(0, 3)).toEqual(['path\tblocked', 'q/a.html\ttrue', 'q/b.html\tfalse']);
+    // A schema with no `blocks` field carries no key.
+    const plain = JSON.parse(planr.planQuery([{ path: 'a.html', html: QDOC({}) }], { schema: QS, format: 'json' }).report);
+    expect(plain.results[0]).not.toHaveProperty('blocked');
+  });
+
+  it('next names what holds a blocked document, and a ranking on blocked:false skips it', () => {
+    const top = planr.planNext(CORPUS(), { schema: BS, rank: 'any' });
+    expect(top.report).toContain('\nblocked by:\n  q/b.html  [review]\n');
+    expect(top.document.blocked).toEqual({ value: true, blockers: [{ path: 'q/b.html', status: 'review' }] });
+    const free = planr.planNext(CORPUS(), { schema: BS });
+    expect(free.document.path).toBe('q/c.html');
+    expect(free.report).not.toContain('blocked by:');
+    const json = JSON.parse(planr.planNext(CORPUS(), { schema: BS, format: 'json' }).report);
+    expect(json.document.blocked).toEqual({ value: false, blockers: [] });
+  });
+
+  it('is never a writable field', () => {
+    expect(() => planr.planMetaSet(BDOC('draft'), { schema: BS, sets: ['blocked=true'] }))
+      .toThrow(/^unknown field 'blocked' — declared: title, status, priority, blocked-by$/);
   });
 });
 
