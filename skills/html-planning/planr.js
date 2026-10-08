@@ -2934,6 +2934,39 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
   return done(out.join('\n') + '\n');
 }
 
+/* ── wordy: the sentence rule ─────────────────────────────
+   The ONE sentence splitter. Tuned for agent-written prose, not for every
+   human edge case. Backtick code spans and URLs are masked first — same
+   length, so every offset still indexes the original — then a sentence ends
+   at a run of . ! ? (plus any closing quote, bracket or emphasis marker)
+   followed by whitespace and a capital letter or an opening marker: a
+   backtick, *, (, [ or a quote. A '.' that ends e.g., i.e., vs or cf never
+   ends a sentence. Returns the sentences, trimmed. */
+const CODE_SPAN = /(`+)(?:[^`]|(?!\1)`)*?\1/g;
+const URL_SPAN = /\bhttps?:\/\/[^\s<>`]*[^\s<>`.,;:!?)\]'"]/g;
+const SENTENCE_END = /[.!?]+["'”’)\]*_]*(?=\s+[A-Z`*(\["'“‘])/g;
+const NOT_AN_END = /(?:^|[\s(\[])(?:e\.g|i\.e|vs|cf)$/i;
+function maskProse(text) {
+  return text
+    .replace(CODE_SPAN, m => m.replace(/[^`]/g, 'x'))
+    .replace(URL_SPAN, m => 'x'.repeat(m.length));
+}
+function splitSentences(text) {
+  const masked = maskProse(text);
+  const out = [];
+  let from = 0;
+  for (const m of masked.matchAll(SENTENCE_END)) {
+    if (m[0][0] === '.' && NOT_AN_END.test(masked.slice(from, m.index))) continue;
+    const end = m.index + m[0].length;
+    const s = text.slice(from, end).trim();
+    if (s) out.push(s);
+    from = end;
+  }
+  const last = text.slice(from).trim();
+  if (last) out.push(last);
+  return out;
+}
+
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
@@ -3791,6 +3824,7 @@ module.exports = {
   QUERY_FORMATS, planQuery, skipReport,
   globToRegExp, globBase, collectDocs, flagList,
   NEXT_FORMATS, docOutline, planNext,
+  splitSentences,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };
