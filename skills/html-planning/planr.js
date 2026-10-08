@@ -2967,6 +2967,51 @@ function splitSentences(text) {
   return out;
 }
 
+/* ── wordy: the measured units of a plain-text document ───
+   Markdown (and any other plain text) is measured line by line as written.
+   Exempt: YAML front-matter opening the file (`---` … `---` or `...`), fenced
+   code (``` or ~~~, any indentation, closed by a fence of the same character
+   at least as long; an unclosed fence runs to the end), and ATX headings.
+   A table row (a line starting with `|`) yields one unit per non-empty cell,
+   numbered from 1, split on every `|` not escaped as `\|`; its delimiter row
+   yields none. Each unit is { line, column, context, text } — `column` is
+   null and `context` 'prose' outside a table. */
+const FENCE = /^\s*(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
+const ATX_HEADING = /^\s{0,3}#{1,6}(\s|$)/;
+const TABLE_DELIMITER_CELL = /^:?-+:?$/;
+function markdownUnits(text) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/);
+  const units = [];
+  let i = 0;
+  if (lines[0].trimEnd() === '---') {
+    const close = lines.findIndex((l, k) => k > 0 && /^(---|\.\.\.)\s*$/.test(l));
+    if (close > 0) i = close + 1;
+  }
+  let fence = null;
+  for (; i < lines.length; i++) {
+    const raw = lines[i];
+    if (fence) {
+      const c = FENCE_CLOSE.exec(raw);
+      if (c && c[1][0] === fence[0] && c[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const f = FENCE.exec(raw);
+    if (f) { fence = f[1]; continue; }
+    if (ATX_HEADING.test(raw)) continue;
+    const t = raw.trim();
+    if (!t) continue;
+    if (t.startsWith('|')) {
+      const cells = t.slice(1).replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map(c => c.trim());
+      if (cells.every(c => !c || TABLE_DELIMITER_CELL.test(c))) continue;
+      cells.forEach((c, k) => { if (c) units.push({ line: i + 1, column: k + 1, context: 'table', text: c }); });
+      continue;
+    }
+    units.push({ line: i + 1, column: null, context: 'prose', text: t });
+  }
+  return units;
+}
+
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
@@ -3824,7 +3869,7 @@ module.exports = {
   QUERY_FORMATS, planQuery, skipReport,
   globToRegExp, globBase, collectDocs, flagList,
   NEXT_FORMATS, docOutline, planNext,
-  splitSentences,
+  splitSentences, markdownUnits,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };
