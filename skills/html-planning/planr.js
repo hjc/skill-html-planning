@@ -1735,26 +1735,43 @@ function spliceAfter(html, idx, block) {
 // one — so a hunk never ends up sharing a line with the markup it displaced.
 function breakAfter(html, idx) { return html[idx] === '\n' ? '' : '\n'; }
 
-/* ── plain text (backs `read --text`) ─────────────────────
+/* ── plain text (backs `read --text` and `wordy`) ─────────
    Structure-preserving text, driven by TEXT_RULES: one block per line,
    headings and section titles as `#` lines at the level the runtime renders
    them, list items as `- ` lines indented by list depth, table rows as cells
    joined with ` | `, and code fenced with its lines verbatim. Text between
-   structural tags is read through visibleText, never re-derived here. */
-function nodeText(html, el, { body = false } = {}) {
+   structural tags is read through visibleUnits, never re-derived here.
+   textLines returns the lines as records — { kind, text, at } with kind
+   'text' | 'heading' | 'code' | 'row' (a row also carries `cells`, each
+   { text, at }) and `at` the source offset of the line's first visible
+   character — so a caller can map a line back to the source. nodeText is
+   their join; the two can never disagree about a line. */
+function textLines(html, el, { body = false } = {}) {
   const sections = new Map();
   walkSections(html, ({ el: s, num, depth }) => sections.set(s.outerStart, { num, depth }));
   const from = body ? el.innerStart : el.outerStart;
   const to = body ? el.innerEnd : el.outerEnd;
   const lines = [];
-  let parts = [], mark = from, lead = '', lists = 0, row = null, inCell = false, cellStart = from;
+  let parts = [], origin = null, mark = from, lead = '', lists = 0, row = null, inCell = false, cellStart = from;
   const collapse = s => s.replace(/\s+/g, ' ').trim();
-  const take = end => { if (end > mark) parts.push(visibleText(html, mark, end)); mark = end; };
-  const emit = more => { for (const l of more || []) if (l) lines.push(l); };
+  const reset = () => { parts = []; origin = null; };
+  const push = (kind, text, at, extra) => lines.push({ kind, text, at, ...extra });
+  const take = end => {
+    if (end > mark) {
+      const units = visibleUnits(html, mark, end);
+      const first = origin === null && units.find(u => u.ch !== ' ');
+      if (first) origin = first.start;
+      parts.push(units.map(u => u.ch).join(''));
+    }
+    mark = end;
+  };
+  // Attribute lines; the header's title is the one that prints as `# …`.
+  const emit = (more, at) => { for (const l of more || []) if (l) push(/^#+ /.test(l) ? 'heading' : 'text', l, at); };
   const flush = () => {
     const t = collapse(parts.join(''));
-    parts = [];
-    if (t) { lines.push((lead || '  '.repeat(lists)) + t); lead = ''; }
+    const at = origin === null ? mark : origin;
+    reset();
+    if (t) { push('text', (lead || '  '.repeat(lists)) + t, at); lead = ''; }
   };
   walkNodes(html, from, to, tok => {
     if (tok.kind === 'text') return;
@@ -1764,6 +1781,7 @@ function nodeText(html, el, { body = false } = {}) {
       const inner = findElement(html, tok.name, tok.start);
       if (!inner) return;
       take(tok.start);
+      if (origin === null) origin = tok.start;
       parts.push(` ${rule.print(tok.attrsRaw, collapse(visibleText(html, inner.innerStart, inner.innerEnd)))} `);
       mark = inner.outerEnd;
       return inner.outerEnd;
@@ -1778,54 +1796,67 @@ function nodeText(html, el, { body = false } = {}) {
       flush();
       const src = decodeEntities(html.slice(code.innerStart, code.innerEnd).replace(/<[^>]*>/g, ''))
         .replace(/^(?:[ \t]*\r?\n)+/, '').replace(/(?:\r?\n[ \t]*)+$/, '');
-      lines.push('```' + rule.info(tok.attrsRaw));
-      if (src) lines.push(...src.split(/\r?\n/));
-      lines.push('```');
-      emit(rule.after && rule.after(tok.attrsRaw));
+      push('code', '```' + rule.info(tok.attrsRaw), tok.start);
+      if (src) for (const l of src.split(/\r?\n/)) push('code', l, tok.start);
+      push('code', '```', tok.start);
+      emit(rule.after && rule.after(tok.attrsRaw), tok.start);
       mark = code.outerEnd;
       return code.outerEnd;
     }
     switch (rule.role) {
       case 'cell':
-        if (open) { parts = []; inCell = !!row; cellStart = tok.end; }
+        if (open) { reset(); inCell = !!row; cellStart = tok.end; }
         else {
           // <plan-def> pairs are skipped individually while inCell (below), so
           // a cell holding a <plan-defs> is rendered from its defs directly —
           // `key: value` per pair, joined `; ` — rather than the generic
           // collapse, which would drop every key (an attribute, not content).
           const defs = findElementsDeep(html, 'plan-def', cellStart, tok.start);
-          row.push(defs.length
+          const text = defs.length
             ? defs.map(d => `${attrText(d.attrsRaw, 'key')}: ${collapse(visibleText(html, d.innerStart, d.innerEnd))}`).join('; ')
-            : collapse(parts.join('')));
-          parts = []; inCell = false;
+            : collapse(parts.join(''));
+          row.push({ text, at: origin === null ? cellStart : origin });
+          reset(); inCell = false;
         }
         return;
       case 'heading':
         if (open) { flush(); return; }
-        { const t = collapse(parts.join('')); parts = []; lead = ''; if (t) lines.push('#'.repeat(Number(tok.name[1])) + ' ' + t); }
+        {
+          const t = collapse(parts.join(''));
+          const at = origin === null ? tok.start : origin;
+          reset(); lead = '';
+          if (t) push('heading', '#'.repeat(Number(tok.name[1])) + ' ' + t, at);
+        }
         return;
     }
     flush();
     if (!open) {
       if (rule.role === 'list') lists = Math.max(lists - 1, 0);
-      if (rule.role === 'row' && row) { if (row.some(Boolean)) lines.push('  '.repeat(lists) + row.join(' | ')); row = null; }
+      if (rule.role === 'row' && row) {
+        if (row.some(c => c.text)) push('row', '  '.repeat(lists) + row.map(c => c.text).join(' | '), row[0].at, { cells: row });
+        row = null;
+      }
       if (rule.role === 'item') lead = '';
       return;
     }
     if (rule.role === 'list') lists++;
     if (rule.role === 'item') lead = '  '.repeat(Math.max(lists - 1, 0)) + '- ';
-    if (rule.role === 'row') { row = []; parts = []; }
+    if (rule.role === 'row') { row = []; reset(); }
     if (rule.role === 'section') {
       const s = sections.get(tok.start);
-      if (lines.length) lines.push('');
-      lines.push(`${'#'.repeat(s ? s.depth + 2 : 2)} ${s ? s.num + '. ' : ''}${attrText(tok.attrsRaw, 'title')}`.trimEnd());
+      if (lines.length) push('text', '', tok.start);
+      push('heading', `${'#'.repeat(s ? s.depth + 2 : 2)} ${s ? s.num + '. ' : ''}${attrText(tok.attrsRaw, 'title')}`.trimEnd(), tok.start);
     }
-    emit(rule.lines && rule.lines(tok.attrsRaw));
+    emit(rule.lines && rule.lines(tok.attrsRaw), tok.start);
     if (rule.lead) lead = rule.lead(tok.attrsRaw);
   });
   take(to);
   flush();
-  return lines.length ? lines.join('\n') + '\n' : '';
+  return lines;
+}
+function nodeText(html, el, opts) {
+  const lines = textLines(html, el, opts);
+  return lines.length ? lines.map(l => l.text).join('\n') + '\n' : '';
 }
 
 /* ── matching by visible text (rm-item, strike, replace) ──
@@ -3745,7 +3776,7 @@ module.exports = {
   buildSection, sectionIds, allSectionIds, walkSections, walkTags, spliceRuns, nestingProblems, LEGAL_PARENTS, INLINE_HOSTS,
   sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
-  walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
+  walkNodes, TEXT_RULES, visibleUnits, visibleText, textLines, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
   PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags,
