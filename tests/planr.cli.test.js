@@ -1037,3 +1037,55 @@ describe('nesting documentation', () => {
     expect(doc('references/authoring-traps.md')).toMatch(/^## Rewriting a table row$/m);
   });
 });
+
+describe('wordy (wiring)', () => {
+  const LONG = Array(3).fill('A' + 'a'.repeat(198) + '.').join(' ');     // 602 chars, three sentences
+  const corpus = () => {
+    mkdirSync(join(dir, 'docs', 'nested'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'a.md'), ['# Title', '', LONG, ''].join('\n'));
+    writeFileSync(join(dir, 'docs', 'nested', 'b.html'),
+      `<html><body><plan-section id="s" title="S">\n<p>${LONG}</p>\n</plan-section></body></html>\n`);
+    writeFileSync(join(dir, 'docs', 'skip.js'), `// ${LONG}\n`);
+    writeFileSync(join(dir, 'clean.md'), 'Short. Clean.\n');
+  };
+
+  it('scans a directory for prose and plan files, prints findings on stdout, and exits 1 via main()', () => {
+    corpus();
+    const r = run(['wordy', join(dir, 'docs')]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/docs\/a\.md:3 {2}long\(602\)$/m);
+    expect(r.stdout).toMatch(/docs\/nested\/b\.html:2 {2}long\(602\)$/m);
+    expect(r.stdout).not.toContain('skip.js');
+    expect(r.stdout).toContain('2 finding(s) in 2 of 2 file(s)');
+    expect(r.stderr).toBe('planr: wordy: 2 finding(s) in 2 file(s), listed above\n');
+  });
+
+  it('exits 0 on a clean file, and takes several targets, a glob among them', () => {
+    corpus();
+    const clean = run(['wordy', join(dir, 'clean.md')]);
+    expect(clean.code, clean.stderr).toBe(0);
+    expect(clean.stdout).toContain('no findings in 1 file(s)');
+    const both = run(['wordy', join(dir, 'clean.md'), `${dir.replace(/\\/g, '/')}/docs/*.md`]);
+    expect(both.code).toBe(1);
+    expect(both.stdout).toContain('1 finding(s) in 1 of 2 file(s)');
+  });
+
+  it('emits the JSON work list on stdout and still exits 1', () => {
+    corpus();
+    const r = run(['wordy', join(dir, 'docs'), '--format', 'json', '--max-chars', '500']);
+    expect(r.code).toBe(1);
+    const out = JSON.parse(r.stdout);
+    expect(out.limits.long).toBe(500);
+    expect(out.flagged).toBe(2);
+    expect(out.items[0].path.endsWith('docs/a.md')).toBe(true);
+  });
+
+  it('refuses a value flag given with no value, and a missing target', () => {
+    corpus();
+    const bare = run(['wordy', join(dir, 'clean.md'), '--max-chars']);
+    expect(bare.code).toBe(1);
+    expect(bare.stderr).toContain('--max-chars was given with no value');
+    expect(run(['wordy', join(dir, 'clean.md'), '--format']).stderr).toContain('--format was given with no value');
+    expect(run(['wordy']).stderr).toContain("'wordy' requires a <dir|glob> argument");
+  });
+});
