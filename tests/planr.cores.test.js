@@ -1568,12 +1568,23 @@ describe('the shipped core schema', () => {
     expect(s.fields.status.values).toEqual([...planr.HEADER_STATUS]);
   });
 
-  it('infers a type from the path segments the corpus actually uses', () => {
-    const hits = (p) => core().infer.filter(r => r.re.test(p)).map(r => r.set.type);
-    expect(hits('.claude/plans/issues/foo.html')).toContain('issue');
-    expect(hits('.claude/plans/features/x/tdds/m1.html')).toContain('tdd');
-    expect(hits('.claude/plans/prd-thing.html')).toContain('prd');
-    expect(hits('.claude/plans/notes/whatever.html')).toEqual([]);
+  it('ships the minimal vocabulary — two types, no inference, no defaults', () => {
+    const s = core();
+    expect(Object.keys(s.fields)).toEqual(['title', 'type', 'status', 'date', 'reference-paths', 'blocked-by']);
+    expect(s.fields.type.values).toEqual(['issue', 'tdd']);
+    expect(s.fields['reference-paths']).toMatchObject({ type: 'list', repeatable: true });
+    expect(s.infer).toEqual([]);
+    expect(s.defaults).toEqual({});
+  });
+
+  it('declares every field a shipped template writes', () => {
+    const fields = Object.keys(core().fields);
+    for (const name of ['issue', 'tdd']) {
+      const tpl = skillFile(`templates/${name}.html`);
+      const keys = [...tpl.matchAll(/<plan-field key="([^"]+)"/g)].map(m => m[1]);
+      expect(keys, name).toEqual(['type', 'reference-paths']);
+      for (const k of keys) expect(fields, `${name}: ${k}`).toContain(k);
+    }
   });
 });
 

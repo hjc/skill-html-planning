@@ -106,9 +106,11 @@ function readStdin() {
    never reinterpreted. `{{name:default}}` declares a default, which is how a
    template (not this file) decides what `--set` can fill. A placeholder with
    neither default nor value is left intact, so a missing required var is
-   visible rather than silently empty.
+   visible rather than silently empty. A name may carry a hyphen, so a
+   placeholder can share its name with the schema field it fills
+   ({{reference-paths:}}).
    Authoring guide: references/template-authoring.md. */
-const PLACEHOLDER = /\{\{(\w+)(?::([^}]*))?\}\}/g;
+const PLACEHOLDER = /\{\{([\w-]+)(?::([^}]*))?\}\}/g;
 function render(tpl, vars) {
   return tpl.replace(PLACEHOLDER, (m, k, def) =>
     (k in vars ? vars[k] : (def !== undefined ? def : m)));

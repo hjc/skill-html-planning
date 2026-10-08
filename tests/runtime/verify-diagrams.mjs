@@ -127,7 +127,7 @@ export default async (page) => {
     };
   });
   const shippedChips = header.shipped.chips, injectedChips = header.injected.chips;
-  const areaChip = shippedChips.find((c) => c.key === 'area');
+  const pathsChip = shippedChips.find((c) => c.key === 'reference-paths');
   const priorityChip = injectedChips.find((c) => c.key === 'priority');
 
   const good = (m) => m.svg === m.diagrams && m.errors.length === 0;
@@ -144,14 +144,14 @@ export default async (page) => {
       badgeColoursKept: b.decided === k.green && b.open === k.amber && b.deferred === k.muted
         && b.high === k.green && b.medium === k.amber && b.low === k.red,
       metaBlockHidden: header.shipped.metaDisplay === 'none',
-      fieldChipsInOrder: shippedChips.map((c) => c.key).join() === 'type,owner,area'
+      fieldChipsInOrder: shippedChips.map((c) => c.key).join() === 'type,reference-paths'
         && shippedChips.every((c) => c.dot === null),
       statusChipSeparate: header.shipped.statusIsSeparate,
-      longValueTruncated: !!areaChip && areaChip.truncated && areaChip.title === `area: ${AREA}`,
+      longValueTruncated: !!pathsChip && pathsChip.truncated && pathsChip.title === `reference-paths: ${AREA}`,
       noLegacyChipsInSample: header.shipped.legacy === 0,
       tonedChipColoured: !!priorityChip && priorityChip.dot === k.red && priorityChip.value === 'p0',
       hiddenFieldSkipped: !injectedChips.some((c) => c.key === 'secret'),
-      repeatedKeyOnce: injectedChips.filter((c) => c.key === 'type').map((c) => c.value).join() === 'doc',
+      repeatedKeyOnce: injectedChips.filter((c) => c.key === 'type').map((c) => c.value).join() === 'tdd',
       legacyChipsStillRender: header.injected.legacy.join('|') === 'Legacy|Two',
     },
     cold,

@@ -599,14 +599,14 @@ describe('meta (write)', () => {
       const staged = stageSkill(root, 'skills/html-planning');
       const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
       expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'Quota']).code).toBe(0);
-      expect(runAt(staged, ['meta', doc, '--set', 'owner=hayden', '--set', 'area=crm,celery']).code).toBe(0);
-      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^owner +hayden +\(meta\)$/m);
+      expect(runAt(staged, ['meta', doc, '--set', 'reference-paths=crm,celery']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^reference-paths +crm,celery +\(meta\)$/m);
       expect(runAt(staged, ['check', doc]).code).toBe(0);
-      const bad = runAt(staged, ['meta', doc, '--set', 'owner=']);
+      const bad = runAt(staged, ['meta', doc, '--set', 'reference-paths=']);
       expect(bad.code).toBe(1);
-      expect(bad.stderr).toMatch(/use `--unset owner`/);
-      expect(runAt(staged, ['meta', doc, '--unset', 'owner']).code).toBe(0);
-      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^unset: .*owner/m);
+      expect(bad.stderr).toMatch(/use `--unset reference-paths`/);
+      expect(runAt(staged, ['meta', doc, '--unset', 'reference-paths']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^unset: .*reference-paths/m);
       // a valueless --set is an error, never a silent fall-through to the report
       expect(runAt(staged, ['meta', doc, '--set']).code).toBe(1);
     } finally { rmTmp(root); }
@@ -651,21 +651,21 @@ it('check reports a metadata problem as a warning, and --strict makes it fatal',
   } finally { rmTmp(root); }
 });
 
-it('scaffolds an issue with its declared type, and reports area as a settable variable', () => {
+it('scaffolds a tdd plan with its declared type, and reports reference-paths as a settable variable', () => {
   const root = mkTmp();
   try {
     const staged = stageSkill(root, 'skills/html-planning');
     const doc = join(root, '.claude', 'plans', 'x.html');
-    expect(runAt(staged, ['new', doc, '--template', 'tdd', '--title', 'T', '--set', 'area=server,client']).code).toBe(0);
+    expect(runAt(staged, ['new', doc, '--template', 'tdd', '--title', 'T', '--set', 'reference-paths=server,client']).code).toBe(0);
     const meta = runAt(staged, ['meta', doc]).stdout;
     expect(meta).toMatch(/^type +tdd +\(meta\)$/m);
-    expect(meta).toMatch(/^area +server,client +\(meta\)$/m);
+    expect(meta).toMatch(/^reference-paths +server,client +\(meta\)$/m);
     expect(runAt(staged, ['check', doc, '--strict']).code, 'a scaffold must be warning-free').toBe(0);
-    expect(runAt(staged, ['templates', 'tdd']).stdout).toMatch(/^ {2}area +\(default: empty\)$/m);
-    // an undeclared field is refused at scaffold time, not written and warned about later
-    const bad = runAt(staged, ['new', join(root, '.claude', 'y.html'), '--template', 'tdd', '--title', 'Y', '--set', 'area=']);
-    expect(bad.code).toBe(0);   // an empty value means "no value" — the field is dropped
-    expect(readFileSync(join(root, '.claude', 'y.html'), 'utf8')).not.toContain('key="area"');
+    expect(runAt(staged, ['templates', 'tdd']).stdout).toMatch(/^ {2}reference-paths +\(default: empty\)$/m);
+    // an empty value means "no value" — the field is dropped, not written and warned about later
+    const bad = runAt(staged, ['new', join(root, '.claude', 'y.html'), '--template', 'tdd', '--title', 'Y', '--set', 'reference-paths=']);
+    expect(bad.code).toBe(0);
+    expect(readFileSync(join(root, '.claude', 'y.html'), 'utf8')).not.toContain('key="reference-paths"');
   } finally { rmTmp(root); }
 });
 
@@ -810,9 +810,9 @@ describe('query (wiring)', () => {
       // in the corpus has yet is an explicit null, never a missing key.
       expect(out.fields).toEqual(['path']);
       expect(Object.keys(out.results[0].fields))
-        .toEqual(['title', 'type', 'status', 'date', 'owner', 'area', 'blocked-by', 'priority', 'impact']);
-      expect(out.results[0].fields.owner).toEqual(
-        { value: null, raw: null, source: null, type: 'string', rank: null });
+        .toEqual(['title', 'type', 'status', 'date', 'reference-paths', 'blocked-by', 'priority', 'impact']);
+      expect(out.results[0].fields['reference-paths']).toEqual(
+        { value: null, raw: null, source: null, type: 'list', rank: null });
       expect(out.schema.map(s => s.replace(/^.*\//, ''))).toEqual(['planr-schema.json', 'planr-schema.json']);
       expect(out.skipped).toHaveLength(2);
     } finally { rmTmp(root); }
