@@ -87,7 +87,7 @@ function flagValue(flags, key) {
 }
 // Every value a repeatable flag was given, in order. A bare occurrence is a
 // mistake, not an empty value: parseFlags records it as `true`, and dropping
-// it silently is exactly the class of bug BOOLEAN_FLAGS exists to prevent.
+// it silently is exactly the class of bug COMMAND_FLAGS's 'bool' kind prevents.
 function flagList(flags, key) {
   if (flags[key] == null) return [];
   return [].concat(flags[key]).map((v) => {
@@ -3556,18 +3556,53 @@ function cmdMoveSection(file, address, flags) {
 }
 
 /* ── flag parsing + dispatch ──────────────────────────── */
-// Flags that never take a value. A valueless flag is otherwise indistinguishable
-// from one whose value follows, so `tasks --all plan.html` consumed the FILENAME
-// as --all's value and then reported a missing <file> — with the file right
-// there on the line. Declaring them keeps flag order free.
-const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict', 'stamp']);
-// `--text` is the one flag name two commands share with different shapes:
-// `read --text` is a boolean (structure-preserving plain text), `badge --text
-// <T>` takes the replacement label, including `--text ""` to clear one. Scope
-// the exception to `badge` rather than splitting BOOLEAN_FLAGS into two sets.
+// The flags each command reads, and whether each takes a value. main() refuses
+// any other: a flag the parser accepts and nothing reads exits 0 having done
+// nothing it was asked — which is how `list --outline` survived for releases
+// after its behaviour became the default. `--help` is accepted after any
+// command and prints the usage. A test holds this table and the USAGE lines to
+// the same flags, both ways.
+// 'bool' marks a flag that never takes a value. A valueless flag is otherwise
+// indistinguishable from one whose value follows, so `tasks --all plan.html`
+// consumed the FILENAME as --all's value and then reported a missing <file>.
+// The kind is per command because one name can differ: `read --text` is a
+// boolean, `badge --text <T>` takes the replacement label (`--text ""` clears it).
+const COMMAND_FLAGS = {
+  new:            { title: 'value', template: 'value', set: 'value' },
+  templates:      {},
+  list:           { 'no-outline': 'bool' },
+  check:          { strict: 'bool' },
+  tasks:          { all: 'bool', status: 'value' },
+  read:           { body: 'bool', text: 'bool' },
+  meta:           { format: 'value', set: 'value', unset: 'value', stamp: 'bool' },
+  query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
+                    fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
+  next:           { rank: 'value', format: 'value', strict: 'bool' },
+  set:            {},
+  'set-body':     { file: 'value', append: 'bool' },
+  prepend:        { file: 'value', into: 'value' },
+  append:         { file: 'value', into: 'value' },
+  insert:         { 'before-heading': 'value', 'after-heading': 'value', file: 'value', into: 'value' },
+  badge:          { match: 'value', set: 'value', in: 'value', nth: 'value', all: 'bool', text: 'value' },
+  'rm-item':      { match: 'value', into: 'value', nth: 'value', all: 'bool' },
+  strike:         { match: 'value', into: 'value', nth: 'value', all: 'bool' },
+  replace:        { match: 'value', with: 'value', file: 'value', into: 'value', nth: 'value', all: 'bool' },
+  'add-section':  { id: 'value', num: 'value', title: 'value', status: 'value', parent: 'value',
+                    after: 'value', before: 'value', 'body-file': 'value' },
+  'rm-section':   {},
+  'move-section': { after: 'value', before: 'value' },
+};
+// Own properties only, so `--constructor` is an unknown flag, not a prototype hit.
+const declaresFlag = (cmd, key) => Object.prototype.hasOwnProperty.call(COMMAND_FLAGS, cmd)
+  && Object.prototype.hasOwnProperty.call(COMMAND_FLAGS[cmd], key);
 function isBooleanFlag(cmd, key) {
-  if (key === 'text' && cmd === 'badge') return false;
-  return BOOLEAN_FLAGS.has(key);
+  return key === 'help' || (declaresFlag(cmd, key) && COMMAND_FLAGS[cmd][key] === 'bool');
+}
+// Pure: the flags a command was given that it does not read, refused.
+function assertKnownFlags(cmd, flags) {
+  const unknown = Object.keys(flags).filter(k => k !== 'help' && !declaresFlag(cmd, k));
+  if (unknown.length) throw new PlanError(`${cmd} does not take ${unknown.map(k => `--${k}`).join(', ')} — ` +
+    `valid: ${Object.keys(COMMAND_FLAGS[cmd]).map(k => `--${k}`).join(', ') || '(none)'}`);
 }
 function parseFlags(argv, cmd) {
   const flags = {};
@@ -3655,6 +3690,8 @@ function main() {
   try {
     if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd) && !NEEDS_TARGET.includes(cmd))
       throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
+    if (flags.help) { process.stdout.write(USAGE + '\n'); return; }
+    assertKnownFlags(cmd, flags);
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
     if (NEEDS_TARGET.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <dir|glob> argument`);
     switch (cmd) {
@@ -3702,7 +3739,7 @@ module.exports = {
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
-  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS,
+  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,

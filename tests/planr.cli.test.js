@@ -296,6 +296,29 @@ describe('flag parsing', () => {
   });
 });
 
+describe('unknown flags', () => {
+  it('refuses a flag the command does not read, before doing anything', () => {
+    freshPlan();
+    const before = readPlan();
+    const r = run(['list', P(), '--outline']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('planr: list does not take --outline — valid: --no-outline\n');
+    expect(run(['list', '--outline', P()]).stderr).toContain('list does not take --outline');
+    expect(run(['check', P(), '--stirct']).stderr).toContain('check does not take --stirct — valid: --strict');
+    const set = run(['set', P(), 'header.status=review', '--all']);
+    expect(set.code).toBe(1);
+    expect(set.stderr).toContain('set does not take --all — valid: (none)');
+    expect(readPlan()).toBe(before);
+  });
+
+  it('prints the usage for --help after a command', () => {
+    freshPlan();
+    const r = run(['list', P(), '--help']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('Usage: node planr.js <command> [args]');
+  });
+});
+
 describe('set header.title', () => {
   it('moves the head <title> with the header, so check --strict stays clean', () => {
     freshPlan();
@@ -339,7 +362,7 @@ describe('check warnings', () => {
     const soft = run(['check', P()]);
     expect(soft.code, soft.stderr).toBe(0);
     expect(soft.stdout).toMatch(/^structure OK[\s\S]*\n1 warning\(s\)[^\n]*\n {2}line \d+: <main> opens with a comment carrying text/);
-    // --strict BEFORE the file: a valueless flag not in BOOLEAN_FLAGS eats the filename.
+    // --strict BEFORE the file: a flag not declared 'bool' in COMMAND_FLAGS eats the filename.
     const strict = run(['check', '--strict', P()]);
     expect(strict.code).toBe(1);
     expect(strict.stdout).toContain('1 warning(s)');

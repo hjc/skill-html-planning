@@ -2830,6 +2830,48 @@ describe('check — a missing blocker target', () => {
   });
 });
 
+describe('COMMAND_FLAGS — the flags each command reads', () => {
+  // The usage text, read back as { command: Set<flag> }. A command line opens
+  // with two spaces and the name; a deeper-indented line continues it, and an
+  // unindented footer line ends the command list.
+  const usageFlags = () => {
+    const out = {};
+    let cur = null;
+    for (const line of planr.USAGE.split('\n')) {
+      const m = /^ {2}([a-z][a-z-]*)\s/.exec(line);
+      if (m) { cur = m[1]; out[cur] = out[cur] || new Set(); }
+      else if (!/^ {3,}\S/.test(line)) cur = null;
+      if (cur) for (const f of line.matchAll(/--([a-z][a-z-]*)/g)) out[cur].add(f[1]);
+    }
+    return out;
+  };
+
+  it('names every command the usage text lists, with exactly the flags its usage lines show', () => {
+    const usage = usageFlags();
+    expect(Object.keys(planr.COMMAND_FLAGS).sort()).toEqual(Object.keys(usage).sort());
+    for (const [cmd, flags] of Object.entries(planr.COMMAND_FLAGS))
+      expect(Object.keys(flags).sort(), cmd).toEqual([...usage[cmd]].sort());
+  });
+
+  it('reads whether a flag takes a value from the command that reads it', () => {
+    expect(planr.isBooleanFlag('read', 'text')).toBe(true);
+    expect(planr.isBooleanFlag('badge', 'text')).toBe(false);   // badge --text <T> takes the label
+    expect(planr.isBooleanFlag('tasks', 'all')).toBe(true);
+    expect(planr.isBooleanFlag('list', 'help')).toBe(true);     // --help, after any command
+    expect(planr.isBooleanFlag('list', 'outline')).toBe(false);
+    expect(planr.isBooleanFlag('list', 'constructor')).toBe(false);
+  });
+
+  it('assertKnownFlags refuses an unread flag, naming the valid ones, and always lets --help through', () => {
+    expect(() => planr.assertKnownFlags('list', { outline: true }))
+      .toThrow('list does not take --outline — valid: --no-outline');
+    expect(() => planr.assertKnownFlags('set', { all: true, x: 'y' }))
+      .toThrow('set does not take --all, --x — valid: (none)');
+    expect(() => planr.assertKnownFlags('query', { where: ['a=b'], help: true, strict: true })).not.toThrow();
+    expect(() => planr.assertKnownFlags('list', { toString: 'x' })).toThrow('list does not take --toString');
+  });
+});
+
 describe('tones — one colour vocabulary', () => {
   const css = () => skillFile('plan-styles.css');
   // A `key: 'value'` object literal in plan-runtime.js, found by `re`.
