@@ -1419,6 +1419,10 @@ describe('parseSchema', () => {
     expect(() => S({ fields: { p: { type: 'string', min: 1 } } })).toThrow(/`min` applies only to type number/);
     expect(() => S({ fields: { p: { type: 'string', frobnicate: 1 } } })).toThrow(/unknown key 'frobnicate'/);
     expect(() => S({ fields: { p: { type: 'string', from: 'header:nope' } } })).toThrow(/`from` must be header:/);
+    // A subtitle carries no queryable fact and chips is deprecated, so neither is a source.
+    for (const from of ['header:subtitle', 'header:chips'])
+      expect(() => S({ fields: { p: { type: 'string', from } } }), from)
+        .toThrow(`field 'p': \`from\` must be header:title|status|date, got '${from}'`);
     expect(() => S({ fields: { Priority: { type: 'string' } } })).toThrow(/must be lower-case letters, digits and hyphens/);
     expect(() => S({ fields: { p: { type: 'string' } }, infer: [{ match: '[', set: { p: 'x' } }] }))
       .toThrow(/infer\[0\]: `match` is not a valid regular expression/);

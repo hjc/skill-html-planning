@@ -979,7 +979,9 @@ const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
 const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden'];
 const SCHEMA_KEYS = ['fields', 'infer', 'defaults', 'rankings'];
 const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
-const HEADER_SOURCE = /^header:(title|subtitle|status|date|chips)$/;
+// The header attributes a field may view: the three that carry a queryable
+// fact. A subtitle is prose, and free-text chips are deprecated.
+const HEADER_SOURCE = /^header:(title|status|date)$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 function schemaFail(origin, msg) { throw new PlanError(`schema ${origin}: ${msg}`); }
 function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -1022,7 +1024,7 @@ function parseSchema(data, origin) {
     if (def.repeatable !== undefined && typeof def.repeatable !== 'boolean')
       schemaFail(origin, `field '${name}': \`repeatable\` must be true or false`);
     if (def.from !== undefined && !HEADER_SOURCE.test(def.from))
-      schemaFail(origin, `field '${name}': \`from\` must be header:title|subtitle|status|date|chips, got '${def.from}'`);
+      schemaFail(origin, `field '${name}': \`from\` must be header:title|status|date, got '${def.from}'`);
     if (def.label !== undefined && typeof def.label !== 'string')
       schemaFail(origin, `field '${name}': \`label\` must be a string`);
     // Rendering keys. `tones` gives an enum value its colour in the header chip;
