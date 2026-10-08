@@ -95,6 +95,13 @@ function flagList(flags, key) {
     return String(v);
   });
 }
+// The last value a value flag was given, or null when absent: flagValue's
+// repeat rule with flagList's bare rule, so a bare occurrence is refused
+// rather than read as "absent, use the default".
+function flagLast(flags, key) {
+  const all = flagList(flags, key);
+  return all.length ? all[all.length - 1] : null;
+}
 function readStdin() {
   if (process.stdin.isTTY) throw new PlanError('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
   try { return fs.readFileSync(0, 'utf8'); }
@@ -2748,10 +2755,12 @@ function cellText(rec, name, blank) {
   if (f.source === null) return blank;
   return Array.isArray(f.value) ? f.value.join(', ') : String(f.value);
 }
-function parseLimit(raw) {
+// A positive whole-number flag value — query's `--limit` and wordy's three
+// limits. null (absent) passes through.
+function parseLimit(raw, flag = 'limit') {
   if (raw === null) return null;
   if (!/^\d+$/.test(String(raw).trim()) || Number(raw) < 1)
-    throw new PlanError(`--limit '${raw}' must be a positive whole number`);
+    throw new PlanError(`--${flag} '${raw}' must be a positive whole number`);
   return Number(raw);
 }
 const projected = (f) => ({ value: f.value, raw: f.raw, source: f.source, type: f.type, rank: f.rank });
@@ -3034,6 +3043,88 @@ function htmlUnits(html) {
     else if (rec.kind === 'text' && rec.text) units.push(unit(rec.at, null, 'prose', rec.text));
   }
   return units;
+}
+
+/* ── wordy: measure and report ────────────────────────────
+   Three kinds, and a unit may carry several: `long` (characters), `dense`
+   (sentences) and `run-on` (characters in the longest sentence), each flagged
+   when the measure is ABOVE its limit. Characters are code points. Detection
+   only — wordy never rewrites; the JSON report is the work list a rewriting
+   skill consumes. */
+const WORDY_KINDS = [
+  { kind: 'long', flag: 'max-chars', max: 600, unit: 'chars' },
+  { kind: 'dense', flag: 'max-sentences', max: 5, unit: 'sentences' },
+  { kind: 'run-on', flag: 'max-sentence-chars', max: 300, unit: 'chars in one sentence' },
+];
+const WORDY_FORMATS = ['text', 'json'];
+const WORDY_PREVIEW = 80;
+const charCount = (s) => [...s].length;
+// Pure: (text, limits) -> the kinds whose measure exceeds its limit, in
+// WORDY_KINDS order, each { kind, value, max }.
+function measureText(text, limits) {
+  const sentences = splitSentences(text);
+  const measured = {
+    long: charCount(text),
+    dense: sentences.length,
+    'run-on': sentences.reduce((n, s) => Math.max(n, charCount(s)), 0),
+  };
+  return WORDY_KINDS.filter(k => measured[k.kind] > limits[k.kind])
+    .map(k => ({ kind: k.kind, value: measured[k.kind], max: limits[k.kind] }));
+}
+const isHtmlPath = (p) => /\.html?$/i.test(p);
+const preview = (t) => (charCount(t) > WORDY_PREVIEW ? [...t].slice(0, WORDY_PREVIEW).join('') + '…' : t);
+
+/* Pure: (docs, opts) -> { report, errors, failure }. `docs` is collectDocs's
+   shape, possibly from several targets: a path seen twice is read once, and
+   the report runs in path order, then line, then column. An `.html`/`.htm`
+   path is read through htmlUnits, anything else through markdownUnits.
+   Each limit is the shell's flagLast read: a string, or null for the default.
+   `errors` is the unreadable-file block for stderr ('' when none); `failure`
+   is the exit-1 message — set when anything is flagged or unreadable, null on
+   a clean run. */
+function planWordy(docs, { maxChars = null, maxSentences = null, maxSentenceChars = null, format = 'text' } = {}) {
+  if (!WORDY_FORMATS.includes(format))
+    throw new PlanError(`unknown --format '${format}' — valid: ${WORDY_FORMATS.join(', ')}`);
+  const raw = { long: maxChars, dense: maxSentences, 'run-on': maxSentenceChars };
+  const limits = Object.fromEntries(WORDY_KINDS.map(k => [k.kind, parseLimit(raw[k.kind], k.flag) ?? k.max]));
+  const seen = new Set();
+  const unique = docs.filter(d => !seen.has(d.path) && seen.add(d.path))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const skipped = unique.filter(d => d.error).map(d => ({ path: d.path, reason: d.error }));
+  const readable = unique.filter(d => !d.error);
+  const items = [];
+  for (const d of readable) {
+    const units = isHtmlPath(d.path) ? htmlUnits(d.html) : markdownUnits(d.html);
+    const found = units.map(u => ({ u, kinds: measureText(u.text, limits) })).filter(x => x.kinds.length)
+      .sort((a, b) => a.u.line - b.u.line || (a.u.column || 0) - (b.u.column || 0));
+    for (const { u, kinds } of found)
+      items.push({ path: d.path, line: u.line, column: u.column, context: u.context,
+        section: u.section || null, kinds, preview: preview(u.text) });
+  }
+  const counts = Object.fromEntries(WORDY_KINDS.map(k =>
+    [k.kind, items.filter(i => i.kinds.some(x => x.kind === k.kind)).length]));
+  const files = new Set(items.map(i => i.path)).size;
+  let report;
+  if (format === 'json') {
+    report = JSON.stringify({ limits, scanned: readable.length, flagged: items.length, flagged_files: files,
+      counts, items, skipped }, null, 2) + '\n';
+  } else {
+    const limitText = WORDY_KINDS.map(k => `${k.kind} > ${limits[k.kind]} ${k.unit}`).join(', ');
+    const rows = items.map(i => `${i.path}:${i.line}  ${i.context === 'table' ? `table col ${i.column}  ` : ''}` +
+      i.kinds.map(k => `${k.kind}(${k.value})`).join(' '));
+    const summary = items.length
+      ? `${items.length} finding(s) in ${files} of ${readable.length} file(s) — ` +
+        `${WORDY_KINDS.map(k => `${k.kind} ${counts[k.kind]}`).join(', ')} (limits: ${limitText})`
+      : `no findings in ${readable.length} file(s) (limits: ${limitText})`;
+    report = (rows.length ? rows.join('\n') + '\n\n' : '') + summary + '\n';
+  }
+  const errors = skipped.length
+    ? [`${skipped.length} file(s) could not be read:`, ...skipped.map(s => `  ${s.path}: ${s.reason}`)].join('\n') : '';
+  const failure = [
+    items.length && `${items.length} finding(s) in ${files} file(s), listed above`,
+    skipped.length && `${skipped.length} file(s) could not be read, listed above`,
+  ].filter(Boolean).join('; ');
+  return { report, errors, failure: failure ? `wordy: ${failure}` : null };
 }
 
 // Pure: (html, flags) -> the `tasks` report text.
@@ -3891,9 +3982,9 @@ module.exports = {
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport,
-  globToRegExp, globBase, collectDocs, flagList,
+  globToRegExp, globBase, collectDocs, flagList, flagLast,
   NEXT_FORMATS, docOutline, planNext,
-  splitSentences, markdownUnits, htmlUnits,
+  splitSentences, markdownUnits, htmlUnits, measureText, WORDY_KINDS, WORDY_FORMATS, planWordy,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };
