@@ -2823,6 +2823,21 @@ describe('check — a missing blocker target', () => {
       .toMatch(/'gone\.html' \(q\/gone\.html\), 'lost\.html' \(q\/lost\.html\) do not exist — .*`planr meta <file> --unset blocked-by`$/);
   });
 
+  it('warns on a missing target a schema default supplies, naming the schema rather than meta --set', () => {
+    const DS = planr.mergeSchemas(planr.parseSchema({
+      fields: { 'blocked-by': { type: 'path', repeatable: true, blocks: true } },
+      defaults: { 'blocked-by': 'gone.html' },
+    }, 'probe.json'));
+    const ctx = { docPath: 'q/a.html', readDoc: () => null };
+    const html = ['<plan-header title="T"></plan-header>', '<main>', '</main>'].join('\n');
+    const w = planr.planCheck(html, DS, ctx).warnings;
+    expect(w).toHaveLength(1);
+    expect(w[0].line).toBe(0);
+    expect(w[0].text).toMatch(/'gone\.html' \(q\/gone\.html\) does not exist/);
+    expect(w[0].text).toMatch(/schema default or infer rule/);
+    expect(w[0].text).not.toMatch(/planr meta <file> --set/);
+  });
+
   it('is silent on an existing target, on a path field that does not block, and without a document path', () => {
     expect(warn(wrap('<plan-field key="blocked-by">b.html</plan-field>'))).toEqual([]);
     expect(warn(wrap('<plan-field key="note">gone.html</plan-field>'))).toEqual([]);

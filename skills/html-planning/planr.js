@@ -2203,26 +2203,32 @@ function lintMeta(html, schema) {
    Missing means queryDocs' own `readDoc(p) === null`, so a target never blocks
    exactly when it warns. Only the shell has docPath and readDoc; a caller
    without them (templateProblems, a schema-less check) gets nothing. A field
-   with a bad value is lintMeta's to report, not this lint's. */
+   with a bad value is lintMeta's to report, not this lint's. The targets are
+   the ones `blockerTargets` names on the resolved record — the same list
+   `resolveBlocked` reads — so a target a schema default or infer rule supplies
+   is linted too; it has no tag to point at, so its line is 0 and the fix names
+   the schema. */
 function lintBlockers(html, schema, { docPath = null, readDoc = null } = {}) {
   if (!schema || !docPath || !readDoc) return [];
+  const rec = resolveMeta(html, { schema, docPath });
   const block = readMetaBlock(html);
-  if (!block) return [];
+  const byField = new Map();
+  for (const { field, target } of blockerTargets(schema, rec)) {
+    if (!byField.has(field)) byField.set(field, []);
+    byField.get(field).push(target);
+  }
   const out = [];
-  const seen = new Set();
-  for (const f of block.fields) {
-    const def = schema.fields[f.key];
-    if (!def || def.blocks !== true || seen.has(f.key)) continue;
-    seen.add(f.key);
-    if (validateField(schema, f.key, f.raw)) continue;
-    const items = fieldItems(def, f.raw);
+  for (const [name, items] of byField) {
     const gone = items.filter(t => readDoc(blockerPath(docPath, t)) === null);
     if (!gone.length) continue;
     const kept = items.filter(t => !gone.includes(t));
-    const fix = kept.length ? `planr meta <file> --set ${f.key}=${kept.join(',')}` : `planr meta <file> --unset ${f.key}`;
-    out.push({ line: f.line, text: `<plan-field key="${f.key}">: ` +
+    const inMeta = rec.fields[name].source === 'meta';
+    const tag = inMeta && block ? block.fields.find(f => f.key === name) : null;
+    const fix = !inMeta ? `edit the schema default or infer rule that supplies ${name}`
+      : `remove the stale entry with \`${kept.length ? `planr meta <file> --set ${name}=${kept.join(',')}` : `planr meta <file> --unset ${name}`}\``;
+    out.push({ line: tag ? tag.line : 0, text: `<plan-field key="${name}">: ` +
       `${gone.map(t => `'${t}' (${blockerPath(docPath, t)})`).join(', ')} ${gone.length > 1 ? 'do' : 'does'} not exist — ` +
-      `a missing blocker never blocks; remove the stale entry with \`${fix}\`` });
+      `a missing blocker never blocks; ${fix}` });
   }
   return out;
 }
