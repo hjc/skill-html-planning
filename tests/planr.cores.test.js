@@ -3132,3 +3132,43 @@ describe('free-text header chips are deprecated', () => {
       expect(skillFile(`templates/${t}`), t).not.toMatch(/chips/);
   });
 });
+
+describe('markdownUnits — what wordy measures in a plain-text file', () => {
+  const units = (lines) => planr.markdownUnits(lines.join('\n'));
+
+  it('measures each prose line as written, numbered from 1, skipping blank lines', () => {
+    expect(units(['First line.', '', '- A list item.'])).toEqual([
+      { line: 1, column: null, context: 'prose', text: 'First line.' },
+      { line: 3, column: null, context: 'prose', text: '- A list item.' },
+    ]);
+  });
+
+  it('exempts front-matter at the top, fenced code of either kind, and headings', () => {
+    expect(units([
+      '---', 'name: x', 'description: Long. Text.', '---',
+      '# Heading. With. Sentences.',
+      '```bash', 'echo one. Two.', '```',
+      '   ~~~', '   ```', '   inside a tilde fence', '   ~~~',
+      'Kept.',
+    ]).map(u => [u.line, u.text])).toEqual([[13, 'Kept.']]);
+  });
+
+  it('reads front-matter only at the top, and only when it closes', () => {
+    expect(units(['Intro.', '---', 'key: v', '---']).map(u => u.text)).toEqual(['Intro.', '---', 'key: v', '---']);
+    expect(units(['---', 'never closed']).map(u => u.text)).toEqual(['---', 'never closed']);
+  });
+
+  it('runs an unclosed fence to the end of the file', () => {
+    expect(units(['Before.', '```', 'code. Code.', 'More.'])).toHaveLength(1);
+  });
+
+  it('yields one unit per table cell, with its 1-based column, and nothing for the delimiter row', () => {
+    expect(units(['| Name | Meaning |', '|---|:--:|', '| `a\\|b` | One. Two. |', '|  | Only the second |'])).toEqual([
+      { line: 1, column: 1, context: 'table', text: 'Name' },
+      { line: 1, column: 2, context: 'table', text: 'Meaning' },
+      { line: 3, column: 1, context: 'table', text: '`a\\|b`' },
+      { line: 3, column: 2, context: 'table', text: 'One. Two.' },
+      { line: 4, column: 2, context: 'table', text: 'Only the second' },
+    ]);
+  });
+});
