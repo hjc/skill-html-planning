@@ -1025,11 +1025,14 @@ function parseSchema(data, origin) {
       schemaFail(origin, `field '${name}': \`repeatable\` must be true or false`);
     if (def.from !== undefined && !HEADER_SOURCE.test(def.from))
       schemaFail(origin, `field '${name}': \`from\` must be header:title|status|date, got '${def.from}'`);
-    if (def.label !== undefined && typeof def.label !== 'string')
-      schemaFail(origin, `field '${name}': \`label\` must be a string`);
-    // Rendering keys. `tones` gives an enum value its colour in the header chip;
-    // `hidden` keeps a field out of the header while leaving it queryable. Both
-    // are read only from this def, so they are SHAPE checks, made here.
+    // Rendering keys. `label` is the chip's text in place of the key; `tones`
+    // gives an enum value its colour in the header chip; `hidden` keeps a field
+    // out of the header while leaving it queryable. All three are read only
+    // from this def, so they are SHAPE checks, made here.
+    if (def.label !== undefined && (typeof def.label !== 'string' || !def.label.trim()))
+      schemaFail(origin, `field '${name}': \`label\` must be a non-empty string`);
+    if (def.from !== undefined && def.label !== undefined)
+      schemaFail(origin, `field '${name}': \`label\` does not apply to a header field — the header renders it in its own chip`);
     if (def.hidden !== undefined && typeof def.hidden !== 'boolean')
       schemaFail(origin, `field '${name}': \`hidden\` must be true or false`);
     if (def.tones !== undefined) {
@@ -1383,31 +1386,38 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
 }
 /* ── stamps ───────────────────────────────────────────────
    The page is schema-free: the runtime cannot read planr-schema.json, so the
-   writer STAMPS what rendering needs onto each <plan-field> — `tone="<t>"` when
-   the schema gives the value a tone, `hidden` when the field opts out of the
-   header. fieldStamp is the ONE stamping rule: planMetaSet and stampMetaFields
-   write through it, and lintMeta compares a document against it. An unknown
-   field gets no stamp (null): it is check's to report, not the writer's to
-   decorate. */
+   writer STAMPS what rendering needs onto each <plan-field> — `label="<text>"`
+   when the schema gives the field a chip label, `tone="<t>"` when it gives the
+   value a tone, `hidden` when the field opts out of the header. fieldStamp is
+   the ONE stamping rule: planMetaSet and stampMetaFields write through it, and
+   lintMeta compares a document against it. An unknown field gets no stamp
+   (null): it is check's to report, not the writer's to decorate. */
 function fieldStamp(schema, key, raw) {
   const def = schema && schema.fields[key];
   if (!def) return null;
   const v = String(raw).trim();
   const tone = def.tones && Object.prototype.hasOwnProperty.call(def.tones, v) ? def.tones[v] : null;
-  return { tone, hidden: def.hidden === true };
+  return { tone, hidden: def.hidden === true, label: def.label === undefined ? null : def.label };
 }
 function stampAttrs(stamp) {
   if (!stamp) return '';
-  return (stamp.tone ? ` tone="${stamp.tone}"` : '') + (stamp.hidden ? ' hidden' : '');
+  return (stamp.label ? ` label="${escapeText(stamp.label).replace(/"/g, '&quot;')}"` : '') +
+    (stamp.tone ? ` tone="${stamp.tone}"` : '') + (stamp.hidden ? ' hidden' : '');
 }
 // What a field's stamped attributes say that the schema does not, or '' when
 // they agree. The ONE comparison: lintMeta reports it and `meta --stamp` fixes
-// it. A valueless `tone` attribute counts as no tone.
+// it. A valueless `tone` or `label` attribute counts as none.
 function stampDrift(want, attrsRaw, raw) {
   const t = getAttr(attrsRaw, 'tone');
   const tone = typeof t === 'string' && t ? t : null;
   const hidden = getAttr(attrsRaw, 'hidden') !== undefined;
+  const l = getAttr(attrsRaw, 'label');
+  const label = typeof l === 'string' && l ? decodeEntities(l) : null;
   const out = [];
+  if (label !== want.label)
+    out.push(!want.label ? `stamped label '${label}', but the schema gives it no label`
+      : label ? `stamped label '${label}', but the schema labels it '${want.label}'`
+      : `carries no label, but the schema labels it '${want.label}'`);
   if (tone && !TONES.includes(tone)) out.push(`tone '${tone}' is not a tone (valid: ${TONES.join(', ')})`);
   else if (tone !== want.tone)
     out.push(!want.tone ? `stamped tone '${tone}', but the schema gives '${raw}' no tone`
@@ -1417,18 +1427,19 @@ function stampDrift(want, attrsRaw, raw) {
     out.push(want.hidden ? 'is not stamped hidden, but the schema hides it' : 'is stamped hidden, but the schema shows it');
   return out.join('; ');
 }
-// A field's attributes with `tone` and `hidden` replaced by `stamp`. Every
-// other attribute keeps its exact bytes and position; the stamp goes last.
+// A field's attributes with `label`, `tone` and `hidden` replaced by `stamp`.
+// Every other attribute keeps its exact bytes and position; the stamp goes last.
+const STAMP_ATTRS = ['label', 'tone', 'hidden'];
 function restampAttrs(attrsRaw, stamp) {
-  const kept = scanAttrs(attrsRaw).filter(a => a.name !== 'tone' && a.name !== 'hidden')
+  const kept = scanAttrs(attrsRaw).filter(a => !STAMP_ATTRS.includes(a.name))
     .map(a => attrsRaw.slice(a.nameStart, a.end));
   return ' ' + kept.join(' ') + stampAttrs(stamp);
 }
 // Brings each schema field's stamp in line, leaving its value bytes untouched.
 // "Already in line" is stampDrift's verdict, never a text comparison, so a tag
 // check calls clean (attributes in another order, other quoting, an extra
-// attribute) is left byte-for-byte. A drifting tag has only `tone`/`hidden`
-// rewritten. Back to front, so a rewrite never shifts a later field's offsets.
+// attribute) is left byte-for-byte. A drifting tag has only `label`/`tone`/
+// `hidden` rewritten. Back to front, so a rewrite never shifts a later field's offsets.
 // Returns the keys whose tag changed, in document order.
 function stampMetaFields(html, schema) {
   const block = readMetaBlock(html);
@@ -3449,7 +3460,7 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   meta         <file> [--format text|json]                (resolved metadata, with each value's source)
   meta         <file> --set <k>=<v> [...] [--unset <k> ...]
-  meta         <file> --stamp                             (rewrite each field's tone/hidden stamp from the schema)
+  meta         <file> --stamp                             (rewrite each field's label/tone/hidden stamp from the schema)
   query        <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                           [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                           [--format table|json|tsv|paths] [--strict]

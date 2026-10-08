@@ -40,10 +40,12 @@ class PlanHeader extends HTMLElement {
 
 /* The document's metadata as header chips: one per <plan-field> in the FIRST
    <plan-meta>, the block planr reads. The page is schema-free — the chip's
-   colour is the field's stamped `tone`, and a field stamped `hidden` is
-   skipped. A field with no stamp (written before stamps existed) renders as an
-   untoned chip. A repeated key renders once, the first, as planr reads it. The
-   key is shown, so a metadata chip never reads as the status chip. */
+   text is the field's stamped `label` (the key when it has none), its colour
+   the stamped `tone`, and a field stamped `hidden` is skipped. A field with no
+   stamp (written before stamps existed) renders as an untoned chip showing its
+   key. A repeated key renders once, the first, as planr reads it. The chip
+   always names its field — the hover title carries the key itself — so a
+   metadata chip never reads as the status chip. */
 function _metaChips() {
   const meta = document.querySelector('plan-meta');
   if (!meta) return '';
@@ -55,9 +57,10 @@ function _metaChips() {
     const value = f.textContent.replace(/\s+/g, ' ').trim();
     if (!value || f.hasAttribute('hidden')) return '';
     const tone = f.getAttribute('tone') || '';
+    const label = (f.getAttribute('label') || '').trim() || key;
     const dot = /^[a-z]+$/.test(tone) ? `<span class="dot tone-${tone}"></span>` : '';
     return `<span class="meta-chip meta-field" title="${_escapeAttr(`${key}: ${value}`)}">${dot}` +
-      `<span class="meta-key">${_escapeHtml(key)}</span><span class="meta-value">${_escapeHtml(value)}</span></span>`;
+      `<span class="meta-key">${_escapeHtml(label)}</span><span class="meta-value">${_escapeHtml(value)}</span></span>`;
   }).join('');
 }
 

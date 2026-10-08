@@ -1581,6 +1581,19 @@ describe('the shipped core schema', () => {
     expect(s.defaults).toEqual({});
   });
 
+  it('labels the two fields whose key reads poorly as a chip', () => {
+    const s = core();
+    expect(s.fields['reference-paths'].label).toBe('paths');
+    expect(s.fields['blocked-by'].label).toBe('blocked by');
+  });
+
+  it("stamps the sample plan's fields exactly as the core schema says", () => {
+    const sample = skillFile('examples/sample-plan.html');
+    const { warnings } = planr.planCheck(sample, planr.mergeSchemas(core()));
+    expect(warnings.filter(w => /plan-field/.test(w.text))).toEqual([]);
+    expect(sample).toContain('<plan-field key="reference-paths" label="paths">');
+  });
+
   it('declares every field a shipped template writes', () => {
     const fields = Object.keys(core().fields);
     for (const name of ['issue', 'tdd']) {
@@ -2723,10 +2736,10 @@ describe('stamps — the writer carries tone and hidden onto the page', () => {
 
   it('fieldStamp is the one rule: a tone for a toned value, hidden for an opted-out field, null for an unknown one', () => {
     const s = schema();
-    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false });
-    expect(planr.fieldStamp(s, 'priority', ' p1 ')).toEqual({ tone: 'warn', hidden: false });
-    expect(planr.fieldStamp(s, 'priority', 'p2')).toEqual({ tone: null, hidden: false });
-    expect(planr.fieldStamp(s, 'area', 'crm, celery')).toEqual({ tone: null, hidden: true });
+    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false, label: null });
+    expect(planr.fieldStamp(s, 'priority', ' p1 ')).toEqual({ tone: 'warn', hidden: false, label: null });
+    expect(planr.fieldStamp(s, 'priority', 'p2')).toEqual({ tone: null, hidden: false, label: null });
+    expect(planr.fieldStamp(s, 'area', 'crm, celery')).toEqual({ tone: null, hidden: true, label: null });
     expect(planr.fieldStamp(s, 'severity', 'x')).toBeNull();
     expect(planr.stampAttrs({ tone: 'warn', hidden: true })).toBe(' tone="warn" hidden');
     expect(planr.stampAttrs({ tone: null, hidden: false })).toBe('');
@@ -2796,6 +2809,82 @@ describe('stamps — the writer carries tone and hidden onto the page', () => {
     });
     expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
     expect(html).toContain('<plan-field key="area" hidden>crm</plan-field>');
+  });
+});
+
+describe('label — a field\'s chip text, stamped like tone', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      priority: { type: 'enum', values: ['p0', 'p1'], tones: { p0: 'danger' }, label: 'prio' },
+      refs:     { type: 'list', label: 'see "refs" & more' },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+  const BARE = ['<plan-header title="T"></plan-header>', '<main>', '',
+                '  <plan-section id="a" title="A"><p>Body.</p></plan-section>', '', '</main>'].join('\n');
+  const DOC = (fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+
+  it('parseSchema takes a non-empty string label, and refuses one on a header field', () => {
+    expect(S({ fields: { p: { type: 'string', label: 'Prio' } } }).fields.p.label).toBe('Prio');
+    expect(() => S({ fields: { p: { type: 'string', label: '' } } }))
+      .toThrow("field 'p': `label` must be a non-empty string");
+    expect(() => S({ fields: { p: { type: 'string', label: 3 } } }))
+      .toThrow("field 'p': `label` must be a non-empty string");
+    expect(() => S({ fields: { status: { type: 'enum', values: ['draft'], from: 'header:status', label: 'State' } } }))
+      .toThrow("field 'status': `label` does not apply to a header field — the header renders it in its own chip");
+  });
+
+  it('fieldStamp carries the label, and stampAttrs writes it first, escaped', () => {
+    const s = schema();
+    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false, label: 'prio' });
+    expect(planr.fieldStamp(s, 'owner', 'h')).toEqual({ tone: null, hidden: false, label: null });
+    expect(planr.stampAttrs(planr.fieldStamp(s, 'priority', 'p0'))).toBe(' label="prio" tone="danger"');
+    expect(planr.stampAttrs(planr.fieldStamp(s, 'refs', 'a'))).toBe(' label="see &quot;refs&quot; &amp; more"');
+  });
+
+  it('meta --set stamps the label on every field it rebuilds', () => {
+    const { html } = planr.planMetaSet(BARE, { schema: schema(), sets: ['priority=p1', 'refs=a,b', 'owner=h'] });
+    expect(html).toContain('<plan-field key="priority" label="prio">p1</plan-field>');
+    expect(html).toContain('<plan-field key="refs" label="see &quot;refs&quot; &amp; more">a,b</plan-field>');
+    expect(html).toContain('<plan-field key="owner">h</plan-field>');
+  });
+
+  it('meta --stamp adds a missing label, rewrites a stale one and drops one the schema no longer declares', () => {
+    const before = DOC([
+      '<plan-field key="priority" tone="danger">p0</plan-field>',
+      '<plan-field key="refs" label="old">a, b</plan-field>',
+      '<plan-field key="owner" label="who">h</plan-field>',
+    ]);
+    const { html, message } = planr.planMetaStamp(before, { schema: schema() });
+    expect(html).toBe(DOC([
+      '<plan-field key="priority" label="prio" tone="danger">p0</plan-field>',
+      '<plan-field key="refs" label="see &quot;refs&quot; &amp; more">a, b</plan-field>',
+      '<plan-field key="owner">h</plan-field>',
+    ]));
+    expect(message).toBe('stamped priority\nstamped refs\nstamped owner');
+    // An escaped stamp reads back as the schema's label: in line, nothing to stamp.
+    expect(planr.planMetaStamp(html, { schema: schema() }).message)
+      .toBe('every field already matches the schema — nothing to stamp');
+  });
+
+  it('check warns when a label stamp drifts, naming the fix', () => {
+    const warn = (f) => planr.planCheck(DOC([f]), schema()).warnings.map(w => w.text);
+    expect(warn('<plan-field key="priority" label="prio" tone="danger">p0</plan-field>')).toEqual([]);
+    expect(warn('<plan-field key="priority" tone="danger">p0</plan-field>')).toEqual([
+      '<plan-field key="priority">: carries no label, but the schema labels it \'prio\' — run `planr meta <file> --stamp`']);
+    expect(warn('<plan-field key="priority" label="x" tone="danger">p0</plan-field>')[0])
+      .toMatch(/stamped label 'x', but the schema labels it 'prio'/);
+    expect(warn('<plan-field key="owner" label="who">h</plan-field>')[0])
+      .toMatch(/stamped label 'who', but the schema gives it no label/);
+  });
+
+  it("new stamps a template field's label", () => {
+    const shell = '<title>{{title}}</title>\n<plan-header title="{{title}}"></plan-header>\n<main>\n{{body}}\n</main>';
+    const body = '  <plan-meta>\n    <plan-field key="priority">p1</plan-field>\n  </plan-meta>';
+    const html = planr.planNew(shell, body, { title: 'T', date: '2026-01-01', skillSubpath: 's', schema: schema() });
+    expect(html).toContain('<plan-field key="priority" label="prio">p1</plan-field>');
   });
 });
 
