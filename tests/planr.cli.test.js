@@ -1112,3 +1112,30 @@ describe('wordy documentation', () => {
       expect(c, t).toContain(t);
   });
 });
+
+describe('a value flag given with no value', () => {
+  it('is refused by name for every command, before the command runs', () => {
+    freshPlan();
+    const cases = [
+      [['query', dir, '--limit'], '--limit'],
+      [['badge', P(), '--match', 'x', '--set', 'decided', '--nth'], '--nth'],
+      [['rm-item', P(), 'overview', '--match', 'x', '--into'], '--into'],
+      [['replace', P(), 'overview', '--match', 'x', '--with'], '--with'],
+      [['meta', P(), '--set'], '--set'],
+      [['meta', P(), '--unset'], '--unset'],
+      [['query', dir, '--where'], '--where'],
+    ];
+    for (const [argv, flag] of cases) {
+      const r = run(argv);
+      expect(r.code, argv.join(' ')).toBe(1);
+      expect(r.stderr, argv.join(' ')).toBe(`planr: ${flag} was given with no value\n`);
+    }
+  });
+
+  it('still accepts an explicit empty value and a bool flag', () => {
+    freshPlan();
+    expect(run(['replace', P(), 'overview', '--match', 'definitely-absent-text', '--with', '']).stderr)
+      .not.toContain('was given with no value');
+    expect(run(['tasks', P(), '--all']).code).toBe(0);
+  });
+});

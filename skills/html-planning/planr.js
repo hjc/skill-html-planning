@@ -78,29 +78,17 @@ function write(file, html) {
   try { fs.writeFileSync(file, html, 'utf8'); }
   catch (e) { throw new PlanError(`cannot write '${file}': ${e.message}`); }
 }
-// A flag's string value, or null when the flag is absent or was passed with no
-// value (parseFlags stores that as `true`). Repeats: the last one wins.
+// A flag's string value, or null when the flag is absent. A value flag given
+// with no value never gets here: parseFlags refuses it. Repeats: the last one wins.
 function flagValue(flags, key) {
   const v = key ? flags[key] : undefined;
   if (v == null || v === true) return null;
   return String(Array.isArray(v) ? v[v.length - 1] : v);
 }
-// Every value a repeatable flag was given, in order. A bare occurrence is a
-// mistake, not an empty value: parseFlags records it as `true`, and dropping
-// it silently is exactly the class of bug COMMAND_FLAGS's 'bool' kind prevents.
+// Every value a repeatable flag was given, in order. parseFlags has already
+// refused a value flag given with no value, so every entry here is a string.
 function flagList(flags, key) {
-  if (flags[key] == null) return [];
-  return [].concat(flags[key]).map((v) => {
-    if (v === true) throw new PlanError(`--${key} was given with no value`);
-    return String(v);
-  });
-}
-// The last value a value flag was given, or null when absent: flagValue's
-// repeat rule with flagList's bare rule, so a bare occurrence is refused
-// rather than read as "absent, use the default".
-function flagLast(flags, key) {
-  const all = flagList(flags, key);
-  return all.length ? all[all.length - 1] : null;
+  return flags[key] == null ? [] : [].concat(flags[key]).map(String);
 }
 function readStdin() {
   if (process.stdin.isTTY) throw new PlanError('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
@@ -1891,7 +1879,6 @@ function matchNeedle(flags, verb) {
 }
 // --nth / --all, validated identically for every text-addressed write.
 function matchSelection(flags) {
-  if (flags.nth === true) throw new PlanError('--nth expects a 1-based number');
   const nthRaw = flagValue(flags, 'nth');
   if (nthRaw != null && !/^[1-9]\d*$/.test(nthRaw)) throw new PlanError(`--nth expects a 1-based number, got "${nthRaw}"`);
   if (nthRaw != null && flags.all) throw new PlanError('use only one of --nth / --all');
@@ -3078,7 +3065,7 @@ const preview = (t) => (charCount(t) > WORDY_PREVIEW ? [...t].slice(0, WORDY_PRE
    shape, possibly from several targets: a path seen twice is read once, and
    the report runs in path order, then line, then column. An `.html`/`.htm`
    path is read through htmlUnits, anything else through markdownUnits.
-   Each limit is the shell's flagLast read: a string, or null for the default.
+   Each limit is the shell's flagValue read: a string, or null for the default.
    `errors` is the unreadable-file block for stderr ('' when none); `failure`
    is the exit-1 message — set when anything is flagged or unreadable, null on
    a clean run. */
@@ -3465,7 +3452,6 @@ function planReplace(html, address, body, flags = {}) {
   const sel = matchSelection(flags);
   let replacement;
   if ('with' in flags) {
-    if (flags.with === true) throw new PlanError('--with needs a value — pass --with "" to delete the matched text');
     if ('file' in flags) throw new PlanError('use only one of --with / --file');
     replacement = flagValue(flags, 'with');
   } else {
@@ -3601,10 +3587,6 @@ function cmdMeta(file, flags) {
   const { schema, sources } = loadSchema();
   const list = (v) => (v == null ? [] : [].concat(v));
   const sets = list(flags.set), unsets = list(flags.unset);
-  // parseFlags stores a valueless flag as `true`, so dropping those would make
-  // `meta f.html --set` print the report and exit 0 — a silent no-op.
-  if ([...sets, ...unsets].some(v => v === true))
-    throw new PlanError('--set expects <key>=<value> and --unset expects a field name');
   if (flags.stamp) {
     const html = read(file);
     const { html: out, message } = planMetaStamp(html, { schema, sets, unsets });
@@ -3697,12 +3679,12 @@ function cmdNext(target, flags) {
 
 // The files a directory contributes to `wordy`: prose and plan documents.
 const WORDY_FILE = (p) => /\.(md|markdown|txt|html?)$/i.test(p);
-// Every positional is a target. Every value flag is read through flagLast, so a
+// Every positional is a target. Every value flag is read through flagValue, so a
 // bare `--max-chars` or `--format` is refused rather than read as "use the default".
 function cmdWordy(targets, flags) {
   const { report, errors, failure } = planWordy(targets.flatMap(t => collectDocs(t, WORDY_FILE)), {
-    maxChars: flagLast(flags, 'max-chars'), maxSentences: flagLast(flags, 'max-sentences'),
-    maxSentenceChars: flagLast(flags, 'max-sentence-chars'), format: flagLast(flags, 'format') || 'text',
+    maxChars: flagValue(flags, 'max-chars'), maxSentences: flagValue(flags, 'max-sentences'),
+    maxSentenceChars: flagValue(flags, 'max-sentence-chars'), format: flagValue(flags, 'format') || 'text',
   });
   process.stdout.write(report);
   if (errors) process.stderr.write(errors + '\n');
@@ -3861,6 +3843,8 @@ const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set
 // own required-argument message rather than one that says <file>. `wordy`
 // takes one or more of them.
 const NEEDS_TARGET = ['query', 'next', 'wordy'];
+// A flag declared 'value' must be followed by a value; a bare one is refused here,
+// once, for every command, rather than read as "absent" by whichever core meets it.
 function parseFlags(argv, cmd) {
   const flags = {};
   const positional = [];
@@ -3872,6 +3856,8 @@ function parseFlags(argv, cmd) {
       if (!isBooleanFlag(cmd, key) && next !== undefined && !next.startsWith('--')) {
         flags[key] = key in flags ? [].concat(flags[key], next) : next; // repeats accumulate
         i++;
+      } else if (declaresFlag(cmd, key) && COMMAND_FLAGS[cmd][key] === 'value') {
+        throw new PlanError(`--${key} was given with no value`);
       } else {
         flags[key] = true;
       }
@@ -3937,11 +3923,11 @@ round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { process.stdout.write(USAGE + '\n'); return; }
-  const { flags, positional } = parseFlags(rest, cmd);
-  const file = positional[0];
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
   try {
+    const { flags, positional } = parseFlags(rest, cmd);
+    const file = positional[0];
     if (!Object.prototype.hasOwnProperty.call(COMMAND_FLAGS, cmd))
       throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
     if (flags.help) { process.stdout.write(USAGE + '\n'); return; }
@@ -3994,7 +3980,7 @@ module.exports = {
   walkNodes, TEXT_RULES, visibleUnits, visibleText, textLines, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
-  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags,
+  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags, parseFlags,
   NEEDS_FILE, NEEDS_TARGET,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
@@ -4004,7 +3990,7 @@ module.exports = {
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport,
-  globToRegExp, globBase, collectDocs, flagList, flagLast,
+  globToRegExp, globBase, collectDocs, flagList,
   NEXT_FORMATS, docOutline, planNext,
   splitSentences, markdownUnits, htmlUnits, measureText, WORDY_KINDS, WORDY_FORMATS, planWordy,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,

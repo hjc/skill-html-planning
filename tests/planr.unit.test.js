@@ -270,7 +270,6 @@ describe('text-addressed matching', () => {
     expect(planr.matchSelection({ nth: '2' })).toEqual({ nth: 2, all: false });
     expect(planr.matchSelection({ all: true })).toEqual({ nth: null, all: true });
     expect(() => planr.matchSelection({ nth: '0' })).toThrow(/--nth expects a 1-based number, got "0"/);
-    expect(() => planr.matchSelection({ nth: true })).toThrow(/--nth expects a 1-based number/);
     expect(() => planr.matchSelection({ nth: '1', all: true })).toThrow(/use only one of --nth \/ --all/);
   });
   it('matchNeedle decodes entities and collapses whitespace in --match', () => {
