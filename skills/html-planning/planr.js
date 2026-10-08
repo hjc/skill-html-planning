@@ -3625,8 +3625,11 @@ function cmdMeta(file, flags) {
 /* The one filesystem boundary for a corpus: a directory, a single file, or a
    glob -> [{ path, html } | { path, error }], sorted by path so every run
    orders ties identically. No index and no cache — query reads the documents
-   (contract C6). Paths come back with forward slashes on every platform. */
-function collectDocs(target) {
+   (contract C6). Paths come back with forward slashes on every platform.
+   `accept` picks the files a DIRECTORY contributes (HTML, for query and
+   next); a named file is always taken, and a glob takes whatever it matches. */
+const HTML_FILE = (p) => /\.html$/i.test(p);
+function collectDocs(target, accept = HTML_FILE) {
   const t = String(target).replace(/\\/g, '/').replace(/\/+$/, '') || '.';
   const walk = (dir, take, out = []) => {
     let entries;
@@ -3642,7 +3645,7 @@ function collectDocs(target) {
   let paths;
   if (!hasGlobMeta(t)) {
     if (!fs.existsSync(t)) throw new PlanError(`no such file or directory '${target}'`);
-    paths = fs.statSync(t).isDirectory() ? walk(t, (p) => /\.html$/i.test(p)) : [t];
+    paths = fs.statSync(t).isDirectory() ? walk(t, accept) : [t];
   } else {
     const base = globBase(t);
     if (!fs.existsSync(base)) throw new PlanError(`no such directory '${base}' — from the target '${target}'`);
@@ -3690,6 +3693,20 @@ function cmdNext(target, flags) {
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
   if (flags.strict && skipped.length)
     throw new PlanError(`next --strict: ${skipped.length} file(s) skipped, listed above`);
+}
+
+// The files a directory contributes to `wordy`: prose and plan documents.
+const WORDY_FILE = (p) => /\.(md|markdown|txt|html?)$/i.test(p);
+// Every positional is a target. Every value flag is read through flagLast, so a
+// bare `--max-chars` or `--format` is refused rather than read as "use the default".
+function cmdWordy(targets, flags) {
+  const { report, errors, failure } = planWordy(targets.flatMap(t => collectDocs(t, WORDY_FILE)), {
+    maxChars: flagLast(flags, 'max-chars'), maxSentences: flagLast(flags, 'max-sentences'),
+    maxSentenceChars: flagLast(flags, 'max-sentence-chars'), format: flagLast(flags, 'format') || 'text',
+  });
+  process.stdout.write(report);
+  if (errors) process.stderr.write(errors + '\n');
+  if (failure) throw new PlanError(failure);   // → stderr + exit 1, as check --strict does
 }
 
 function cmdNew(outPath, flags) {
@@ -3808,6 +3825,7 @@ const COMMAND_FLAGS = {
   query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
                     fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
   next:           { rank: 'value', format: 'value', strict: 'bool' },
+  wordy:          { 'max-chars': 'value', 'max-sentences': 'value', 'max-sentence-chars': 'value', format: 'value' },
   set:            {},
   'set-body':     { file: 'value', append: 'bool' },
   prepend:        { file: 'value', into: 'value' },
@@ -3840,8 +3858,9 @@ function assertKnownFlags(cmd, flags) {
 const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
   'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
 // The corpus commands take a <dir|glob> in the same slot, so they need their
-// own required-argument message rather than one that says <file>.
-const NEEDS_TARGET = ['query', 'next'];
+// own required-argument message rather than one that says <file>. `wordy`
+// takes one or more of them.
+const NEEDS_TARGET = ['query', 'next', 'wordy'];
 function parseFlags(argv, cmd) {
   const flags = {};
   const positional = [];
@@ -3879,6 +3898,8 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
                           [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                           [--format table|json|tsv|paths] [--strict]
   next         <dir|glob> [--rank <name>] [--format text|json] [--strict]
+  wordy        <file|dir|glob> [...] [--format text|json]  (detects long, dense and run-on lines; exit 1 on any)
+                          [--max-chars N] [--max-sentences N] [--max-sentence-chars N]
   set          <file> <path>=<value> [<path>=<value> ...]
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   prepend      <file> <address> [--file <f>] [--into <sel>]
@@ -3936,6 +3957,7 @@ function main() {
       case 'meta':         return cmdMeta(file, flags);
       case 'query':        return cmdQuery(file, flags);
       case 'next':         return cmdNext(file, flags);
+      case 'wordy':        return cmdWordy(positional, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
       // read as success.
