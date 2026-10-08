@@ -3610,6 +3610,14 @@ function assertKnownFlags(cmd, flags) {
   if (unknown.length) throw new PlanError(`${cmd} does not take ${unknown.map(k => `--${k}`).join(', ')} — ` +
     `valid: ${Object.keys(COMMAND_FLAGS[cmd]).map(k => `--${k}`).join(', ') || '(none)'}`);
 }
+// Which positional a command requires, for main()'s missing-argument message.
+// Together with `templates` (which takes an optional name) these are exactly
+// COMMAND_FLAGS's keys — a test holds the two to each other.
+const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
+  'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
+// The corpus commands take a <dir|glob> in the same slot, so they need their
+// own required-argument message rather than one that says <file>.
+const NEEDS_TARGET = ['query', 'next'];
 function parseFlags(argv, cmd) {
   const flags = {};
   const positional = [];
@@ -3688,13 +3696,8 @@ function main() {
   const file = positional[0];
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
-  const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
-    'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
-  // The corpus commands take a <dir|glob> in the same slot, so they need their
-  // own required-argument message rather than one that says <file>.
-  const NEEDS_TARGET = ['query', 'next'];
   try {
-    if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd) && !NEEDS_TARGET.includes(cmd))
+    if (!Object.prototype.hasOwnProperty.call(COMMAND_FLAGS, cmd))
       throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
     if (flags.help) { process.stdout.write(USAGE + '\n'); return; }
     assertKnownFlags(cmd, flags);
@@ -3746,6 +3749,7 @@ module.exports = {
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
   PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags,
+  NEEDS_FILE, NEEDS_TARGET,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,

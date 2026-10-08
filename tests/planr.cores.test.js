@@ -2868,6 +2868,12 @@ describe('COMMAND_FLAGS — the flags each command reads', () => {
       expect(Object.keys(flags).sort(), cmd).toEqual([...usage[cmd]].sort());
   });
 
+  it('knows exactly the commands main() dispatches: NEEDS_FILE, NEEDS_TARGET and templates', () => {
+    const dispatched = [...planr.NEEDS_FILE, ...planr.NEEDS_TARGET, 'templates'];
+    expect(new Set(dispatched).size).toBe(dispatched.length);
+    expect([...dispatched].sort()).toEqual(Object.keys(planr.COMMAND_FLAGS).sort());
+  });
+
   it('reads whether a flag takes a value from the command that reads it', () => {
     expect(planr.isBooleanFlag('read', 'text')).toBe(true);
     expect(planr.isBooleanFlag('badge', 'text')).toBe(false);   // badge --text <T> takes the label

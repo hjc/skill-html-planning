@@ -46,7 +46,7 @@ A generated plan file contains **only semantic `<plan-*>` markup** — no inline
 2. **Thin `cmd*` IO shells** — read the file (and stdin/`--body-file`), call the core, then `write`/print. The shell is the only IO boundary; it holds no validation text.
 3. **`main()` is the sole `die()` site.** It wraps dispatch in `try { … } catch (e) { if (e instanceof PlanError) die(e.message); throw e; }`, so a `PlanError` becomes `planr: <msg>\n` on stderr + exit 1, and any non-`PlanError` surfaces as a raw stack (a real bug, not a tidy user error). **Never** call `die()` / `process.exit()` anywhere else — a core that exits re-breaks unit-testability.
 
-When adding a command: write the pure `plan*` core (throwing `PlanError`), add a thin `cmd*` shell, wire it into `main()`'s dispatch + `NEEDS_FILE`, export the core from `module.exports`, document it in `SKILL.md`'s command-reference table **and** the `USAGE` string, and cover it in `tests/planr.cores.test.js` (happy + error). Keep the integration suite (`tests/planr.cli.test.js`) to wiring only — dispatch, exit codes, stdin, round-trips, the `.claude` subpath bake, and at least one error→exit-1 case that proves `main()`'s catch fires. Low-level helpers (`walkTags`, `walkNodes`, `visibleUnits`, `fitBlock`, `ownElements`, `resolveContainer`) belong in `tests/planr.unit.test.js` alongside the scanner.
+When adding a command: write the pure `plan*` core (throwing `PlanError`), add a thin `cmd*` shell, wire it into `main()`'s dispatch, `COMMAND_FLAGS` (the unknown-command check reads it) and `NEEDS_FILE` or `NEEDS_TARGET`, export the core from `module.exports`, document it in `SKILL.md`'s command-reference table **and** the `USAGE` string, and cover it in `tests/planr.cores.test.js` (happy + error). Keep the integration suite (`tests/planr.cli.test.js`) to wiring only — dispatch, exit codes, stdin, round-trips, the `.claude` subpath bake, and at least one error→exit-1 case that proves `main()`'s catch fires. Low-level helpers (`walkTags`, `walkNodes`, `visibleUnits`, `fitBlock`, `ownElements`, `resolveContainer`) belong in `tests/planr.unit.test.js` alongside the scanner.
 
 ### Invariants a new command must not break
 
@@ -93,7 +93,8 @@ When adding a command: write the pure `plan*` core (throwing `PlanError`), add a
   become a `skipped` entry, printed to stderr so stdout stays exactly the result set, carried in the JSON payload, and
   gated by `--strict`. A target that resolves to zero FILES is an error; a filter that matches zero documents is not.
 - **`query` and `next` take a `<dir|glob>`, so they live in `NEEDS_TARGET`, not `NEEDS_FILE`.** Both of `main()`'s
-  guards read those lists — the unknown-command check and the missing-argument check — and the second one prints
+  guards read those lists — the unknown-command check reads `COMMAND_FLAGS`, and a test holds
+  `NEEDS_FILE` ∪ `NEEDS_TARGET` ∪ `templates` to its keys — and the missing-argument check prints
   "requires a `<file>` argument", which is false for a directory.
 - **`next` is driven only by a named ranking.** There is no implicit order: a prioritisation policy in `planr.js` is a
   field vocabulary in `planr.js`, which the schema owns. An empty queue exits **0** — a caller polling "is there
