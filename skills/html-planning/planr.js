@@ -3012,6 +3012,30 @@ function markdownUnits(text) {
   return units;
 }
 
+/* ── wordy: the measured units of an HTML document ────────
+   An HTML document is read through textLines — the read --text rule, never a
+   second tag-to-text conversion — over its <body> (the whole file when it has
+   none, so the <head>'s inline loader is never read as prose). Code and
+   heading lines are exempt; a table row yields one unit per non-empty cell.
+   `line` is the SOURCE line the text starts on, and `section` the dot-path
+   address of the innermost section holding it (null outside every section),
+   so a finding can be acted on with `read`, `replace` or `set-body`. */
+function htmlUnits(html) {
+  const body = findElement(html, 'body');
+  const el = body || { outerStart: 0, outerEnd: html.length, innerStart: 0, innerEnd: html.length };
+  const spans = [];
+  walkSections(html, ({ el: s, addr }) => spans.push({ from: s.outerStart, to: s.outerEnd, addr }));
+  // walkSections is pre-order, so the LAST span holding an offset is the innermost.
+  const sectionAt = (at) => spans.reduce((hit, s) => (s.from <= at && at < s.to ? s.addr : hit), null);
+  const unit = (at, column, context, text) => ({ line: lineOf(html, at), column, context, section: sectionAt(at), text });
+  const units = [];
+  for (const rec of textLines(html, el, { body: true })) {
+    if (rec.kind === 'row') rec.cells.forEach((c, k) => { if (c.text) units.push(unit(c.at, k + 1, 'table', c.text)); });
+    else if (rec.kind === 'text' && rec.text) units.push(unit(rec.at, null, 'prose', rec.text));
+  }
+  return units;
+}
+
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
@@ -3869,7 +3893,7 @@ module.exports = {
   QUERY_FORMATS, planQuery, skipReport,
   globToRegExp, globBase, collectDocs, flagList,
   NEXT_FORMATS, docOutline, planNext,
-  splitSentences, markdownUnits,
+  splitSentences, markdownUnits, htmlUnits,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };

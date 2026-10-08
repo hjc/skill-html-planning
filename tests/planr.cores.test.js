@@ -3172,3 +3172,41 @@ describe('markdownUnits — what wordy measures in a plain-text file', () => {
     ]);
   });
 });
+
+describe('htmlUnits — what wordy measures in an HTML document', () => {
+  const DOC = [
+    '<html><head><title>T</title><script>var s = "One. Two. Three.";</script></head>',
+    '<body>',
+    '<plan-header title="Plan" subtitle="What it covers"></plan-header>',
+    '<main>',
+    '<plan-section id="steps" title="Steps">',
+    '  <plan-section id="step-1" title="First. Step.">',
+    '    <p>Some',
+    '      prose.</p>',
+    '    <h3>A heading. With. Dots.</h3>',
+    '    <pre><code>code. Code.</code></pre>',
+    '    <plan-table><table>',
+    '      <tr><td>1</td><td>Cell <code>two</code>.</td></tr>',
+    '    </table></plan-table>',
+    '  </plan-section>',
+    '  <p>Back in steps.</p>',
+    '</plan-section>',
+    '</main>',
+    '</body></html>',
+  ].join('\n');
+
+  it('reads the body through textLines: prose and cells, with source lines and section addresses', () => {
+    expect(planr.htmlUnits(DOC)).toEqual([
+      { line: 3, column: null, context: 'prose', section: null, text: 'What it covers' },
+      { line: 7, column: null, context: 'prose', section: 'steps.step-1', text: 'Some prose.' },
+      { line: 12, column: 1, context: 'table', section: 'steps.step-1', text: '1' },
+      { line: 12, column: 2, context: 'table', section: 'steps.step-1', text: 'Cell two.' },
+      { line: 15, column: null, context: 'prose', section: 'steps', text: 'Back in steps.' },
+    ]);
+  });
+
+  it('reads the whole file when there is no <body>', () => {
+    expect(planr.htmlUnits('<p>Alone.</p>')).toEqual(
+      [{ line: 1, column: null, context: 'prose', section: null, text: 'Alone.' }]);
+  });
+});
