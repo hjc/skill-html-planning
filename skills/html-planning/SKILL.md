@@ -33,7 +33,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan" --template issue \
      --set header.subtitle="What it covers" --set header.status=review
    ```
-   Typed facts — priority, owner, area — go into the document's metadata afterwards with `planr meta <file> --set`, and render as header chips (see "Metadata").
+   Typed facts — the paths a plan touches, what blocks it, whatever your repo's schema adds — go into the document's metadata afterwards with `planr meta <file> --set`, and render as header chips (see "Metadata").
 2. **Read the generated file.**
 3. **Use `planr`** (or `Edit`) to add sections, cards, tables, and other components using the Web Component tags below.
 4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count. Read the warnings it prints after the structure report; each names a line that will not render as written.
@@ -54,7 +54,7 @@ Page header with title, subtitle, and a row of chips: the status, the date, and 
 ```
 **Attributes:** `title`, `subtitle`, `status`, `date`.
 
-**The chip row** shows, in order: the status chip (a tone-coloured dot and the status), the date, then **one chip per field of the document's `<plan-meta>`** — `key value`, with a dot in the field's tone when its schema declares one. A field declared `hidden` is not shown, and a long value is cut with an ellipsis (hover for the whole). The status chip never shows a key, so `priority p1` cannot be mistaken for it.
+**The chip row** shows, in order: the status chip (a tone-coloured dot and the status), the date, then **one chip per field of the document's `<plan-meta>`** — `label value`, where the label is the field's schema `label` or, when it has none, its key — with a dot in the field's tone when its schema declares one. A field declared `hidden` is not shown, and a long value is cut with an ellipsis (hover for the key and the whole value). The status chip never shows a key, so `priority p1` cannot be mistaken for it.
 
 **`chips` is deprecated.** A pipe-delimited `chips` attribute still renders, after the metadata chips, but no template writes it and `check` warns on it. Declare each recurring chip as a schema field and set it with `planr meta --set`.
 
@@ -150,14 +150,14 @@ shows nothing**: `<plan-header>` renders each field as a chip in its meta-row.
 ```html
 <plan-meta>
   <plan-field key="type">issue</plan-field>
-  <plan-field key="area">server/project/crm, celery</plan-field>
-  <plan-field key="blocked-by">storage-quota-cache.html</plan-field>
+  <plan-field key="reference-paths" label="paths">server/project/crm, celery</plan-field>
+  <plan-field key="blocked-by" label="blocked by">storage-quota-cache.html</plan-field>
 </plan-meta>
 ```
 
 **Attributes:** `key` on `<plan-field>` — plain text; the header shows it verbatim, so markup written in it shows
-literally. `tone` and `hidden` are **stamps written by `planr`** from the schema, never by hand (see "Tones and the
-header" below).
+literally. `label`, `tone` and `hidden` are **stamps written by `planr`** from the schema, never by hand (see "Tones
+and the header" below).
 
 - **It is the first element inside `<main>`**, before the first section. Anywhere else and `check` warns.
 - **One block per document.** A second one is not read.
@@ -430,13 +430,13 @@ tr:2          the 2nd <tr>, 1-based
 
 | Command | Positional args | Flags | What it does |
 |---------|-----------------|-------|--------------|
-| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `area`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. A template's metadata fields are stamped from the schema. Run `templates <name>` for the variables a template offers. |
+| `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `reference-paths`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. A template's metadata fields are stamped from the schema. Run `templates <name>` for the variables a template offers. |
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
-| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, a legal parent for every balanced tag — a `<tr>` directly in `<table>`/`<thead>`/`<tbody>`/`<tfoot>`, a cell in a `<tr>`, and no table tag or block component inside an inline element such as `<code>` — unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`, a header carrying free-text `chips`, and a `<plan-field>` stamp that disagrees with the schema. Warnings exit **0**; `--strict` exits **1** when there are any. |
+| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, a legal parent for every balanced tag — a `<tr>` directly in `<table>`/`<thead>`/`<tbody>`/`<tfoot>`, a cell in a `<tr>`, and no table tag or block component inside an inline element such as `<code>` — unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`, a header carrying free-text `chips`, a `<plan-field>` stamp that disagrees with the schema, and a `blocked-by` target that does not exist. Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`; `--all` includes `done`, `--status` lists only the given statuses. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
-| `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
+| `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `label`/`tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
 | `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
 | `next` | `<dir\|glob>` | `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
@@ -457,7 +457,7 @@ tr:2          the 2nd <tr>, 1-based
 - **Placing a section:** `--after`/`--before` name a **sibling** — by full path or bare id — which fixes the new section's nesting depth too — so `add-section --id step-2 --after step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
 - **Numbers are automatic.** `1`, `1.1`, `1.1.2` derive from document position and re-derive after every add/move/remove — never write a `num` to keep a plan in order, and never renumber by hand. `num` is a label **override** only: a bare value (`"Part 1"`) replaces that one level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is the complete number, used as-is.
 - **`status` values:** sections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `review` / `approved` / `implemented` / `rejected`. `set` validates each against **its own** enum, and **rejects** an out-of-set status or a misspelled attribute (`staus`) — it never silently no-ops. That holds for `new --set header.status=…` too, which is the same code path.
-- **Nothing is dropped in silence.** `set` applies every assignment it is given; `new --set` errors on a key that addresses nothing. If a command exits 0, every argument you passed took effect.
+- **Nothing is dropped in silence.** `set` applies every assignment it is given; `new --set` errors on a key that addresses nothing; a flag the command does not read is refused, naming the ones it does. If a command exits 0, every argument you passed took effect.
 - **Ids are unique document-wide.** `add-section` rejects an id already used at any depth, and `check` reports a duplicate that got in another way.
 - **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render.
 - **Body input:** `set-body`, `prepend`, `append`, and `insert` read `--file <f>` if given, otherwise **stdin**. `replace` takes `--with <T>` first, then `--file <f>`, then stdin, and drops a body's trailing newline. `add-section` takes `--body-file <f>` (no stdin).
@@ -577,18 +577,18 @@ Both are validated identically (`--set status=aproved` and `--set header.status=
 
 ## Metadata
 
-A document's **metadata** is the small set of facts a tool filters and sorts a whole directory of documents by — `type`, `status`, `owner`, `area`, and whatever else a repo's schema declares — held in the document itself rather than in a separate index.
+A document's **metadata** is the small set of facts a tool filters and sorts a whole directory of documents by — `type`, `status`, `reference-paths`, `blocked-by`, and whatever else a repo's schema declares — held in the document itself rather than in a separate index.
 
-**Resolution chain.** Every field resolves through four sources, in order, and the first one that carries a value wins: the document's own `<plan-meta>` block, then a `<plan-header>` attribute (for a field declared `from: "header:…"`), then path inference (a document under `issues/` resolves `type=issue`), then a schema-declared default. A document with **no `<plan-meta>` block at all is still fully queryable** — the header and path sources alone resolve `title`, `status`, `date` and an inferred `type` — so adding the block to an existing corpus is optional, never a prerequisite.
+**Resolution chain.** Every field resolves through four sources, in order, and the first one that carries a value wins: the document's own `<plan-meta>` block, then a `<plan-header>` attribute (for a field declared `from: "header:…"`), then path inference (an `infer` rule matching `/issues/` can resolve `type=issue`), then a schema-declared default. A document with **no `<plan-meta>` block at all is still fully queryable** — the header and path sources alone resolve `title`, `status`, `date` and whatever the `infer` rules set — so adding the block to an existing corpus is optional, never a prerequisite.
 
 **The schema.** The field vocabulary is **data, not code**: nothing about a field's name, type or enum values is hardcoded in `planr.js`. Two files are read, merged in this order: the shipped core (`planr-schema.json` beside `planr.js`) and, when it exists, a consuming repo's own **`.claude/planr-schema.json`**, found beside `planr-templates/` under the same `.claude` this skill installs into. A consumer field **replaces** the core field of the same name outright — never a key-by-key merge — because an enum's declared value order is load-bearing and there is no unambiguous way to merge two orders.
 
 ```json
 {
   "fields": {
-    "priority": { "type": "enum", "values": ["p0", "p1", "p2"], "tones": { "p0": "danger", "p1": "warn" } },
-    "area":     { "type": "list", "hidden": true },
-    "due":      { "type": "date" }
+    "priority":  { "type": "enum", "values": ["p0", "p1", "p2"], "tones": { "p0": "danger", "p1": "warn" } },
+    "component": { "type": "list", "hidden": true },
+    "due":       { "type": "date", "label": "due by" }
   },
   "infer":    [{ "match": "/issues/", "set": { "priority": "p1" } }],
   "defaults": { "priority": "p2" }
@@ -605,27 +605,28 @@ Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enu
 | `.hidden` | any field | `true` keeps it out of the header; still queryable |
 | `.repeatable` | any type | the value is a comma-separated list, matched per item |
 | `.min` / `.max` | `number` | bounds |
-| `.from` | any field | `header:title\|subtitle\|status\|date\|chips` — a read-only view of that header attribute |
-| `.label` | any field | display label (string); accepted, not yet rendered |
+| `.from` | any field | `header:title\|status\|date` — a read-only view of that header attribute |
+| `.label` | any field but a `from` one | the chip's text in place of the key; stamped onto each `<plan-field>` |
+| `.blocks` | `path` | `true` makes each target a blocker of the document (see "Blockers") |
 | `infer` | top level | `[{ "match": "<regex on path>", "set": { field: value } }]` |
 | `defaults` | top level | field → value, the last resort of the chain |
 | `rankings` | top level | name → `{ where, order }` (see "Rankings") |
 
-Field names match `^[a-z][a-z0-9-]*$`. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file.
+Field names match `^[a-z][a-z0-9-]*$`, except `path` and `blocked`, which are built-in columns. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file.
 
 **`planr meta`** reads and writes the block. With no `--set`/`--unset`, it prints the resolved value of every field and where each one came from:
 
 ```bash
 $ planr meta plan.html
 title   Quota cache has no invalidator   (header)
-type    issue                            (path)
+type    issue                            (meta)
 status  draft                            (header)
 
-unset: owner, area
+unset: reference-paths, blocked-by
 
 $ planr meta plan.html --format json    # the same record, machine-readable
-$ planr meta plan.html --set owner=hayden --set area=crm,celery
-$ planr meta plan.html --unset owner
+$ planr meta plan.html --set reference-paths=server/project/crm,celery
+$ planr meta plan.html --unset reference-paths
 ```
 
 `--set` creates the `<plan-meta>` block as the **first element inside `<main>`** when none exists yet, and updates it in place otherwise. An unknown field or a value the schema refuses is **refused, never written** — exactly the rule `check` enforces below.
@@ -635,6 +636,32 @@ $ planr meta plan.html --unset owner
 **One writable home per fact.** A field declared `from: "header:…"` — `title`, `status`, `date` in the shipped core — is a **read-only view** of that header attribute, not a second place to store it. `planr meta --set` refuses to write one and names the real writer: `planr set <file> header.status=…`. A template may not declare one either, and `check` warns when a hand edit puts one in a block anyway.
 
 **Template defaults.** A template declares metadata defaults by writing a literal `<plan-meta>` block at the top of its body, using `{{name:default}}` wherever the value should be fillable at scaffold time — no new template syntax. A placeholder left empty is dropped rather than written as an empty field, and a template may not declare a header-owned field. See **`references/template-authoring.md`** for the full convention.
+
+### First-time setup
+
+The shipped core declares only what every repo shares: `title`, `status` and `date` (views of the header), `type`
+with the two document types the skill ships templates for — `issue` and `tdd` — plus `reference-paths` and
+`blocked-by`. It infers nothing and defaults nothing. Declare the rest in **`.claude/planr-schema.json`**:
+
+```json
+{
+  "fields": {
+    "type": { "type": "enum", "values": ["prd", "spec", "tdd", "issue"] }
+  },
+  "infer": [
+    { "match": "/issues/", "set": { "type": "issue" } },
+    { "match": "/tdds/", "set": { "type": "tdd" } },
+    { "match": "/prd-[^/]*\\.html$", "set": { "type": "prd" } }
+  ],
+  "defaults": { "type": "spec" }
+}
+```
+
+- **Redeclare `type` whole to add a document type.** A consumer field replaces the core one, so keep `issue` and `tdd`
+  in the list if you use those templates.
+- **`infer`** sets fields from the document's path — a regex on the path, the first matching rule wins — and
+  **`defaults`** fill whatever is still unset.
+- Run `planr meta <file>` on a few documents to see which source each value came from.
 
 ### Tones and the header
 
@@ -655,13 +682,16 @@ The set is fixed: a schema **picks** a tone and never declares a colour.
 - **An enum declares a tone per value** with `"tones"` beside `"values"`. A partial map is fine; a value with no tone
   renders as an untoned chip.
 - **Any field opts out of the header** with `"hidden": true`. It stays fully queryable.
+- **Any field can name its chip** with `"label"`: the chip shows the label instead of the key, and the hover still
+  names the key, which is what `query` takes.
 - **Refused at schema load:** a tone outside the six, a tone for an undeclared value, `tones` on anything but a
-  single-valued enum, a non-boolean `hidden`, and either key on a header-owned field (the header draws those itself).
+  single-valued enum, a non-boolean `hidden`, an empty `label`, and any of the three on a header-owned field (the
+  header draws those itself).
 - **The writer stamps; the page stays schema-free.** The browser cannot read the schema, so `planr` writes what
-  rendering needs onto each `<plan-field>` as `tone="…"` and `hidden`. `planr meta --set` stamps every field of the
-  block it rebuilds, and `planr new` stamps a template's declared fields. **`planr meta <file> --stamp`** rewrites an
-  existing document's stamps from the current schema without touching a value: run it after changing a schema's tones
-  or `hidden` flags, and once over documents written before 1.4.0.
+  rendering needs onto each `<plan-field>` as `label="…"`, `tone="…"` and `hidden`. `planr meta --set` stamps every
+  field of the block it rebuilds, and `planr new` stamps a template's declared fields. **`planr meta <file> --stamp`**
+  rewrites an existing document's stamps from the current schema without touching a value: run it after changing a
+  schema's labels, tones or `hidden` flags, and once over documents written before 1.4.0.
 - **`check` warns when a stamp disagrees with the schema**, and names `planr meta <file> --stamp` as the fix. A
   document with no stamps still renders: every field shows, untoned.
 
@@ -716,14 +746,14 @@ A file the scan cannot use is **reported, never silently dropped**. Three reason
 | `--where 'priority=p0,p1'` | equals any of them |
 | `--where 'status!=implemented'` | equals none of them |
 | `--where 'impact>=high'` · `<=` · `>` · `<` | compares positions in the field's **declared order** |
-| `--where 'area~celery'` | case-insensitive substring |
+| `--where 'reference-paths~celery'` | case-insensitive substring |
 | `--has blocked-by` | the field resolves a value |
 | `--missing priority` | it does not |
 
 Three rules worth knowing before the first surprise:
 
 - **`>=` and friends read the declared order, not intuitive importance.** With `priority` declared `["p0","p1","p2","p3"]`, `priority<=p1` means "at index p1 or below" — p0 and p1, the *most* important. The schema's declaration order is the whole of the ordering.
-- **A repeatable field matches per item.** `area~celery` and `area=celery` both hit `crm, celery`; `area=crm, celery` does not, because that is the raw string rather than one item. `>=`, `<=`, `>`, `<` and `--sort` refuse a repeatable field outright — it has no single position.
+- **A repeatable field matches per item.** `reference-paths~celery` and `reference-paths=celery` both hit `crm, celery`; `reference-paths=crm, celery` does not, because that is the raw string rather than one item. `>=`, `<=`, `>`, `<` and `--sort` refuse a repeatable field outright — it has no single position.
 - **An unset field satisfies nothing** except `--missing` and `!=`. A document that declares no `status` does match `--where 'status!=implemented'`, which is what you want while a corpus is still being backfilled.
 
 Narrow by **path** with the target glob, not with a filter — `path` is a column you can print, not a field you can filter.
@@ -751,7 +781,7 @@ A ranking is a named `where` + `order` preset declared **in the schema**, so eac
 {
   "rankings": {
     "default": {
-      "where": { "status": { "ne": "implemented" }, "priority": { "set": true } },
+      "where": { "status": { "ne": "implemented" }, "priority": { "set": true }, "blocked": { "eq": false } },
       "order": ["priority", "impact:desc", "urgency:desc", "effort:asc", "date:asc"]
     },
     "triage": { "where": { "priority": { "set": false } }, "order": ["date:asc"] }
@@ -765,9 +795,31 @@ The `where` operators are `eq`, `ne`, `ge`, `le`, `gt`, `lt`, `in`, `contains` a
 
 ```bash
 planr query .claude/plans/issues --rank default
-planr query .claude/plans/issues --rank default --where 'impact=high'   # keeps the preset's status + priority rules
+planr query .claude/plans/issues --rank default --where 'impact=high'   # keeps the preset's status, priority and blocked rules
 planr query .claude/plans/issues --rank default --sort date             # keeps the preset's filter, replaces its order
 ```
+
+### Blockers
+
+Record that a document waits on another with **`blocked-by`**, a repeatable `path` field the core declares with
+`"blocks": true`:
+
+```bash
+planr meta q07-auth.html --set blocked-by=q04-tokens.html,../tdds/m1.html
+```
+
+- **A target resolves against the directory of the document naming it**, as a link does — a sibling is its bare file
+  name.
+- **A document is blocked while any target is open**: the file exists and its `status` is not `implemented` or
+  `rejected`.
+- **`blocked` is a derived column, not a field.** Filter on it with `--where blocked=false` or
+  `"blocked": { "eq": false }` in a ranking's `where`, print it with `--fields path,blocked`, sort on it. Only `=` and
+  `!=` apply. `query --format json` carries `blocked: { value, blockers }` on each result, and `next` prints a
+  `blocked by:` list when the document it hands over is held. Nothing writes it — `meta --set blocked=…` is an
+  unknown field.
+- **A missing target never blocks, and `check` warns on it**, naming the command that removes the stale entry:
+  `planr meta <file> --set blocked-by=…` with the targets that remain, or `--unset blocked-by`.
+- Any `path` field may declare `"blocks": true`; `blocked` reads them all. No git history is consulted.
 
 ### `planr next` — handing one document to an agent
 
@@ -778,10 +830,10 @@ $ planr next .claude/plans/issues
 .claude/plans/issues/quota.html
 Quota cache has no invalidator
 
-  type      issue                       (meta)
-  status    draft                       (header)
-  priority  p0                          (meta)
-  area      server/project/crm, celery  (meta)
+  type             issue                       (meta)
+  status           draft                       (header)
+  reference-paths  server/project/crm, celery  (meta)
+  priority         p0                          (meta)
 
   ranking 'default' — 1 of 7 matching, 122 scanned
 

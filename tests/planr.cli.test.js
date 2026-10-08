@@ -998,6 +998,33 @@ describe('querying documentation', () => {
   });
 });
 
+describe('schema core, label and blockers documentation', () => {
+  const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  const repoFile = (f) => readFileSync(join(SKILL_DIR, '..', '..', f), 'utf8');
+
+  it('SKILL.md carries first-time setup, the trimmed schema keys and the blockers contract', () => {
+    const s = skill();
+    for (const t of ['### First-time setup', '### Blockers', '| `.blocks` | `path` |', '`header:title\\|status\\|date`',
+      '--where blocked=false', '"blocked": { "eq": false }', 'A missing target never blocks', 'label="…"'])
+      expect(s, t).toContain(t);
+    expect(s).not.toContain('accepted, not yet rendered');
+    expect(s).not.toMatch(/\bowner\b|\barea\b/);
+  });
+
+  it('the README carries the setup and the 1.4.0 notes, with no example of a removed field', () => {
+    const r = repoFile('README.md');
+    for (const t of ['#### First-time setup', 'reference-paths', 'blocked-by', '--where blocked=false', '`list --outline`'])
+      expect(r, t).toContain(t);
+    expect(r).not.toMatch(/meta plan\.html --set owner=|`owner`, `area`/);   // a template's {{owner}} placeholder stays
+  });
+
+  it('the repo CLAUDE.md records the flag table, the derived column and the blocker rule', () => {
+    const c = repoFile('CLAUDE.md');
+    for (const t of ['COMMAND_FLAGS', 'assertKnownFlags', 'conditionDef', 'recField', 'blockerPath', 'STAMP_ATTRS', 'BUILTIN_COLUMNS'])
+      expect(c, t).toContain(t);
+  });
+});
+
 describe('nesting documentation', () => {
   const doc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
   it('SKILL.md documents the parent-legality check and the replace refusal', () => {
