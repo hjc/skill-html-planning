@@ -1080,6 +1080,17 @@ describe('wordy (wiring)', () => {
     expect(out.items[0].path.endsWith('docs/a.md')).toBe(true);
   });
 
+  it('takes --max-sentences and --max-sentence-chars from the command line', () => {
+    corpus();
+    writeFileSync(join(dir, 'two.md'), 'One. Two.\n');
+    const dense = run(['wordy', join(dir, 'two.md'), '--max-sentences', '1']);
+    expect(dense.code).toBe(1);
+    expect(dense.stdout).toMatch(/two\.md:1 {2}dense\(2\)$/m);
+    const runOn = run(['wordy', join(dir, 'two.md'), '--max-sentence-chars', '3']);
+    expect(runOn.code).toBe(1);
+    expect(runOn.stdout).toMatch(/two\.md:1 {2}run-on\(4\)$/m);
+  });
+
   it('refuses a value flag given with no value, and a missing target', () => {
     corpus();
     const bare = run(['wordy', join(dir, 'clean.md'), '--max-chars']);

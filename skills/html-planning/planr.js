@@ -3038,25 +3038,23 @@ function htmlUnits(html) {
    when the measure is ABOVE its limit. Characters are code points. Detection
    only — wordy never rewrites; the JSON report is the work list a rewriting
    skill consumes. */
+const charCount = (s) => [...s].length;
+// The one home of kind -> flag -> default -> measure. `measure` takes the text
+// and its sentences.
 const WORDY_KINDS = [
-  { kind: 'long', flag: 'max-chars', max: 600, unit: 'chars' },
-  { kind: 'dense', flag: 'max-sentences', max: 5, unit: 'sentences' },
-  { kind: 'run-on', flag: 'max-sentence-chars', max: 300, unit: 'chars in one sentence' },
+  { kind: 'long', flag: 'max-chars', max: 600, unit: 'chars', measure: (t) => charCount(t) },
+  { kind: 'dense', flag: 'max-sentences', max: 5, unit: 'sentences', measure: (t, ss) => ss.length },
+  { kind: 'run-on', flag: 'max-sentence-chars', max: 300, unit: 'chars in one sentence',
+    measure: (t, ss) => ss.reduce((n, x) => Math.max(n, charCount(x)), 0) },
 ];
 const WORDY_FORMATS = ['text', 'json'];
 const WORDY_PREVIEW = 80;
-const charCount = (s) => [...s].length;
 // Pure: (text, limits) -> the kinds whose measure exceeds its limit, in
 // WORDY_KINDS order, each { kind, value, max }.
 function measureText(text, limits) {
   const sentences = splitSentences(text);
-  const measured = {
-    long: charCount(text),
-    dense: sentences.length,
-    'run-on': sentences.reduce((n, s) => Math.max(n, charCount(s)), 0),
-  };
-  return WORDY_KINDS.filter(k => measured[k.kind] > limits[k.kind])
-    .map(k => ({ kind: k.kind, value: measured[k.kind], max: limits[k.kind] }));
+  return WORDY_KINDS.map(k => ({ kind: k.kind, value: k.measure(text, sentences), max: limits[k.kind] }))
+    .filter(m => m.value > m.max);
 }
 const isHtmlPath = (p) => /\.html?$/i.test(p);
 const preview = (t) => (charCount(t) > WORDY_PREVIEW ? [...t].slice(0, WORDY_PREVIEW).join('') + '…' : t);
@@ -3065,15 +3063,14 @@ const preview = (t) => (charCount(t) > WORDY_PREVIEW ? [...t].slice(0, WORDY_PRE
    shape, possibly from several targets: a path seen twice is read once, and
    the report runs in path order, then line, then column. An `.html`/`.htm`
    path is read through htmlUnits, anything else through markdownUnits.
-   Each limit is the shell's flagValue read: a string, or null for the default.
+   `limits` is keyed by flag name (`max-chars`, …), each the shell's flagValue read: a string, or null/absent for the default.
    `errors` is the unreadable-file block for stderr ('' when none); `failure`
    is the exit-1 message — set when anything is flagged or unreadable, null on
    a clean run. */
-function planWordy(docs, { maxChars = null, maxSentences = null, maxSentenceChars = null, format = 'text' } = {}) {
+function planWordy(docs, { limits: given = {}, format = 'text' } = {}) {
   if (!WORDY_FORMATS.includes(format))
     throw new PlanError(`unknown --format '${format}' — valid: ${WORDY_FORMATS.join(', ')}`);
-  const raw = { long: maxChars, dense: maxSentences, 'run-on': maxSentenceChars };
-  const limits = Object.fromEntries(WORDY_KINDS.map(k => [k.kind, parseLimit(raw[k.kind], k.flag) ?? k.max]));
+  const limits = Object.fromEntries(WORDY_KINDS.map(k => [k.kind, parseLimit(given[k.flag] ?? null, k.flag) ?? k.max]));
   const seen = new Set();
   const unique = docs.filter(d => !seen.has(d.path) && seen.add(d.path))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -3683,8 +3680,8 @@ const WORDY_FILE = (p) => /\.(md|markdown|txt|html?)$/i.test(p);
 // bare `--max-chars` or `--format` is refused rather than read as "use the default".
 function cmdWordy(targets, flags) {
   const { report, errors, failure } = planWordy(targets.flatMap(t => collectDocs(t, WORDY_FILE)), {
-    maxChars: flagValue(flags, 'max-chars'), maxSentences: flagValue(flags, 'max-sentences'),
-    maxSentenceChars: flagValue(flags, 'max-sentence-chars'), format: flagValue(flags, 'format') || 'text',
+    limits: Object.fromEntries(WORDY_KINDS.map(k => [k.flag, flagValue(flags, k.flag)])),
+    format: flagValue(flags, 'format') || 'text',
   });
   process.stdout.write(report);
   if (errors) process.stderr.write(errors + '\n');
@@ -3807,7 +3804,7 @@ const COMMAND_FLAGS = {
   query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
                     fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
   next:           { rank: 'value', format: 'value', strict: 'bool' },
-  wordy:          { 'max-chars': 'value', 'max-sentences': 'value', 'max-sentence-chars': 'value', format: 'value' },
+  wordy:          { ...Object.fromEntries(WORDY_KINDS.map(k => [k.flag, 'value'])), format: 'value' },
   set:            {},
   'set-body':     { file: 'value', append: 'bool' },
   prepend:        { file: 'value', into: 'value' },

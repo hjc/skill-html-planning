@@ -3283,12 +3283,12 @@ describe('planWordy', () => {
   });
 
   it('takes each limit from its flag, and refuses one that is not a positive whole number', () => {
-    expect(planr.planWordy([{ path: 'a.md', html: 'One. Two.' }], { maxSentences: '1' }).report)
+    expect(planr.planWordy([{ path: 'a.md', html: 'One. Two.' }], { limits: { 'max-sentences': '1' } }).report)
       .toMatch(/^a\.md:1 {2}dense\(2\)$/m);
-    expect(planr.planWordy([{ path: 'a.md', html: 'x'.repeat(50) }], { maxChars: '40' }).report)
+    expect(planr.planWordy([{ path: 'a.md', html: 'x'.repeat(50) }], { limits: { 'max-chars': '40' } }).report)
       .toMatch(/^a\.md:1 {2}long\(50\)$/m);
-    expect(() => planr.planWordy([], { maxChars: '0' })).toThrow("--max-chars '0' must be a positive whole number");
-    expect(() => planr.planWordy([], { maxSentenceChars: 'ten' })).toThrow("--max-sentence-chars 'ten' must be a positive whole number");
+    expect(() => planr.planWordy([], { limits: { 'max-chars': '0' } })).toThrow("--max-chars '0' must be a positive whole number");
+    expect(() => planr.planWordy([], { limits: { 'max-sentence-chars': 'ten' } })).toThrow("--max-sentence-chars 'ten' must be a positive whole number");
     expect(() => planr.planWordy([], { format: 'xml' })).toThrow("unknown --format 'xml' — valid: text, json");
   });
 
