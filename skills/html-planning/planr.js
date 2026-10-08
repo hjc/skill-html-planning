@@ -2144,9 +2144,9 @@ function checkStructure(html, { nesting = true } = {}) {
    yet will not render as written. Gathered only on a sound document: the lints
    locate elements with findElement, which is reliable only once every tag
    balances. A warning never changes `ok` — `check --strict` makes them fatal. */
-function planCheck(html, schema = null) {
+function planCheck(html, schema = null, ctx = {}) {
   const structure = checkStructure(html);
-  return { ...structure, warnings: structure.ok ? lintPlan(html, schema) : [] };
+  return { ...structure, warnings: structure.ok ? lintPlan(html, schema, ctx) : [] };
 }
 
 /* Metadata lints — C5's warning tier. A metadata problem never fails the
@@ -2198,12 +2198,42 @@ function lintMeta(html, schema) {
   return out;
 }
 
+/* A blocker target that does not exist never blocks (see "blockers"), so an
+   entry naming one is stale: warn, and name the exact command that removes it.
+   Missing means queryDocs' own `readDoc(p) === null`, so a target never blocks
+   exactly when it warns. Only the shell has docPath and readDoc; a caller
+   without them (templateProblems, a schema-less check) gets nothing. A field
+   with a bad value is lintMeta's to report, not this lint's. */
+function lintBlockers(html, schema, { docPath = null, readDoc = null } = {}) {
+  if (!schema || !docPath || !readDoc) return [];
+  const block = readMetaBlock(html);
+  if (!block) return [];
+  const out = [];
+  const seen = new Set();
+  for (const f of block.fields) {
+    const def = schema.fields[f.key];
+    if (!def || def.blocks !== true || seen.has(f.key)) continue;
+    seen.add(f.key);
+    if (validateField(schema, f.key, f.raw)) continue;
+    const items = fieldItems(def, f.raw);
+    const gone = items.filter(t => readDoc(blockerPath(docPath, t)) === null);
+    if (!gone.length) continue;
+    const kept = items.filter(t => !gone.includes(t));
+    const fix = kept.length ? `planr meta <file> --set ${f.key}=${kept.join(',')}` : `planr meta <file> --unset ${f.key}`;
+    out.push({ line: f.line, text: `<plan-field key="${f.key}">: ` +
+      `${gone.map(t => `'${t}' (${blockerPath(docPath, t)})`).join(', ')} ${gone.length > 1 ? 'do' : 'does'} not exist — ` +
+      `a missing blocker never blocks; remove the stale entry with \`${fix}\`` });
+  }
+  return out;
+}
+
 /* ── check warnings ───────────────────────────────────────
    Each lint returns [{ line, text }] for markup that passes the structure
    check and still renders something other than what the author wrote. */
-function lintPlan(html, schema = null) {
+function lintPlan(html, schema = null, ctx = {}) {
   return [
     ...lintMeta(html, schema),
+    ...lintBlockers(html, schema, ctx),
     ...lintScaffoldBanner(html),
     ...lintCodeBodies(html),
     ...lintSectionRefs(html),
@@ -3458,7 +3488,7 @@ function cmdList(file, flags)        { process.stdout.write(planList(read(file),
 function cmdTasks(file, flags)       { process.stdout.write(planTasks(read(file), flags)); }
 function cmdRead(file, addr, flags)  { process.stdout.write(planRead(read(file), addr, flags)); }
 function cmdCheck(file, flags) {
-  const { ok, report, warnings } = planCheck(read(file), loadSchema().schema);
+  const { ok, report, warnings } = planCheck(read(file), loadSchema().schema, { docPath: file, readDoc: readBlocker });
   if (!ok) throw new PlanError(report);      // → stderr + exit 1, so CI can gate on it
   process.stdout.write(report + '\n');
   if (warnings.length) process.stdout.write(warningReport(warnings) + '\n');
@@ -3677,7 +3707,7 @@ module.exports = {
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
-  blockerPath, blockerFields, resolveBlocked,
+  blockerPath, blockerFields, resolveBlocked, lintBlockers,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport,

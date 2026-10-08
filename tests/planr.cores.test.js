@@ -2801,6 +2801,35 @@ describe('blockers — blocked-by holds a document while its target is open', ()
   });
 });
 
+describe('check — a missing blocker target', () => {
+  let BS;
+  beforeAll(() => {
+    BS = planr.mergeSchemas(planr.parseSchema({
+      fields: { 'blocked-by': { type: 'path', repeatable: true, blocks: true }, note: { type: 'path' } },
+    }, 'probe.json'));
+  });
+  // Line 4 is the first field.
+  const wrap = (...fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+  const there = new Set(['q/b.html']);
+  const warn = (html, ctx = { docPath: 'q/a.html', readDoc: p => (there.has(p) ? '<plan-header title="B"></plan-header>' : null) }) =>
+    planr.planCheck(html, BS, ctx).warnings.map(w => [w.line, w.text]);
+
+  it('warns on a target that does not exist, naming the command that removes it', () => {
+    expect(warn(wrap('<plan-field key="blocked-by">b.html,gone.html</plan-field>'))).toEqual([[4,
+      "<plan-field key=\"blocked-by\">: 'gone.html' (q/gone.html) does not exist — a missing blocker never blocks; " +
+      'remove the stale entry with `planr meta <file> --set blocked-by=b.html`']]);
+    expect(warn(wrap('<plan-field key="blocked-by">gone.html, lost.html</plan-field>'))[0][1])
+      .toMatch(/'gone\.html' \(q\/gone\.html\), 'lost\.html' \(q\/lost\.html\) do not exist — .*`planr meta <file> --unset blocked-by`$/);
+  });
+
+  it('is silent on an existing target, on a path field that does not block, and without a document path', () => {
+    expect(warn(wrap('<plan-field key="blocked-by">b.html</plan-field>'))).toEqual([]);
+    expect(warn(wrap('<plan-field key="note">gone.html</plan-field>'))).toEqual([]);
+    expect(warn(wrap('<plan-field key="blocked-by">gone.html</plan-field>'), {})).toEqual([]);
+  });
+});
+
 describe('tones — one colour vocabulary', () => {
   const css = () => skillFile('plan-styles.css');
   // A `key: 'value'` object literal in plan-runtime.js, found by `re`.

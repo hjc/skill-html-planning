@@ -929,6 +929,22 @@ describe('blockers (wiring)', () => {
       expect(next.stdout).toMatch(/\nblocked by:\n {2}\S*webhook\.html {2}\[draft\]\n/);
     } finally { rmTmp(root); }
   });
+
+  it('check warns on a missing target and names the fix; --strict makes it fatal', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const quota = join(issues, 'quota.html');
+      expect(runAt(P, ['meta', quota, '--set', 'blocked-by=webhook.html,gone.html']).code).toBe(0);
+      const c = runAt(P, ['check', quota]);
+      expect(c.code, c.stderr).toBe(0);
+      expect(c.stdout).toMatch(/'gone\.html' \(\S*issues\/gone\.html\) does not exist — a missing blocker never blocks/);
+      expect(c.stdout).toContain('remove the stale entry with `planr meta <file> --set blocked-by=webhook.html`');
+      expect(runAt(P, ['check', quota, '--strict']).code).toBe(1);
+      expect(runAt(P, ['meta', quota, '--set', 'blocked-by=webhook.html']).code).toBe(0);
+      expect(runAt(P, ['check', quota, '--strict']).code).toBe(0);
+    } finally { rmTmp(root); }
+  });
 });
 
 describe('querying documentation', () => {
