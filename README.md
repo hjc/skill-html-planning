@@ -324,6 +324,7 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 - **Blockers.** A document is blocked while a `blocked-by` target exists and is not `implemented` or `rejected`. Filter with `--where blocked=false` or a ranking's `"blocked": { "eq": false }`; `query --format json` and `next` show what holds a document. A missing target never blocks, and `check` warns on it.
 - **Unknown flags are refused.** A flag the command does not read is an error naming the valid ones, instead of being ignored. The dead `list --outline` flag is gone (listing headings is the default; `--no-outline` remains).
 - **`planr wordy`.** Detects wordy lines in Markdown, plain text and HTML plan documents: `long` (over 600 characters), `dense` (over five sentences) and `run-on` (a sentence over 300 characters), each limit overridable per run. Fenced code, front-matter and headings are exempt, and table cells are measured one by one. It never rewrites — `--format json` is the work list — and it exits 1 when anything is flagged.
+- **Fix: a value flag given with no value is refused.** `query --limit`, `badge --nth` and `--into` on any command used to be read as absent and ignored, the command running as if the flag had not been typed; `planr` now stops with `--<flag> was given with no value`. `--with ""` still deletes the matched text.
 
 ## What's new in 1.3.0
 

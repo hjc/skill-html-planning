@@ -1098,8 +1098,6 @@ describe('planReplace', () => {
       .toThrow(/would break the plan/);
   });
   it('validates where the replacement comes from', () => {
-    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: true }))
-      .toThrow(/--with needs a value — pass --with "" to delete the matched text/);
     expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: 'x', file: 'f.html' }))
       .toThrow(/use only one of --with \/ --file/);
     expect(() => planr.planReplace(PROSE, 'resolution', '\n', { match: 'on-call' }))
@@ -3211,12 +3209,17 @@ describe('htmlUnits — what wordy measures in an HTML document', () => {
   });
 });
 
-describe('flagLast — a value flag read once, bare refused', () => {
-  it('returns the last value, null when absent, and refuses a bare flag as flagList does', () => {
-    expect(planr.flagLast({}, 'max-chars')).toBeNull();
-    expect(planr.flagLast({ 'max-chars': ['900', '40'] }, 'max-chars')).toBe('40');
-    expect(() => planr.flagLast({ 'max-sentences': true }, 'max-sentences')).toThrow('--max-sentences was given with no value');
-    expect(() => planr.flagLast({ format: true }, 'format')).toThrow('--format was given with no value');
+describe('parseFlags — a value flag needs a value', () => {
+  it('refuses a declared value flag with no value, naming it, for any command', () => {
+    expect(() => planr.parseFlags(['t', '--limit'], 'query')).toThrow('--limit was given with no value');
+    expect(() => planr.parseFlags(['f', '--into', '--all'], 'rm-item')).toThrow('--into was given with no value');
+    expect(() => planr.parseFlags(['f', '--nth'], 'badge')).toThrow('--nth was given with no value');
+  });
+  it('keeps an explicit empty value, a bool flag, an undeclared flag and the repeat rule', () => {
+    expect(planr.parseFlags(['--with', ''], 'replace').flags).toEqual({ with: '' });
+    expect(planr.parseFlags(['p', '--all'], 'tasks')).toEqual({ flags: { all: true }, positional: ['p'] });
+    expect(planr.parseFlags(['--nope'], 'query').flags).toEqual({ nope: true });
+    expect(planr.parseFlags(['--max-chars', '9', '--max-chars', '4'], 'wordy').flags).toEqual({ 'max-chars': ['9', '4'] });
   });
 });
 
