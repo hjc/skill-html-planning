@@ -1419,6 +1419,10 @@ describe('parseSchema', () => {
     expect(() => S({ fields: { p: { type: 'string', min: 1 } } })).toThrow(/`min` applies only to type number/);
     expect(() => S({ fields: { p: { type: 'string', frobnicate: 1 } } })).toThrow(/unknown key 'frobnicate'/);
     expect(() => S({ fields: { p: { type: 'string', from: 'header:nope' } } })).toThrow(/`from` must be header:/);
+    // A subtitle carries no queryable fact and chips is deprecated, so neither is a source.
+    for (const from of ['header:subtitle', 'header:chips'])
+      expect(() => S({ fields: { p: { type: 'string', from } } }), from)
+        .toThrow(`field 'p': \`from\` must be header:title|status|date, got '${from}'`);
     expect(() => S({ fields: { Priority: { type: 'string' } } })).toThrow(/must be lower-case letters, digits and hyphens/);
     expect(() => S({ fields: { p: { type: 'string' } }, infer: [{ match: '[', set: { p: 'x' } }] }))
       .toThrow(/infer\[0\]: `match` is not a valid regular expression/);
@@ -1568,12 +1572,41 @@ describe('the shipped core schema', () => {
     expect(s.fields.status.values).toEqual([...planr.HEADER_STATUS]);
   });
 
-  it('infers a type from the path segments the corpus actually uses', () => {
-    const hits = (p) => core().infer.filter(r => r.re.test(p)).map(r => r.set.type);
-    expect(hits('.claude/plans/issues/foo.html')).toContain('issue');
-    expect(hits('.claude/plans/features/x/tdds/m1.html')).toContain('tdd');
-    expect(hits('.claude/plans/prd-thing.html')).toContain('prd');
-    expect(hits('.claude/plans/notes/whatever.html')).toEqual([]);
+  it('ships the minimal vocabulary — two types, no inference, no defaults', () => {
+    const s = core();
+    expect(Object.keys(s.fields)).toEqual(['title', 'type', 'status', 'date', 'reference-paths', 'blocked-by']);
+    expect(s.fields.type.values).toEqual(['issue', 'tdd']);
+    expect(s.fields['reference-paths']).toMatchObject({ type: 'list', repeatable: true });
+    expect(s.infer).toEqual([]);
+    expect(s.defaults).toEqual({});
+  });
+
+  it('labels the two fields whose key reads poorly as a chip', () => {
+    const s = core();
+    expect(s.fields['reference-paths'].label).toBe('paths');
+    expect(s.fields['blocked-by'].label).toBe('blocked by');
+  });
+
+  it('makes blocked-by the field that blocks', () => {
+    expect(core().fields['blocked-by']).toMatchObject({ type: 'path', repeatable: true, blocks: true });
+    expect(planr.CLOSED_STATUS.every(st => planr.HEADER_STATUS.includes(st))).toBe(true);
+  });
+
+  it("stamps the sample plan's fields exactly as the core schema says", () => {
+    const sample = skillFile('examples/sample-plan.html');
+    const { warnings } = planr.planCheck(sample, planr.mergeSchemas(core()));
+    expect(warnings.filter(w => /plan-field/.test(w.text))).toEqual([]);
+    expect(sample).toContain('<plan-field key="reference-paths" label="paths">');
+  });
+
+  it('declares every field a shipped template writes', () => {
+    const fields = Object.keys(core().fields);
+    for (const name of ['issue', 'tdd']) {
+      const tpl = skillFile(`templates/${name}.html`);
+      const keys = [...tpl.matchAll(/<plan-field key="([^"]+)"/g)].map(m => m[1]);
+      expect(keys, name).toEqual(['type', 'reference-paths']);
+      for (const k of keys) expect(fields, `${name}: ${k}`).toContain(k);
+    }
   });
 });
 
@@ -2282,11 +2315,12 @@ describe('queryDocs', () => {
     expect(q.results.map(r => r.path)).toEqual(['a/p0.html', 'a/p1-a.html']);
   });
 
-  it('returns the resolveMeta record itself, unmodified', () => {
+  it('returns the resolveMeta record plus its derived columns', () => {
     const q = planr.queryDocs([{ path: 'a/p0.html', html: QDOC({ priority: 'p0' }) }], { schema: QS });
     expect(q.results[0].path).toBe('a/p0.html');
     expect(q.results[0].fields.priority).toEqual({ value: 'p0', raw: 'p0', source: 'meta', type: 'enum', rank: 0 });
-    expect(Object.keys(q.results[0])).toEqual(['path', 'fields', 'unknown', 'problems']);
+    expect(Object.keys(q.results[0])).toEqual(['path', 'fields', 'unknown', 'problems', 'derived']);
+    expect(q.results[0].derived).toEqual({});   // QS declares no `blocks` field
   });
 });
 
@@ -2651,6 +2685,214 @@ describe('planNext', () => {
   });
 });
 
+describe('blockers — blocked-by holds a document while its target is open', () => {
+  let BS;
+  beforeAll(() => {
+    BS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:        { type: 'string', from: 'header:title' },
+        status:       { type: 'enum', values: ['draft', 'review', 'implemented', 'rejected'], from: 'header:status' },
+        priority:     { type: 'enum', values: ['p0', 'p1', 'p2'] },
+        'blocked-by': { type: 'path', repeatable: true, blocks: true },
+      },
+      rankings: {
+        default: { where: { status: { ne: ['implemented', 'rejected'] }, blocked: { eq: false } }, order: ['priority'] },
+        any:     { where: { status: { ne: ['implemented', 'rejected'] } }, order: ['priority'] },
+      },
+    }, 'probe.json'));
+  });
+  // A document with a status and the given metadata.
+  const BDOC = (status, meta = {}) => QDOC(meta, `title="T ${status}" status="${status}" date="2026-01-02"`);
+  const CORPUS = () => [
+    { path: 'q/a.html', html: BDOC('draft', { priority: 'p0', 'blocked-by': 'b.html' }) },          // b is open
+    { path: 'q/b.html', html: BDOC('review', { priority: 'p1' }) },
+    { path: 'q/c.html', html: BDOC('draft', { priority: 'p0', 'blocked-by': 'done.html,gone.html' }) },
+    { path: 'q/done.html', html: BDOC('implemented', {}) },
+    { path: 'q/e.html', html: BDOC('draft', { priority: 'p2', 'blocked-by': '../other/x.html' }) },
+  ];
+  const byPath = (q) => Object.fromEntries(q.results.map(r => [r.path, r.derived.blocked]));
+
+  it('parseSchema takes `blocks` on a path field only, and reserves the built-in column names', () => {
+    const S = (o) => planr.parseSchema(o, 'probe.json');
+    expect(S({ fields: { dep: { type: 'path', blocks: true } } }).fields.dep.blocks).toBe(true);
+    expect(() => S({ fields: { dep: { type: 'path', blocks: 'yes' } } }))
+      .toThrow("field 'dep': `blocks` must be true or false");
+    expect(() => S({ fields: { dep: { type: 'string', blocks: true } } }))
+      .toThrow("field 'dep': `blocks` applies only to type path");
+    for (const name of ['blocked', 'path'])
+      expect(() => S({ fields: { [name]: { type: 'string' } } }), name)
+        .toThrow(`field name '${name}' is a built-in column — pick another name`);
+  });
+
+  it('blockerPath resolves a target against the directory of the document naming it', () => {
+    expect(planr.blockerPath('q/a.html', 'b.html')).toBe('q/b.html');
+    expect(planr.blockerPath('q/a.html', '../other/x.html')).toBe('other/x.html');
+    expect(planr.blockerPath('D:\\plans\\q\\a.html', 'sub/b.html')).toBe('D:/plans/q/sub/b.html');
+  });
+
+  it('an open target blocks; a closed or missing one never does', () => {
+    const b = byPath(planr.queryDocs(CORPUS(), { schema: BS }));
+    expect(b['q/a.html']).toEqual({ value: true, raw: 'true', source: 'derived', type: 'boolean', rank: 1,
+      blockers: [{ path: 'q/b.html', status: 'review' }] });
+    expect(b['q/c.html'].value).toBe(false);     // done.html is implemented, gone.html does not exist
+    expect(b['q/b.html']).toMatchObject({ value: false, blockers: [] });
+  });
+
+  it('reads a target outside the scan through readDoc, once per run', () => {
+    const calls = [];
+    const readDoc = (p) => { calls.push(p); return p === 'other/x.html' ? BDOC('draft') : null; };
+    const docs = [...CORPUS(), { path: 'q/f.html', html: BDOC('draft', { 'blocked-by': '../other/x.html' }) }];
+    const b = byPath(planr.queryDocs(docs, { schema: BS, readDoc }));
+    expect(b['q/e.html'].blockers).toEqual([{ path: 'other/x.html', status: 'draft' }]);
+    expect(b['q/f.html'].value).toBe(true);
+    expect(calls).toEqual(['q/gone.html', 'other/x.html']);
+  });
+
+  it('filters on blocked from the CLI and from a ranking, through the one evaluator', () => {
+    const paths = (o) => planr.planQuery(CORPUS(), { schema: BS, format: 'paths', ...o }).report.trim().split('\n');
+    expect(paths({ where: ['blocked=false', 'priority=p0'] })).toEqual(['q/c.html']);
+    expect(paths({ where: ['blocked=true'] })).toEqual(['q/a.html']);
+    expect(paths({ where: ['blocked!=true'], sort: 'priority' }))
+      .toEqual(['q/c.html', 'q/b.html', 'q/e.html', 'q/done.html']);
+    expect(paths({ rank: 'default' })).toEqual(['q/c.html', 'q/b.html', 'q/e.html']);
+    // An explicit flag replaces the preset's condition on the same field.
+    expect(paths({ rank: 'default', where: ['blocked=true'] })).toEqual(['q/a.html']);
+  });
+
+  it('refuses an ordering operator or a non-boolean literal on blocked, and blocked itself without a blocks field', () => {
+    expect(() => planr.compileWhere(BS, { blocked: { ge: 'true' } }, 'filter'))
+      .toThrow("filter on 'blocked': 'ge' does not apply — 'blocked' is true or false; use = or !=");
+    expect(() => planr.compileWhere(BS, { blocked: { in: ['yes'] } }, 'filter'))
+      .toThrow("filter on 'blocked': 'yes' is not true or false");
+    expect(() => planr.parseWhere(QS, { where: ['blocked=false'] }))
+      .toThrow(/^unknown field 'blocked' — declared: title, status, date/);
+    expect(() => planr.mergeSchemas(planr.parseSchema({
+      fields: { status: { type: 'enum', values: ['draft'], from: 'header:status' } },
+      rankings: { r: { where: { blocked: { eq: false } } } },
+    }, 'probe.json'))).toThrow(/probe\.json: ranking 'r' where names unknown field 'blocked'/);
+  });
+
+  it('carries blocked in JSON, prints it as a column, and sorts on it', () => {
+    const json = JSON.parse(planr.planQuery(CORPUS(), { schema: BS, format: 'json', fields: 'path,blocked' }).report);
+    const a = json.results.find(r => r.path === 'q/a.html');
+    expect(a.blocked).toEqual({ value: true, blockers: [{ path: 'q/b.html', status: 'review' }] });
+    expect(a.fields.blocked).toBeUndefined();          // a derived column, never a schema field
+    const tsv = planr.planQuery(CORPUS(), { schema: BS, format: 'tsv', fields: 'path,blocked', sort: 'blocked:desc' }).report;
+    expect(tsv.split('\n').slice(0, 3)).toEqual(['path\tblocked', 'q/a.html\ttrue', 'q/b.html\tfalse']);
+    // A schema with no `blocks` field carries no key.
+    const plain = JSON.parse(planr.planQuery([{ path: 'a.html', html: QDOC({}) }], { schema: QS, format: 'json' }).report);
+    expect(plain.results[0]).not.toHaveProperty('blocked');
+  });
+
+  it('next names what holds a blocked document, and a ranking on blocked:false skips it', () => {
+    const top = planr.planNext(CORPUS(), { schema: BS, rank: 'any' });
+    expect(top.report).toContain('\nblocked by:\n  q/b.html  [review]\n');
+    expect(top.document.blocked).toEqual({ value: true, blockers: [{ path: 'q/b.html', status: 'review' }] });
+    const free = planr.planNext(CORPUS(), { schema: BS });
+    expect(free.document.path).toBe('q/c.html');
+    expect(free.report).not.toContain('blocked by:');
+    const json = JSON.parse(planr.planNext(CORPUS(), { schema: BS, format: 'json' }).report);
+    expect(json.document.blocked).toEqual({ value: false, blockers: [] });
+  });
+
+  it('is never a writable field', () => {
+    expect(() => planr.planMetaSet(BDOC('draft'), { schema: BS, sets: ['blocked=true'] }))
+      .toThrow(/^unknown field 'blocked' — declared: title, status, priority, blocked-by$/);
+  });
+});
+
+describe('check — a missing blocker target', () => {
+  let BS;
+  beforeAll(() => {
+    BS = planr.mergeSchemas(planr.parseSchema({
+      fields: { 'blocked-by': { type: 'path', repeatable: true, blocks: true }, note: { type: 'path' } },
+    }, 'probe.json'));
+  });
+  // Line 4 is the first field.
+  const wrap = (...fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+  const there = new Set(['q/b.html']);
+  const warn = (html, ctx = { docPath: 'q/a.html', readDoc: p => (there.has(p) ? '<plan-header title="B"></plan-header>' : null) }) =>
+    planr.planCheck(html, BS, ctx).warnings.map(w => [w.line, w.text]);
+
+  it('warns on a target that does not exist, naming the command that removes it', () => {
+    expect(warn(wrap('<plan-field key="blocked-by">b.html,gone.html</plan-field>'))).toEqual([[4,
+      "<plan-field key=\"blocked-by\">: 'gone.html' (q/gone.html) does not exist — a missing blocker never blocks; " +
+      'remove the stale entry with `planr meta <file> --set blocked-by=b.html`']]);
+    expect(warn(wrap('<plan-field key="blocked-by">gone.html, lost.html</plan-field>'))[0][1])
+      .toMatch(/'gone\.html' \(q\/gone\.html\), 'lost\.html' \(q\/lost\.html\) do not exist — .*`planr meta <file> --unset blocked-by`$/);
+  });
+
+  it('warns on a missing target a schema default supplies, naming the schema rather than meta --set', () => {
+    const DS = planr.mergeSchemas(planr.parseSchema({
+      fields: { 'blocked-by': { type: 'path', repeatable: true, blocks: true } },
+      defaults: { 'blocked-by': 'gone.html' },
+    }, 'probe.json'));
+    const ctx = { docPath: 'q/a.html', readDoc: () => null };
+    const html = ['<plan-header title="T"></plan-header>', '<main>', '</main>'].join('\n');
+    const w = planr.planCheck(html, DS, ctx).warnings;
+    expect(w).toHaveLength(1);
+    expect(w[0].line).toBe(0);
+    expect(w[0].text).toMatch(/'gone\.html' \(q\/gone\.html\) does not exist/);
+    expect(w[0].text).toMatch(/schema default or infer rule/);
+    expect(w[0].text).not.toMatch(/planr meta <file> --set/);
+  });
+
+  it('is silent on an existing target, on a path field that does not block, and without a document path', () => {
+    expect(warn(wrap('<plan-field key="blocked-by">b.html</plan-field>'))).toEqual([]);
+    expect(warn(wrap('<plan-field key="note">gone.html</plan-field>'))).toEqual([]);
+    expect(warn(wrap('<plan-field key="blocked-by">gone.html</plan-field>'), {})).toEqual([]);
+  });
+});
+
+describe('COMMAND_FLAGS — the flags each command reads', () => {
+  // The usage text, read back as { command: Set<flag> }. A command line opens
+  // with two spaces and the name; a deeper-indented line continues it, and an
+  // unindented footer line ends the command list.
+  const usageFlags = () => {
+    const out = {};
+    let cur = null;
+    for (const line of planr.USAGE.split('\n')) {
+      const m = /^ {2}([a-z][a-z-]*)\s/.exec(line);
+      if (m) { cur = m[1]; out[cur] = out[cur] || new Set(); }
+      else if (!/^ {3,}\S/.test(line)) cur = null;
+      if (cur) for (const f of line.matchAll(/--([a-z][a-z-]*)/g)) out[cur].add(f[1]);
+    }
+    return out;
+  };
+
+  it('names every command the usage text lists, with exactly the flags its usage lines show', () => {
+    const usage = usageFlags();
+    expect(Object.keys(planr.COMMAND_FLAGS).sort()).toEqual(Object.keys(usage).sort());
+    for (const [cmd, flags] of Object.entries(planr.COMMAND_FLAGS))
+      expect(Object.keys(flags).sort(), cmd).toEqual([...usage[cmd]].sort());
+  });
+
+  it('knows exactly the commands main() dispatches: NEEDS_FILE, NEEDS_TARGET and templates', () => {
+    const dispatched = [...planr.NEEDS_FILE, ...planr.NEEDS_TARGET, 'templates'];
+    expect(new Set(dispatched).size).toBe(dispatched.length);
+    expect([...dispatched].sort()).toEqual(Object.keys(planr.COMMAND_FLAGS).sort());
+  });
+
+  it('reads whether a flag takes a value from the command that reads it', () => {
+    expect(planr.isBooleanFlag('read', 'text')).toBe(true);
+    expect(planr.isBooleanFlag('badge', 'text')).toBe(false);   // badge --text <T> takes the label
+    expect(planr.isBooleanFlag('tasks', 'all')).toBe(true);
+    expect(planr.isBooleanFlag('list', 'help')).toBe(true);     // --help, after any command
+    expect(planr.isBooleanFlag('list', 'outline')).toBe(false);
+    expect(planr.isBooleanFlag('list', 'constructor')).toBe(false);
+  });
+
+  it('assertKnownFlags refuses an unread flag, naming the valid ones, and always lets --help through', () => {
+    expect(() => planr.assertKnownFlags('list', { outline: true }))
+      .toThrow('list does not take --outline — valid: --no-outline');
+    expect(() => planr.assertKnownFlags('set', { all: true, x: 'y' }))
+      .toThrow('set does not take --all, --x — valid: (none)');
+    expect(() => planr.assertKnownFlags('query', { where: ['a=b'], help: true, strict: true })).not.toThrow();
+    expect(() => planr.assertKnownFlags('list', { toString: 'x' })).toThrow('list does not take --toString');
+  });
+});
+
 describe('tones — one colour vocabulary', () => {
   const css = () => skillFile('plan-styles.css');
   // A `key: 'value'` object literal in plan-runtime.js, found by `re`.
@@ -2708,10 +2950,10 @@ describe('stamps — the writer carries tone and hidden onto the page', () => {
 
   it('fieldStamp is the one rule: a tone for a toned value, hidden for an opted-out field, null for an unknown one', () => {
     const s = schema();
-    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false });
-    expect(planr.fieldStamp(s, 'priority', ' p1 ')).toEqual({ tone: 'warn', hidden: false });
-    expect(planr.fieldStamp(s, 'priority', 'p2')).toEqual({ tone: null, hidden: false });
-    expect(planr.fieldStamp(s, 'area', 'crm, celery')).toEqual({ tone: null, hidden: true });
+    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false, label: null });
+    expect(planr.fieldStamp(s, 'priority', ' p1 ')).toEqual({ tone: 'warn', hidden: false, label: null });
+    expect(planr.fieldStamp(s, 'priority', 'p2')).toEqual({ tone: null, hidden: false, label: null });
+    expect(planr.fieldStamp(s, 'area', 'crm, celery')).toEqual({ tone: null, hidden: true, label: null });
     expect(planr.fieldStamp(s, 'severity', 'x')).toBeNull();
     expect(planr.stampAttrs({ tone: 'warn', hidden: true })).toBe(' tone="warn" hidden');
     expect(planr.stampAttrs({ tone: null, hidden: false })).toBe('');
@@ -2781,6 +3023,82 @@ describe('stamps — the writer carries tone and hidden onto the page', () => {
     });
     expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
     expect(html).toContain('<plan-field key="area" hidden>crm</plan-field>');
+  });
+});
+
+describe('label — a field\'s chip text, stamped like tone', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      priority: { type: 'enum', values: ['p0', 'p1'], tones: { p0: 'danger' }, label: 'prio' },
+      refs:     { type: 'list', label: 'see "refs" & more' },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+  const BARE = ['<plan-header title="T"></plan-header>', '<main>', '',
+                '  <plan-section id="a" title="A"><p>Body.</p></plan-section>', '', '</main>'].join('\n');
+  const DOC = (fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+
+  it('parseSchema takes a non-empty string label, and refuses one on a header field', () => {
+    expect(S({ fields: { p: { type: 'string', label: 'Prio' } } }).fields.p.label).toBe('Prio');
+    expect(() => S({ fields: { p: { type: 'string', label: '' } } }))
+      .toThrow("field 'p': `label` must be a non-empty string");
+    expect(() => S({ fields: { p: { type: 'string', label: 3 } } }))
+      .toThrow("field 'p': `label` must be a non-empty string");
+    expect(() => S({ fields: { status: { type: 'enum', values: ['draft'], from: 'header:status', label: 'State' } } }))
+      .toThrow("field 'status': `label` does not apply to a header field — the header renders it in its own chip");
+  });
+
+  it('fieldStamp carries the label, and stampAttrs writes it first, escaped', () => {
+    const s = schema();
+    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false, label: 'prio' });
+    expect(planr.fieldStamp(s, 'owner', 'h')).toEqual({ tone: null, hidden: false, label: null });
+    expect(planr.stampAttrs(planr.fieldStamp(s, 'priority', 'p0'))).toBe(' label="prio" tone="danger"');
+    expect(planr.stampAttrs(planr.fieldStamp(s, 'refs', 'a'))).toBe(' label="see &quot;refs&quot; &amp; more"');
+  });
+
+  it('meta --set stamps the label on every field it rebuilds', () => {
+    const { html } = planr.planMetaSet(BARE, { schema: schema(), sets: ['priority=p1', 'refs=a,b', 'owner=h'] });
+    expect(html).toContain('<plan-field key="priority" label="prio">p1</plan-field>');
+    expect(html).toContain('<plan-field key="refs" label="see &quot;refs&quot; &amp; more">a,b</plan-field>');
+    expect(html).toContain('<plan-field key="owner">h</plan-field>');
+  });
+
+  it('meta --stamp adds a missing label, rewrites a stale one and drops one the schema no longer declares', () => {
+    const before = DOC([
+      '<plan-field key="priority" tone="danger">p0</plan-field>',
+      '<plan-field key="refs" label="old">a, b</plan-field>',
+      '<plan-field key="owner" label="who">h</plan-field>',
+    ]);
+    const { html, message } = planr.planMetaStamp(before, { schema: schema() });
+    expect(html).toBe(DOC([
+      '<plan-field key="priority" label="prio" tone="danger">p0</plan-field>',
+      '<plan-field key="refs" label="see &quot;refs&quot; &amp; more">a, b</plan-field>',
+      '<plan-field key="owner">h</plan-field>',
+    ]));
+    expect(message).toBe('stamped priority\nstamped refs\nstamped owner');
+    // An escaped stamp reads back as the schema's label: in line, nothing to stamp.
+    expect(planr.planMetaStamp(html, { schema: schema() }).message)
+      .toBe('every field already matches the schema — nothing to stamp');
+  });
+
+  it('check warns when a label stamp drifts, naming the fix', () => {
+    const warn = (f) => planr.planCheck(DOC([f]), schema()).warnings.map(w => w.text);
+    expect(warn('<plan-field key="priority" label="prio" tone="danger">p0</plan-field>')).toEqual([]);
+    expect(warn('<plan-field key="priority" tone="danger">p0</plan-field>')).toEqual([
+      '<plan-field key="priority">: carries no label, but the schema labels it \'prio\' — run `planr meta <file> --stamp`']);
+    expect(warn('<plan-field key="priority" label="x" tone="danger">p0</plan-field>')[0])
+      .toMatch(/stamped label 'x', but the schema labels it 'prio'/);
+    expect(warn('<plan-field key="owner" label="who">h</plan-field>')[0])
+      .toMatch(/stamped label 'who', but the schema gives it no label/);
+  });
+
+  it("new stamps a template field's label", () => {
+    const shell = '<title>{{title}}</title>\n<plan-header title="{{title}}"></plan-header>\n<main>\n{{body}}\n</main>';
+    const body = '  <plan-meta>\n    <plan-field key="priority">p1</plan-field>\n  </plan-meta>';
+    const html = planr.planNew(shell, body, { title: 'T', date: '2026-01-01', skillSubpath: 's', schema: schema() });
+    expect(html).toContain('<plan-field key="priority" label="prio">p1</plan-field>');
   });
 });
 

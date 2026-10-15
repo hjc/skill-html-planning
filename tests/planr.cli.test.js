@@ -296,6 +296,29 @@ describe('flag parsing', () => {
   });
 });
 
+describe('unknown flags', () => {
+  it('refuses a flag the command does not read, before doing anything', () => {
+    freshPlan();
+    const before = readPlan();
+    const r = run(['list', P(), '--outline']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('planr: list does not take --outline — valid: --no-outline\n');
+    expect(run(['list', '--outline', P()]).stderr).toContain('list does not take --outline');
+    expect(run(['check', P(), '--stirct']).stderr).toContain('check does not take --stirct — valid: --strict');
+    const set = run(['set', P(), 'header.status=review', '--all']);
+    expect(set.code).toBe(1);
+    expect(set.stderr).toContain('set does not take --all — valid: (none)');
+    expect(readPlan()).toBe(before);
+  });
+
+  it('prints the usage for --help after a command', () => {
+    freshPlan();
+    const r = run(['list', P(), '--help']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('Usage: node planr.js <command> [args]');
+  });
+});
+
 describe('set header.title', () => {
   it('moves the head <title> with the header, so check --strict stays clean', () => {
     freshPlan();
@@ -339,7 +362,7 @@ describe('check warnings', () => {
     const soft = run(['check', P()]);
     expect(soft.code, soft.stderr).toBe(0);
     expect(soft.stdout).toMatch(/^structure OK[\s\S]*\n1 warning\(s\)[^\n]*\n {2}line \d+: <main> opens with a comment carrying text/);
-    // --strict BEFORE the file: a valueless flag not in BOOLEAN_FLAGS eats the filename.
+    // --strict BEFORE the file: a flag not declared 'bool' in COMMAND_FLAGS eats the filename.
     const strict = run(['check', '--strict', P()]);
     expect(strict.code).toBe(1);
     expect(strict.stdout).toContain('1 warning(s)');
@@ -599,14 +622,14 @@ describe('meta (write)', () => {
       const staged = stageSkill(root, 'skills/html-planning');
       const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
       expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'Quota']).code).toBe(0);
-      expect(runAt(staged, ['meta', doc, '--set', 'owner=hayden', '--set', 'area=crm,celery']).code).toBe(0);
-      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^owner +hayden +\(meta\)$/m);
+      expect(runAt(staged, ['meta', doc, '--set', 'reference-paths=crm,celery']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^reference-paths +crm,celery +\(meta\)$/m);
       expect(runAt(staged, ['check', doc]).code).toBe(0);
-      const bad = runAt(staged, ['meta', doc, '--set', 'owner=']);
+      const bad = runAt(staged, ['meta', doc, '--set', 'reference-paths=']);
       expect(bad.code).toBe(1);
-      expect(bad.stderr).toMatch(/use `--unset owner`/);
-      expect(runAt(staged, ['meta', doc, '--unset', 'owner']).code).toBe(0);
-      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^unset: .*owner/m);
+      expect(bad.stderr).toMatch(/use `--unset reference-paths`/);
+      expect(runAt(staged, ['meta', doc, '--unset', 'reference-paths']).code).toBe(0);
+      expect(runAt(staged, ['meta', doc]).stdout).toMatch(/^unset: .*reference-paths/m);
       // a valueless --set is an error, never a silent fall-through to the report
       expect(runAt(staged, ['meta', doc, '--set']).code).toBe(1);
     } finally { rmTmp(root); }
@@ -651,21 +674,21 @@ it('check reports a metadata problem as a warning, and --strict makes it fatal',
   } finally { rmTmp(root); }
 });
 
-it('scaffolds an issue with its declared type, and reports area as a settable variable', () => {
+it('scaffolds a tdd plan with its declared type, and reports reference-paths as a settable variable', () => {
   const root = mkTmp();
   try {
     const staged = stageSkill(root, 'skills/html-planning');
     const doc = join(root, '.claude', 'plans', 'x.html');
-    expect(runAt(staged, ['new', doc, '--template', 'tdd', '--title', 'T', '--set', 'area=server,client']).code).toBe(0);
+    expect(runAt(staged, ['new', doc, '--template', 'tdd', '--title', 'T', '--set', 'reference-paths=server,client']).code).toBe(0);
     const meta = runAt(staged, ['meta', doc]).stdout;
     expect(meta).toMatch(/^type +tdd +\(meta\)$/m);
-    expect(meta).toMatch(/^area +server,client +\(meta\)$/m);
+    expect(meta).toMatch(/^reference-paths +server,client +\(meta\)$/m);
     expect(runAt(staged, ['check', doc, '--strict']).code, 'a scaffold must be warning-free').toBe(0);
-    expect(runAt(staged, ['templates', 'tdd']).stdout).toMatch(/^ {2}area +\(default: empty\)$/m);
-    // an undeclared field is refused at scaffold time, not written and warned about later
-    const bad = runAt(staged, ['new', join(root, '.claude', 'y.html'), '--template', 'tdd', '--title', 'Y', '--set', 'area=']);
-    expect(bad.code).toBe(0);   // an empty value means "no value" — the field is dropped
-    expect(readFileSync(join(root, '.claude', 'y.html'), 'utf8')).not.toContain('key="area"');
+    expect(runAt(staged, ['templates', 'tdd']).stdout).toMatch(/^ {2}reference-paths +\(default: empty\)$/m);
+    // an empty value means "no value" — the field is dropped, not written and warned about later
+    const bad = runAt(staged, ['new', join(root, '.claude', 'y.html'), '--template', 'tdd', '--title', 'Y', '--set', 'reference-paths=']);
+    expect(bad.code).toBe(0);
+    expect(readFileSync(join(root, '.claude', 'y.html'), 'utf8')).not.toContain('key="reference-paths"');
   } finally { rmTmp(root); }
 });
 
@@ -810,9 +833,9 @@ describe('query (wiring)', () => {
       // in the corpus has yet is an explicit null, never a missing key.
       expect(out.fields).toEqual(['path']);
       expect(Object.keys(out.results[0].fields))
-        .toEqual(['title', 'type', 'status', 'date', 'owner', 'area', 'blocked-by', 'priority', 'impact']);
-      expect(out.results[0].fields.owner).toEqual(
-        { value: null, raw: null, source: null, type: 'string', rank: null });
+        .toEqual(['title', 'type', 'status', 'date', 'reference-paths', 'blocked-by', 'priority', 'impact']);
+      expect(out.results[0].fields['reference-paths']).toEqual(
+        { value: null, raw: null, source: null, type: 'list', rank: null });
       expect(out.schema.map(s => s.replace(/^.*\//, ''))).toEqual(['planr-schema.json', 'planr-schema.json']);
       expect(out.skipped).toHaveLength(2);
     } finally { rmTmp(root); }
@@ -908,6 +931,45 @@ describe('next (wiring)', () => {
   });
 });
 
+describe('blockers (wiring)', () => {
+  const names = (out) => out.trim().split('\n').filter(Boolean).map(p => p.replace(/^.*[\\/]/, ''));
+
+  it('query and next read a blocker from disk, inside the scan or not', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      // quota (p0) is blocked by webhook (p1, draft) — a sibling, named bare.
+      expect(runAt(P, ['meta', join(issues, 'quota.html'), '--set', 'blocked-by=webhook.html']).code).toBe(0);
+      const free = runAt(P, ['query', issues, '--rank', 'default', '--where', 'blocked=false', '--format', 'paths']);
+      expect(free.code, free.stderr).toBe(0);
+      expect(names(free.stdout)).toEqual(['webhook.html']);
+      // webhook.html is outside this glob, so it is read through the filesystem.
+      const held = runAt(P, ['query', `${issues.replace(/\\/g, '/')}/q*.html`, '--where', 'blocked=true', '--format', 'paths']);
+      expect(names(held.stdout)).toEqual(['quota.html']);
+      const next = runAt(P, ['next', issues]);
+      expect(next.code, next.stderr).toBe(0);
+      expect(next.stdout.split('\n')[0]).toMatch(/quota\.html$/);
+      expect(next.stdout).toMatch(/\nblocked by:\n {2}\S*webhook\.html {2}\[draft\]\n/);
+    } finally { rmTmp(root); }
+  });
+
+  it('check warns on a missing target and names the fix; --strict makes it fatal', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const quota = join(issues, 'quota.html');
+      expect(runAt(P, ['meta', quota, '--set', 'blocked-by=webhook.html,gone.html']).code).toBe(0);
+      const c = runAt(P, ['check', quota]);
+      expect(c.code, c.stderr).toBe(0);
+      expect(c.stdout).toMatch(/'gone\.html' \(\S*issues\/gone\.html\) does not exist — a missing blocker never blocks/);
+      expect(c.stdout).toContain('remove the stale entry with `planr meta <file> --set blocked-by=webhook.html`');
+      expect(runAt(P, ['check', quota, '--strict']).code).toBe(1);
+      expect(runAt(P, ['meta', quota, '--set', 'blocked-by=webhook.html']).code).toBe(0);
+      expect(runAt(P, ['check', quota, '--strict']).code).toBe(0);
+    } finally { rmTmp(root); }
+  });
+});
+
 describe('querying documentation', () => {
   const skillDoc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
 
@@ -933,6 +995,33 @@ describe('querying documentation', () => {
     expect(c).toContain('compileWhere');
     expect(c).toContain('queryDocs');
     expect(c).toContain('NEEDS_TARGET');
+  });
+});
+
+describe('schema core, label and blockers documentation', () => {
+  const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  const repoFile = (f) => readFileSync(join(SKILL_DIR, '..', '..', f), 'utf8');
+
+  it('SKILL.md carries first-time setup, the trimmed schema keys and the blockers contract', () => {
+    const s = skill();
+    for (const t of ['### First-time setup', '### Blockers', '| `.blocks` | `path` |', '`header:title\\|status\\|date`',
+      '--where blocked=false', '"blocked": { "eq": false }', 'A missing target never blocks', 'label="…"'])
+      expect(s, t).toContain(t);
+    expect(s).not.toContain('accepted, not yet rendered');
+    expect(s).not.toMatch(/\bowner\b|\barea\b/);
+  });
+
+  it('the README carries the setup and the 1.4.0 notes, with no example of a removed field', () => {
+    const r = repoFile('README.md');
+    for (const t of ['#### First-time setup', 'reference-paths', 'blocked-by', '--where blocked=false', '`list --outline`'])
+      expect(r, t).toContain(t);
+    expect(r).not.toMatch(/meta plan\.html --set owner=|`owner`, `area`/);   // a template's {{owner}} placeholder stays
+  });
+
+  it('the repo CLAUDE.md records the flag table, the derived column and the blocker rule', () => {
+    const c = repoFile('CLAUDE.md');
+    for (const t of ['COMMAND_FLAGS', 'assertKnownFlags', 'conditionDef', 'recField', 'blockerPath', 'STAMP_ATTRS', 'BUILTIN_COLUMNS'])
+      expect(c, t).toContain(t);
   });
 });
 
