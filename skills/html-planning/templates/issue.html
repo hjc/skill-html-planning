@@ -24,9 +24,9 @@
          · Keep an Open section. An issue with no open questions is
            usually one that has not been looked at hard enough.
 
-       Suggested header chips:
-         chips="Bug | Production | Silent | From: <where it was found>"
-       Status stays `draft` until someone owns it.
+       Record facts like severity or where the defect surfaced as metadata
+       fields your repo's schema declares (`planr meta --set`), not as free
+       text in the header. Status stays `draft` until someone owns it.
 
        Declares its metadata defaults up front: type=issue is fixed, and area
        is fillable at scaffold time (--set area=server/app,client). Add or

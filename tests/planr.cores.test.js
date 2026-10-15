@@ -196,13 +196,14 @@ describe('planSet', () => {
     expect(message).toBe('set a.a1.status = "done"');
   });
   it('applies EVERY assignment, not just the first', () => {
-    // The live failure: a ticket claim sets status + chips together, the chips
-    // were dropped, and the command still exited 0 printing a success line.
-    const { html, message } = planr.planSet(DOC, ['header.status=review', 'header.chips=A | B | C']);
+    // The live failure: a ticket claim set status plus a second header attribute
+    // together, the second was dropped, and the command still exited 0 printing
+    // a success line.
+    const { html, message } = planr.planSet(DOC, ['header.status=review', 'header.subtitle=A | B | C']);
     const hdr = planr.findElement(html, 'plan-header').attrsRaw;
     expect(planr.getAttr(hdr, 'status')).toBe('review');
-    expect(planr.getAttr(hdr, 'chips')).toBe('A | B | C');
-    expect(message).toBe('set header.status = "review"\nset header.chips = "A | B | C"');
+    expect(planr.getAttr(hdr, 'subtitle')).toBe('A | B | C');
+    expect(message).toBe('set header.status = "review"\nset header.subtitle = "A | B | C"');
   });
   it('re-resolves between assignments, so two writes to one node both land', () => {
     const { html } = planr.planSet(DOC, ['a.title=Renamed', 'a.status=done', 'a.a1.status=blocked']);
@@ -217,14 +218,6 @@ describe('planSet', () => {
       .toThrow(/invalid status 'aproved' for <plan-header> — valid: draft, review, approved, implemented, rejected/);
     // …and a section still gets the SECTION enum, not the header's.
     expect(() => planr.planSet(DOC, 'a.status=review')).toThrow(/invalid status 'review' for <plan-section>/);
-  });
-  it('every HEADER_STATUS value has a .dot rule, and every .dot rule is in the enum', () => {
-    // The pair that drifted in BOTH directions: `review` was styled but
-    // undocumented, `rejected` documented but unstyled (no dot colour). The
-    // enum and the stylesheet are the two halves; assert they agree.
-    const css = readFileSync(join(SKILL_DIR, 'plan-styles.css'), 'utf8');
-    const styled = [...css.matchAll(/^\.dot\.([\w-]+)\s*\{/gm)].map(m => m[1]);
-    expect([...styled].sort()).toEqual([...planr.HEADER_STATUS].sort());
   });
   it('throws PlanError on bad spec / attr / status', () => {
     expect(() => planr.planSet(DOC, 'a.a1.status')).toThrow(planr.PlanError);
@@ -1263,14 +1256,15 @@ describe('<plan-meta> component', () => {
     expect([...registered].sort()).toEqual([...planr.PLAN_TAGS].sort());
   });
 
-  it('is styled CSS-only, with the key generated from the attribute', () => {
+  it('is a store the page never shows: the block is hidden, and the header styles its chips', () => {
     const css = skillFile('plan-styles.css');
-    expect(css).toMatch(/^plan-meta\s*\{[^}]*display:\s*flex;/m);
-    expect(css).toMatch(/^plan-field\s*\{[^}]*display:\s*inline-flex;/m);
-    expect(css).toMatch(/^plan-field::before\s*\{[^}]*content:\s*attr\(key\);/m);
-    // No JS: the runtime classes are empty, like PlanDefs/PlanDef.
+    expect(css).toMatch(/^plan-meta\s*\{\s*display:\s*none;\s*\}/m);
+    expect(css).not.toMatch(/^plan-field(::before)?\s*\{/m);
+    expect(css).toMatch(/^\.meta-field \.meta-value\s*\{[^}]*text-overflow:\s*ellipsis;/m);
+    // The store runs no JS of its own: PlanHeader renders the fields.
     expect(skillFile('plan-runtime.js')).toMatch(/class PlanMeta extends HTMLElement \{\}/);
     expect(skillFile('plan-runtime.js')).toMatch(/class PlanField extends HTMLElement \{\}/);
+    expect(skillFile('plan-runtime.js')).toMatch(/class PlanHeader[\s\S]*?\$\{_metaChips\(\)\}/);
   });
 
   it('reads as text: one `key: value` line per field', () => {
@@ -1328,6 +1322,42 @@ describe('parseSchema', () => {
     expect(() => S({ fields: {}, rankings: { r: { order: 'priority' } } }))
       .toThrow(/ranking 'r': `order` must be an array/);
     expect(() => S('nope')).toThrow(/probe\.json: must be a JSON object/);
+  });
+});
+
+describe('parseSchema — tones and hidden', () => {
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+  const P = (extra) => ({ fields: { priority: { type: 'enum', values: ['p0', 'p1', 'p2'], ...extra } } });
+
+  it('accepts a tone per declared value — a partial map included — and a hidden flag', () => {
+    const s = S({ fields: {
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'], tones: { p0: 'danger', p1: 'warn' } },
+      area:     { type: 'list', hidden: true },
+    } });
+    expect(s.fields.priority.tones).toEqual({ p0: 'danger', p1: 'warn' });
+    expect(s.fields.area.hidden).toBe(true);
+    expect(() => planr.mergeSchemas(s)).not.toThrow();
+  });
+
+  it('refuses an unknown tone, a tone for an undeclared value, and tones off a single-valued enum', () => {
+    expect(() => S(P({ tones: { p0: 'pink' } })))
+      .toThrow(/probe\.json: field 'priority': tone 'pink' for 'p0' is not a tone — valid: danger, warn, info, ok, final, muted/);
+    expect(() => S(P({ tones: { p9: 'danger' } })))
+      .toThrow(/field 'priority': `tones` names 'p9', which is not a declared value — declared: p0, p1, p2/);
+    expect(() => S({ fields: { owner: { type: 'string', tones: { a: 'ok' } } } }))
+      .toThrow(/field 'owner': `tones` applies only to type enum/);
+    expect(() => S(P({ tones: ['danger'] }))).toThrow(/field 'priority': `tones` must be an object of value → tone/);
+    expect(() => S(P({ repeatable: true, tones: { p0: 'ok' } })))
+      .toThrow(/field 'priority': `tones` needs a single-valued field — a repeatable one has no single tone/);
+  });
+
+  it('refuses a non-boolean hidden, and either key on a header-owned field', () => {
+    expect(() => S(P({ hidden: 'yes' }))).toThrow(/field 'priority': `hidden` must be true or false/);
+    expect(() => S({ fields: { status: {
+      type: 'enum', values: ['draft'], from: 'header:status', tones: { draft: 'warn' } } } }))
+      .toThrow(/field 'status': `tones` and `hidden` do not apply to a header field — the header renders it in its own chip/);
+    expect(() => S({ fields: { title: { type: 'string', from: 'header:title', hidden: true } } }))
+      .toThrow(/field 'title': `tones` and `hidden` do not apply to a header field/);
   });
 });
 
@@ -1733,6 +1763,46 @@ describe('planCheck warnings — metadata', () => {
   it('gathers no metadata warnings on a document whose structure is broken', () => {
     expect(planr.planCheck(wrap('  <plan-meta><plan-field key="nope">x</plan-field>'), schema()))
       .toMatchObject({ ok: false, warnings: [] });
+  });
+});
+
+describe('planCheck warnings — stamps', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'], tones: { p0: 'danger', p1: 'warn' } },
+      area:     { type: 'list', hidden: true },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+  // Line 4 is the first field.
+  const wrap = (...fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+  const warn = (...fields) => planr.planCheck(wrap(...fields), schema()).warnings.map(w => [w.line, w.text]);
+
+  it('warns on a missing, a wrong, a stale and an unknown tone, naming the fix — and is silent when every stamp matches', () => {
+    expect(warn('<plan-field key="priority" tone="danger">p0</plan-field>',
+                '<plan-field key="area" hidden>crm</plan-field>',
+                '<plan-field key="owner">h</plan-field>')).toEqual([]);
+    expect(warn('<plan-field key="priority">p0</plan-field>')).toEqual([[4,
+      '<plan-field key="priority">: carries no tone, but the schema gives \'p0\' the tone \'danger\' — ' +
+      'run `planr meta <file> --stamp`']]);
+    expect(warn('<plan-field key="priority" tone="warn">p0</plan-field>')[0][1])
+      .toMatch(/stamped tone 'warn', but the schema gives 'p0' the tone 'danger'/);
+    expect(warn('<plan-field key="priority" tone="danger">p2</plan-field>')[0][1])
+      .toMatch(/stamped tone 'danger', but the schema gives 'p2' no tone/);
+    expect(warn('<plan-field key="priority" tone="pink">p0</plan-field>')[0][1])
+      .toMatch(/tone 'pink' is not a tone \(valid: danger, warn, info, ok, final, muted\)/);
+  });
+
+  it('warns when hidden disagrees, in either direction — never failing the structure, and never over a bad value', () => {
+    expect(warn('<plan-field key="area">crm</plan-field>')[0][1])
+      .toMatch(/<plan-field key="area">: is not stamped hidden, but the schema hides it/);
+    expect(warn('<plan-field key="owner" hidden>h</plan-field>')[0][1])
+      .toMatch(/<plan-field key="owner">: is stamped hidden, but the schema shows it/);
+    // A bad value is reported as a value problem, and its stamp is not judged.
+    const { ok, warnings } = planr.planCheck(wrap('<plan-field key="priority" tone="danger">p9</plan-field>'), schema());
+    expect(ok).toBe(true);
+    expect(warnings.map(w => w.text)).toEqual([expect.stringMatching(/'p9' is not a declared value/)]);
   });
 });
 
@@ -2429,5 +2499,169 @@ describe('planNext', () => {
 
   it('refuses a format it does not have', () => {
     expect(() => N({ format: 'tsv' })).toThrow(/unknown --format 'tsv' — valid: text, json/);
+  });
+});
+
+describe('tones — one colour vocabulary', () => {
+  const css = () => skillFile('plan-styles.css');
+  // A `key: 'value'` object literal in plan-runtime.js, found by `re`.
+  const runtimeMap = (re) => {
+    const block = re.exec(skillFile('plan-runtime.js'));
+    expect(block, `${re} not found in plan-runtime.js`).toBeTruthy();
+    return Object.fromEntries([...block[1].matchAll(/([\w-]+):\s*'([^']*)'/g)].map(m => [m[1], m[2]]));
+  };
+
+  it('every tone has a dot rule and a badge rule, and no rule names a tone outside the set', () => {
+    const dots = [...css().matchAll(/^\.dot\.tone-([\w-]+)\s*\{/gm)].map(m => m[1]);
+    const badges = [...css().matchAll(/^plan-badge\.tone-([\w-]+)\s*\{/gm)].map(m => m[1]);
+    expect([...dots].sort()).toEqual([...planr.TONES].sort());
+    expect([...badges].sort()).toEqual([...planr.TONES].sort());
+  });
+
+  it('every badge type maps to a tone, and PlanBadge colours from the same map', () => {
+    expect(Object.keys(planr.BADGE_TONES)).toEqual(planr.BADGE_TYPES);
+    for (const t of Object.values(planr.BADGE_TONES)) expect(planr.TONES).toContain(t);
+    expect(runtimeMap(/class PlanBadge[\s\S]*?const tones = \{([\s\S]*?)\};/)).toEqual(planr.BADGE_TONES);
+  });
+
+  it('keeps every existing badge colour meaning, and styles badges per tone, never per type', () => {
+    expect(planr.BADGE_TONES).toEqual({
+      decided: 'ok', open: 'warn', deferred: 'muted', high: 'ok', medium: 'warn', low: 'danger',
+    });
+    expect(css()).not.toMatch(/plan-badge\[type=/);
+  });
+
+  it('every header status maps to a tone, and PlanHeader colours its dot from the same map', () => {
+    expect(Object.keys(planr.HEADER_STATUS_TONES)).toEqual(planr.HEADER_STATUS);
+    for (const t of Object.values(planr.HEADER_STATUS_TONES)) expect(planr.TONES).toContain(t);
+    expect(runtimeMap(/const STATUS_TONES = \{([\s\S]*?)\};/)).toEqual(planr.HEADER_STATUS_TONES);
+    // The colours the per-status dot rules drew, kept.
+    expect(planr.HEADER_STATUS_TONES).toEqual({
+      draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger',
+    });
+    expect(css()).not.toMatch(/^\.dot\.(draft|review|approved|implemented|rejected)\b/m);
+  });
+});
+
+describe('stamps — the writer carries tone and hidden onto the page', () => {
+  const schema = () => planr.mergeSchemas(planr.parseSchema({
+    fields: {
+      type:     { type: 'enum', values: ['doc', 'issue'] },
+      priority: { type: 'enum', values: ['p0', 'p1', 'p2'], tones: { p0: 'danger', p1: 'warn' } },
+      area:     { type: 'list', hidden: true },
+      owner:    { type: 'string' },
+    },
+  }, 'probe.json'));
+  const BARE = ['<plan-header title="T"></plan-header>', '<main>', '',
+                '  <plan-section id="a" title="A"><p>Body.</p></plan-section>', '', '</main>'].join('\n');
+  const DOC = (fields) => ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+    ...fields.map(f => `    ${f}`), '  </plan-meta>', '</main>'].join('\n');
+
+  it('fieldStamp is the one rule: a tone for a toned value, hidden for an opted-out field, null for an unknown one', () => {
+    const s = schema();
+    expect(planr.fieldStamp(s, 'priority', 'p0')).toEqual({ tone: 'danger', hidden: false });
+    expect(planr.fieldStamp(s, 'priority', ' p1 ')).toEqual({ tone: 'warn', hidden: false });
+    expect(planr.fieldStamp(s, 'priority', 'p2')).toEqual({ tone: null, hidden: false });
+    expect(planr.fieldStamp(s, 'area', 'crm, celery')).toEqual({ tone: null, hidden: true });
+    expect(planr.fieldStamp(s, 'severity', 'x')).toBeNull();
+    expect(planr.stampAttrs({ tone: 'warn', hidden: true })).toBe(' tone="warn" hidden');
+    expect(planr.stampAttrs({ tone: null, hidden: false })).toBe('');
+    expect(planr.stampAttrs(null)).toBe('');
+  });
+
+  it('meta --set stamps every field it writes, and restamps the rest of the block', () => {
+    const { html } = planr.planMetaSet(BARE, { schema: schema(), sets: ['priority=p0', 'area=crm,celery', 'owner=h'] });
+    expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
+    expect(html).toContain('<plan-field key="area" hidden>crm,celery</plan-field>');
+    expect(html).toContain('<plan-field key="owner">h</plan-field>');
+    // A hand edit left a stale tone on priority; the next --set of ANOTHER field corrects it.
+    const again = planr.planMetaSet(html.replace('>p0<', '>p2<'), { schema: schema(), sets: ['owner=j'] }).html;
+    expect(again).toContain('<plan-field key="priority">p2</plan-field>');
+  });
+
+  it('planMetaStamp rewrites drifting stamps only — values byte-for-byte — and names what it changed', () => {
+    const before = DOC([
+      '<plan-field key="priority">p1</plan-field>',
+      '<plan-field key="area" tone="ok">crm, celery &amp; co</plan-field>',
+      '<plan-field key="owner">h</plan-field>',
+      '<plan-field key="severity" tone="warn">high</plan-field>',
+    ]);
+    const { html, message } = planr.planMetaStamp(before, { schema: schema() });
+    expect(html).toBe(DOC([
+      '<plan-field key="priority" tone="warn">p1</plan-field>',
+      '<plan-field key="area" hidden>crm, celery &amp; co</plan-field>',
+      '<plan-field key="owner">h</plan-field>',
+      '<plan-field key="severity" tone="warn">high</plan-field>',   // unknown: left exactly as written
+    ]));
+    expect(message).toBe('stamped priority\nstamped area');
+  });
+
+  it('planMetaStamp returns the document unchanged when it is in line, or has no block', () => {
+    const inLine = DOC(['<plan-field key="priority" tone="danger">p0</plan-field>']);
+    expect(planr.planMetaStamp(inLine, { schema: schema() }))
+      .toEqual({ html: inLine, message: 'every field already matches the schema — nothing to stamp' });
+    expect(planr.planMetaStamp(BARE, { schema: schema() }))
+      .toEqual({ html: BARE, message: 'no <plan-meta> block — nothing to stamp' });
+  });
+
+  it('planMetaStamp judges a tag by stampDrift: a clean tag in another shape is untouched, and extra attributes survive', () => {
+    const before = DOC([
+      '<plan-field tone="danger" key="priority">p0</plan-field>',   // reordered, already in line
+      '<plan-field key="area" class="x">crm</plan-field>',          // drifts: needs hidden
+    ]);
+    const { html, message } = planr.planMetaStamp(before, { schema: schema() });
+    expect(html).toBe(DOC([
+      '<plan-field tone="danger" key="priority">p0</plan-field>',
+      '<plan-field key="area" class="x" hidden>crm</plan-field>',
+    ]));
+    expect(message).toBe('stamped area');
+  });
+
+  it('planMetaStamp refuses --set or --unset beside it', () => {
+    expect(() => planr.planMetaStamp(BARE, { schema: schema(), sets: ['owner=h'] }))
+      .toThrow(/--stamp rewrites stamps only, and --set\/--unset already stamp every field they write — use one or the other/);
+    expect(() => planr.planMetaStamp(BARE, { schema: schema(), unsets: ['owner'] })).toThrow(/--stamp rewrites stamps only/);
+  });
+
+  it("new stamps a template's declared fields", () => {
+    const shell = '<title>{{title}}</title>\n<plan-header title="{{title}}"></plan-header>\n<main>\n{{body}}\n</main>';
+    const body = '  <plan-meta>\n    <plan-field key="priority">p0</plan-field>\n' +
+                 '    <plan-field key="area">{{area:}}</plan-field>\n  </plan-meta>';
+    const html = planr.planNew(shell, body, {
+      title: 'T', date: '2026-01-01', skillSubpath: 's', sets: ['area=crm'], schema: schema(),
+    });
+    expect(html).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
+    expect(html).toContain('<plan-field key="area" hidden>crm</plan-field>');
+  });
+});
+
+describe('free-text header chips are deprecated', () => {
+  it('check warns on a header carrying chips, pointing at a metadata field', () => {
+    const html = '<plan-header title="T" status="draft"\n  chips="Bug | Production">\n</plan-header>\n<main></main>';
+    const { ok, warnings } = planr.planCheck(html);
+    expect(ok).toBe(true);
+    expect(warnings).toEqual([{ line: 1, text:
+      '<plan-header chips="Bug | Production"> — free-text chips are deprecated; declare each recurring chip as a ' +
+      'metadata field in .claude/planr-schema.json and write it with `planr meta <file> --set <field>=<value>`' }]);
+    // Every 1.3.0 scaffold carries an empty attribute: that is not a chip.
+    expect(planr.planCheck('<plan-header title="T" chips=""></plan-header>\n<main></main>').warnings).toEqual([]);
+  });
+
+  it('set still writes chips, and notes the deprecation only when it writes some', () => {
+    const { html, message } = planr.planSet(DOC, 'header.chips=A | B');
+    expect(planr.getAttr(planr.findElement(html, 'plan-header').attrsRaw, 'chips')).toBe('A | B');
+    expect(message).toBe('set header.chips = "A | B"\n' +
+      'note: header chips are deprecated — declare a metadata field in the schema and write it with `planr meta <file> --set`');
+    expect(planr.planSet(DOC, 'header.chips=').message).toBe('set header.chips = ""');
+  });
+
+  it('new steers a bare chips key to metadata, not to the deprecated attribute', () => {
+    expect(() => planr.planNew(SHELL, BODY, { title: 'T', date: '2026-01-01', skillSubpath: 's', sets: ['chips=A'] }))
+      .toThrow(/--set key 'chips' matches no \{\{placeholder\}\} — header chips are deprecated; declare a metadata field and use `planr meta --set`/);
+  });
+
+  it('no shipped template emits or suggests chips', () => {
+    for (const t of ['_shell.html', 'issue.html', 'tdd.html', 'basic.html'])
+      expect(skillFile(`templates/${t}`), t).not.toMatch(/chips/);
   });
 });
