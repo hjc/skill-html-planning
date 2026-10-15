@@ -1098,8 +1098,6 @@ describe('planReplace', () => {
       .toThrow(/would break the plan/);
   });
   it('validates where the replacement comes from', () => {
-    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: true }))
-      .toThrow(/--with needs a value — pass --with "" to delete the matched text/);
     expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: 'x', file: 'f.html' }))
       .toThrow(/use only one of --with \/ --file/);
     expect(() => planr.planReplace(PROSE, 'resolution', '\n', { match: 'on-call' }))
@@ -3130,5 +3128,185 @@ describe('free-text header chips are deprecated', () => {
   it('no shipped template emits or suggests chips', () => {
     for (const t of ['_shell.html', 'issue.html', 'tdd.html', 'basic.html'])
       expect(skillFile(`templates/${t}`), t).not.toMatch(/chips/);
+  });
+});
+
+describe('markdownUnits — what wordy measures in a plain-text file', () => {
+  const units = (lines) => planr.markdownUnits(lines.join('\n'));
+
+  it('measures each prose line as written, numbered from 1, skipping blank lines', () => {
+    expect(units(['First line.', '', '- A list item.'])).toEqual([
+      { line: 1, column: null, context: 'prose', text: 'First line.' },
+      { line: 3, column: null, context: 'prose', text: '- A list item.' },
+    ]);
+  });
+
+  it('exempts front-matter at the top, fenced code of either kind, and headings', () => {
+    expect(units([
+      '---', 'name: x', 'description: Long. Text.', '---',
+      '# Heading. With. Sentences.',
+      '```bash', 'echo one. Two.', '```',
+      '   ~~~', '   ```', '   inside a tilde fence', '   ~~~',
+      'Kept.',
+    ]).map(u => [u.line, u.text])).toEqual([[13, 'Kept.']]);
+  });
+
+  it('reads front-matter only at the top, and only when it closes', () => {
+    expect(units(['Intro.', '---', 'key: v', '---']).map(u => u.text)).toEqual(['Intro.', '---', 'key: v', '---']);
+    expect(units(['---', 'never closed']).map(u => u.text)).toEqual(['---', 'never closed']);
+  });
+
+  it('runs an unclosed fence to the end of the file', () => {
+    expect(units(['Before.', '```', 'code. Code.', 'More.'])).toHaveLength(1);
+  });
+
+  it('yields one unit per table cell, with its 1-based column, and nothing for the delimiter row', () => {
+    expect(units(['| Name | Meaning |', '|---|:--:|', '| `a\\|b` | One. Two. |', '|  | Only the second |'])).toEqual([
+      { line: 1, column: 1, context: 'table', text: 'Name' },
+      { line: 1, column: 2, context: 'table', text: 'Meaning' },
+      { line: 3, column: 1, context: 'table', text: '`a\\|b`' },
+      { line: 3, column: 2, context: 'table', text: 'One. Two.' },
+      { line: 4, column: 2, context: 'table', text: 'Only the second' },
+    ]);
+  });
+});
+
+describe('htmlUnits — what wordy measures in an HTML document', () => {
+  const DOC = [
+    '<html><head><title>T</title><script>var s = "One. Two. Three.";</script></head>',
+    '<body>',
+    '<plan-header title="Plan" subtitle="What it covers"></plan-header>',
+    '<main>',
+    '<plan-section id="steps" title="Steps">',
+    '  <plan-section id="step-1" title="First. Step.">',
+    '    <p>Some',
+    '      prose.</p>',
+    '    <h3>A heading. With. Dots.</h3>',
+    '    <pre><code>code. Code.</code></pre>',
+    '    <plan-table><table>',
+    '      <tr><td>1</td><td>Cell <code>two</code>.</td></tr>',
+    '    </table></plan-table>',
+    '  </plan-section>',
+    '  <p>Back in steps.</p>',
+    '</plan-section>',
+    '</main>',
+    '</body></html>',
+  ].join('\n');
+
+  it('reads the body through textLines: prose and cells, with source lines and section addresses', () => {
+    expect(planr.htmlUnits(DOC)).toEqual([
+      { line: 3, column: null, context: 'prose', section: null, text: 'What it covers' },
+      { line: 7, column: null, context: 'prose', section: 'steps.step-1', text: 'Some prose.' },
+      { line: 12, column: 1, context: 'table', section: 'steps.step-1', text: '1' },
+      { line: 12, column: 2, context: 'table', section: 'steps.step-1', text: 'Cell two.' },
+      { line: 15, column: null, context: 'prose', section: 'steps', text: 'Back in steps.' },
+    ]);
+  });
+
+  it('reads the whole file when there is no <body>', () => {
+    expect(planr.htmlUnits('<p>Alone.</p>')).toEqual(
+      [{ line: 1, column: null, context: 'prose', section: null, text: 'Alone.' }]);
+  });
+});
+
+describe('parseFlags — a value flag needs a value', () => {
+  it('refuses a declared value flag with no value, naming it, for any command', () => {
+    expect(() => planr.parseFlags(['t', '--limit'], 'query')).toThrow('--limit was given with no value');
+    expect(() => planr.parseFlags(['f', '--into', '--all'], 'rm-item')).toThrow('--into was given with no value');
+    expect(() => planr.parseFlags(['f', '--nth'], 'badge')).toThrow('--nth was given with no value');
+  });
+  it('keeps an explicit empty value, a bool flag, an undeclared flag and the repeat rule', () => {
+    expect(planr.parseFlags(['--with', ''], 'replace').flags).toEqual({ with: '' });
+    expect(planr.parseFlags(['p', '--all'], 'tasks')).toEqual({ flags: { all: true }, positional: ['p'] });
+    expect(planr.parseFlags(['--nope'], 'query').flags).toEqual({ nope: true });
+    expect(planr.parseFlags(['--max-chars', '9', '--max-chars', '4'], 'wordy').flags).toEqual({ 'max-chars': ['9', '4'] });
+  });
+});
+
+describe('measureText — the three kinds', () => {
+  const LIMITS = { long: 600, dense: 5, 'run-on': 300 };
+  const sentence = (n) => 'A' + 'a'.repeat(n - 2) + '.';     // exactly n characters
+
+  it('flags nothing at or under every limit', () => {
+    expect(planr.measureText(Array(5).fill(sentence(100)).join(' '), LIMITS)).toEqual([]);
+    expect(planr.measureText(sentence(300), LIMITS)).toEqual([]);
+  });
+
+  it('flags long above 600 characters, counting code points', () => {
+    expect(planr.measureText(Array(3).fill(sentence(200)).join(' '), LIMITS))
+      .toEqual([{ kind: 'long', value: 602, max: 600 }]);
+    const wide = 'A' + '😀'.repeat(198) + '.';                 // 200 code points, 398 UTF-16 units
+    expect(planr.measureText(Array(3).fill(wide).join(' '), LIMITS))
+      .toEqual([{ kind: 'long', value: 602, max: 600 }]);
+  });
+
+  it('flags dense above five sentences', () => {
+    expect(planr.measureText('One. Two. Three. Four. Five. Six.', LIMITS)).toEqual([{ kind: 'dense', value: 6, max: 5 }]);
+  });
+
+  it('flags run-on when the longest sentence passes 300 characters, and reports several kinds together', () => {
+    expect(planr.measureText(sentence(301), LIMITS)).toEqual([{ kind: 'run-on', value: 301, max: 300 }]);
+    const all = Array(6).fill(sentence(120)).join(' ') + ' ' + sentence(301);
+    expect(planr.measureText(all, LIMITS).map(k => `${k.kind}(${k.value})`)).toEqual(['long(1027)', 'dense(7)', 'run-on(301)']);
+  });
+});
+
+describe('planWordy', () => {
+  const LONG = Array(3).fill('A' + 'a'.repeat(198) + '.').join(' ');     // 602 chars, three sentences
+  const MD = ['# Title', '', LONG, '', '| a | ' + 'One. Two. Three. Four. Five. Six.' + ' |', '', 'Fine.'].join('\n');
+  const HTML = '<body><plan-section id="s" title="S"><p>' + LONG + '</p></plan-section></body>';
+
+  it('reports path:line and each kind with its measure, a table cell with its column, then a summary', () => {
+    const { report, errors, failure } = planr.planWordy([{ path: 'b.md', html: MD }, { path: 'a.md', html: 'Clean.' }]);
+    expect(report).toBe([
+      'b.md:3  long(602)',
+      'b.md:5  table col 2  dense(6)',
+      '',
+      '2 finding(s) in 1 of 2 file(s) — long 1, dense 1, run-on 0 ' +
+        '(limits: long > 600 chars, dense > 5 sentences, run-on > 300 chars in one sentence)',
+      '',
+    ].join('\n'));
+    expect(errors).toBe('');
+    expect(failure).toBe('wordy: 2 finding(s) in 1 file(s), listed above');
+  });
+
+  it('is clean — no failure — when nothing passes a limit', () => {
+    const { report, failure } = planr.planWordy([{ path: 'a.md', html: 'Short.' }]);
+    expect(report).toBe('no findings in 1 file(s) (limits: long > 600 chars, dense > 5 sentences, ' +
+      'run-on > 300 chars in one sentence)\n');
+    expect(failure).toBe(null);
+  });
+
+  it('reads an .html path through htmlUnits and sorts by path, reading a repeated path once', () => {
+    const docs = [{ path: 'z.md', html: LONG }, { path: 'p.html', html: HTML }, { path: 'z.md', html: LONG }];
+    expect(planr.planWordy(docs).report.split('\n').slice(0, 2)).toEqual(['p.html:1  long(602)', 'z.md:1  long(602)']);
+  });
+
+  it('takes each limit from its flag, and refuses one that is not a positive whole number', () => {
+    expect(planr.planWordy([{ path: 'a.md', html: 'One. Two.' }], { limits: { 'max-sentences': '1' } }).report)
+      .toMatch(/^a\.md:1 {2}dense\(2\)$/m);
+    expect(planr.planWordy([{ path: 'a.md', html: 'x'.repeat(50) }], { limits: { 'max-chars': '40' } }).report)
+      .toMatch(/^a\.md:1 {2}long\(50\)$/m);
+    expect(() => planr.planWordy([], { limits: { 'max-chars': '0' } })).toThrow("--max-chars '0' must be a positive whole number");
+    expect(() => planr.planWordy([], { limits: { 'max-sentence-chars': 'ten' } })).toThrow("--max-sentence-chars 'ten' must be a positive whole number");
+    expect(() => planr.planWordy([], { format: 'xml' })).toThrow("unknown --format 'xml' — valid: text, json");
+  });
+
+  it('emits the work list as JSON: limits, counts, one item per finding with its section and a preview', () => {
+    const out = JSON.parse(planr.planWordy([{ path: 'p.html', html: HTML }, { path: 'b.md', html: MD }],
+      { format: 'json' }).report);
+    expect(out).toMatchObject({ limits: { long: 600, dense: 5, 'run-on': 300 }, scanned: 2, flagged: 3,
+      flagged_files: 2, counts: { long: 2, dense: 1, 'run-on': 0 }, skipped: [] });
+    expect(out.items[0]).toEqual({ path: 'b.md', line: 3, column: null, context: 'prose', section: null,
+      kinds: [{ kind: 'long', value: 602, max: 600 }], preview: 'A' + 'a'.repeat(79) + '…' });
+    expect(out.items[1]).toMatchObject({ line: 5, column: 2, context: 'table' });
+    expect(out.items[2]).toMatchObject({ path: 'p.html', line: 1, section: 's' });
+  });
+
+  it('lists an unreadable file for stderr and fails on it even when nothing is flagged', () => {
+    const { report, errors, failure } = planr.planWordy([{ path: 'a.md', html: 'Fine.' }, { path: 'gone.md', error: 'unreadable — EACCES' }]);
+    expect(report).toContain('no findings in 1 file(s)');
+    expect(errors).toBe('1 file(s) could not be read:\n  gone.md: unreadable — EACCES');
+    expect(failure).toBe('wordy: 1 file(s) could not be read, listed above');
   });
 });
