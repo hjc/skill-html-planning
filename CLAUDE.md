@@ -63,6 +63,39 @@ When adding a command: write the pure `plan*` core (throwing `PlanError`), add a
 - **A template's leading comment is its documentation.** `templateDoc` extracts it and `templateSummary` reduces it to a first sentence, so `planr templates` can list every template with a gist and `planr templates <name>` can print the whole thing. `planNew` strips the same comment from the document it writes (`stripTemplateDoc`, using `templateDoc`'s own regex), so a scaffold never opens with instructions to itself. Adding a template means opening it with that comment. Two constraints the extractor depends on: the comment must come **before any element** (anything later is an ordinary inline comment), and it must contain **no literal `<plan-*>` tag** — a test asserts both for every shipped template, because such a tag inflates a reader's `grep -c` count in the balanced way that never looks like a failure. `templateProblems` is the runtime form of these rules plus "scaffolds to a plan that passes `check`": `planr templates` reports any template — shipped or consumer — that breaks one, and the core suite asserts every shipped template has none. A new template rule goes into `templateProblems`, not only into a test.
 - **Numbers are derived, never stored.** `sectionNumber()` mirrors `_sectionNumber()` in `plan-runtime.js`; if you change one, change both, or the CLI and the rendered page will disagree. Templates must not hardcode `num` — an inserted section would collide with the frozen numbers.
 - **Attribute values are HTML-escaped on disk.** Anything printed to a terminal goes through `decodeEntities` first, or a title reads `Scope &amp; Prerequisites`.
+- **The metadata schema is data, not code.** `planr-schema.json` beside `planr.js` is the shipped core; a consuming repo's is `.claude/planr-schema.json`, found through the same `claudeRoot` derivation as `planr-templates/`. No field name, enum value or ranking name appears in `planr.js`. Adding a field means editing the JSON, never the JS.
+- **Schema validation is two passes, and only the second one sees the merge.** `parseSchema` checks shape per file and tags every part with its `origin`; `validateSchemaRefs`, which `mergeSchemas` always calls, checks cross-references on the merged result — because a consumer's `defaults` may legitimately name a core field. Both refuse loudly: a malformed schema is a `PlanError` naming the file, never an ignored key.
+- **`validateField` is the ONE field-value rule.** Every writer of a `<plan-field>` value calls it — `planMetaSet`, `validateNodes` (so a template's declared defaults are held to the same rules as a `meta --set`) and `lintMeta`. It returns problem text rather than throwing, so the throwing callers and the collecting one share one rule. The `key` ATTRIBUTE still goes through `validateAttr`; the value is element content, which `ATTR_RULES` cannot address.
+- **`resolveMeta`'s record is a consumed contract, not an internal shape.** `{ path, fields: { <name>: { value, raw, source, type, rank } }, unknown, problems }` — every schema field present, in schema-declaration order, and `rank` carrying the total order (enum index, the number, the ISO date, the lower-cased string, or null). `planr meta --format json` emits it verbatim and the query commands sort on `rank` alone. Changing a key changes an output format.
+- **`<plan-meta>` is the FIRST element inside `<main>`.** `meta --set` creates it there, `check` warns when it is anywhere else, and a template declares its defaults by writing the block at the top of its body — which is why the position is inside `<main>` rather than beside the header: a template body can reach nowhere else.
+- **One writable home per fact.** A schema field declared `from: "header:<attr>"` — `title`, `status`, `date` — is a READ-ONLY VIEW of the header attribute, and `headerOwnedProblem` is the one rule that says so. `planMetaSet` refuses a `--set` of one and names the real writer (`planr set <file> header.status=…`), `validateNodes` refuses a template that declares one, and `lintMeta` warns when a document already carries one. `resolveMeta` is deliberately unaffected: the C1 order stands, so there is exactly one resolution chain. The writers of those three values remain `planSet`, `planNew`'s dotted `--set` and `_shell.html`; a second copy in `<plan-meta>` would outrank the header and diverge the first time `planr set header.status=…` runs.
+- **A metadata problem is a warning, never a structure failure.** `lintMeta` runs in `lintPlan`, so it can never block a write; `check --strict` is the gate. An empty field value is never valid: `--set k=` is refused, a template placeholder left empty is pruned by `new`, and an empty one in a document is a warning.
+- **A condition has ONE shape and ONE evaluator.** A schema ranking's `where` and the CLI's `--where`/`--has`/`--missing`
+  flags both produce `{ field: { op: literal } }`; `compileWhere` validates it and pre-ranks every literal; `matchWhere`
+  reads only that compiled form and never sees the schema. Never add a second place that interprets an operator — the
+  two surfaces would agree the day they were written and diverge on the first operator either one gained. Compile the
+  flag half and the ranking half **separately**, so a refusal names the origin the condition actually came from.
+- **A ranking is validated by the code that runs it.** `validateSchemaRefs` calls `compileWhere` and `parseSort` on
+  every ranking, so a ranking that LOADS is a ranking `query --rank` can execute. That is why an operator typo in a
+  consumer schema fails `meta`, `check`, `new` and `templates` too: they all call `loadSchema()`.
+- **`--fields` is a COLUMN list, never a record filter.** `query --format json`, `next --format json` and
+  `meta --format json` all emit the same per-field record — every declared schema field present, `source: null` for an
+  unset one. A key set that varied with the projection would make "not selected" and "no value" both read as
+  `undefined` in a consumer.
+- **`queryDocs` calls `checkStructure`, never `planCheck`.** It needs "does this balance", not the lints, and the lints
+  are half the cost of a corpus scan. A metadata problem is `check`'s to report; `query` never opens a second channel
+  for it.
+- **Nothing a corpus scan cannot use is dropped in silence.** Unreadable, not-a-plan-document and does-not-balance each
+  become a `skipped` entry, printed to stderr so stdout stays exactly the result set, carried in the JSON payload, and
+  gated by `--strict`. A target that resolves to zero FILES is an error; a filter that matches zero documents is not.
+- **`query` and `next` take a `<dir|glob>`, so they live in `NEEDS_TARGET`, not `NEEDS_FILE`.** Both of `main()`'s
+  guards read those lists — the unknown-command check and the missing-argument check — and the second one prints
+  "requires a `<file>` argument", which is false for a directory.
+- **`next` is driven only by a named ranking.** There is no implicit order: a prioritisation policy in `planr.js` is a
+  field vocabulary in `planr.js`, which the schema owns. An empty queue exits **0** — a caller polling "is there
+  anything to do" must be able to tell nothing from broken.
+- **No index, no cache.** `query` reads the documents. Measured on a 142-document, 8 MB corpus: ~230 ms wall clock,
+  ~70 ms of which is Node's own startup. Re-measure before proposing one.
 
 ## Adding or changing a component
 

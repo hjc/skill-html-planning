@@ -93,6 +93,21 @@ Ordinary plan markup, subject to the same rules as any plan (`SKILL.md` is the c
 
 Seed each section with a sentence describing what belongs there rather than leaving it empty. That placeholder prose is what an author actually reads, and it is where a convention gets enforced — "Convention: a table of decision → rationale" does more work than an empty section.
 
+## Declaring metadata defaults
+
+A template may declare the metadata a scaffolded document starts with by writing a literal `<plan-meta>` block at the **top of the body**, above its first section — no new template syntax, since a placeholder inside it fills exactly like any other `{{var}}`:
+
+```html
+<plan-meta>
+  <plan-field key="type">issue</plan-field>
+  <plan-field key="area">{{area:}}</plan-field>
+</plan-meta>
+```
+
+Write a **concrete value** for a field the document type always has (`type` above never varies for this template), and `{{name:}}` for one the author fills at scaffold time (`--set area=…`). An unfilled placeholder means "no value" — `new` **drops** that field, and the whole block once nothing is left, rather than writing an empty one.
+
+Every value is held to the schema in force when `new` runs, exactly as a `meta --set` write is: a template may only name a field the schema declares, and only a value it accepts. A template may **not** declare a field the header already owns (`title`, `status`, `date`, or any other `from: "header:…"` field) — that value has exactly one writer, and it is not a template.
+
 ## Verifying a new template
 
 ```bash
