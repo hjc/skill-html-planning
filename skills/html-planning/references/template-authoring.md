@@ -64,7 +64,7 @@ The shell also declares `lang`, `subtitle` and `status`. Reuse those names in a 
 - **bare** (`--set lang=fr`) fills a `{{placeholder}}`. It must name one the template declares, or the command errors and lists the ones that exist.
 - **dotted** (`--set header.status=review`) is a node address applied to the *rendered* document, so it reaches any `<plan-*>` node whether or not the template parameterised it.
 
-Both are validated identically. If you add a placeholder whose value has a constrained set — a status, an enum — note that a bare fill bypasses `planSet`, so its validation lives in `planNew` and must be added there too. Otherwise the placeholder path silently accepts what the node path rejects.
+Both are validated identically: `new` runs every attribute of the rendered header and sections through the same `validateAttr` rule `set` uses, and every `<plan-field>` value through the schema. A placeholder whose value has a constrained set therefore needs no extra code — a new attribute rule is one `ATTR_RULES` entry, and a new field rule is a schema edit.
 
 ## The leading comment is the template's documentation
 
