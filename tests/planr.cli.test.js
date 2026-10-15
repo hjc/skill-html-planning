@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { run, runAt, stageSkill, mkTmp, rmTmp, EXPECTED_SUBPATH, SKILL_DIR } from './helpers.js';
 
 // This is the WIRING suite: it proves what only a real subprocess can — argv
@@ -102,10 +102,10 @@ describe('check', () => {
     // `check` and `list` must agree on the section count. A commented plan tag
     // in a template inflated `grep -c` — balanced, so it never read as a
     // failure — and sent readers hunting a splice bug that did not exist.
-    expect(ok.stdout).toMatch(/sections: 9 \(1 nested\)/);
-    expect(ok.stdout).toContain('plan-section 9');
+    expect(ok.stdout).toMatch(/sections: 10 \(1 nested\)/);
+    expect(ok.stdout).toContain('plan-section 10');
     const listed = run(['list', P(), '--no-outline']).stdout.trim().split('\n').length - 1;  // minus the title line
-    expect(listed).toBe(9);
+    expect(listed).toBe(10);
 
     writeFileSync(P(), readPlan().replace('</plan-section>', ''));
     const bad = run(['check', P()]);
@@ -122,8 +122,21 @@ describe('templates', () => {
     const one = run(['templates', 'tdd']);
     expect(one.code, one.stderr).toBe(0);
     expect(one.stdout).toContain('# tdd');
-    expect(one.stdout).toContain('Scaffolds 9 sections:');
+    expect(one.stdout).toContain('Scaffolds 10 sections:');
     expect(run(['templates', 'nope']).code).toBe(1);
+  });
+  it('tdd and issue scaffold their fixed section ids, in order', () => {
+    const ids = (name) => [...run(['templates', name]).stdout.matchAll(/^\s+[\d.]+\. (\S+)$/gm)].map(m => m[1]);
+    expect(ids('issue')).toEqual(['overview', 'root-cause', 'impact', 'remediation', 'not-affected', 'open']);
+    expect(ids('tdd')).toEqual(['overview', 'scope', 'recon', 'decisions', 'steps', 'step-1',
+      'callsites', 'migration', 'verification', 'anti-patterns']);
+  });
+  it('new writes none of a shipped template\'s guidance comment into the document', () => {
+    for (const name of templateNames()) {
+      const out = join(dir, `${name}.html`);
+      expect(run(['new', out, '--template', name]).code, name).toBe(0);
+      expect(readFileSync(out, 'utf8').split('<main>')[1], name).not.toContain('<!--');
+    }
   });
   it('every shipped template documents itself, with no literal plan tag in the comment', () => {
     // The convention this enforces: a template's leading comment IS its docs.
@@ -143,18 +156,28 @@ describe('shipped docs stand alone', () => {
   // Only skills/html-planning/ is installed. A shipped doc that links outside
   // it, or points at repo-only tooling, is a broken reference for every reader
   // who did not clone the repo.
-  const docs = ['SKILL.md', 'references/template-authoring.md'];
-  it('link only to files that ship, and never cite repo-only tooling', () => {
+  // They are read by an LLM, never clicked, so a reference is a bare backtick
+  // path: a relative Markdown link only repeats the path it wraps.
+  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md'];
+  it('cite only references that ship, as bare paths, and never repo-only tooling', () => {
     let checked = 0;
     for (const doc of docs) {
       const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
       expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
-      for (const rel of new Set([...text.matchAll(/\]\((?!https?:|#)([^)]+)\)/g)].map(m => m[1]))) {
-        expect(existsSync(join(SKILL_DIR, dirname(doc), rel)), `${doc} → ${rel}`).toBe(true);
+      expect(text, doc).not.toMatch(/\]\((?!https?:|#)[^)]+\)/);
+      for (const rel of new Set([...text.matchAll(/`(references\/[\w.-]+\.md)`/g)].map(m => m[1]))) {
+        expect(existsSync(join(SKILL_DIR, rel)), `${doc} → ${rel}`).toBe(true);
         checked++;
       }
     }
-    expect(checked, 'no relative links found — has the pattern gone stale?').toBeGreaterThan(0);
+    expect(checked, 'no cited references found — has the pattern gone stale?').toBeGreaterThan(0);
+  });
+  it('document the consumer template directory', () => {
+    // Scoped to the two docs Templates/template-authoring guidance lives in —
+    // not the full `docs` list above, which also covers authoring-traps.md,
+    // an unrelated reference this feature has no reason to touch.
+    for (const doc of ['SKILL.md', 'references/template-authoring.md'])
+      expect(readFileSync(join(SKILL_DIR, doc), 'utf8'), doc).toContain('.claude/planr-templates/');
   });
 });
 
@@ -217,6 +240,27 @@ describe('badge', () => {
   });
 });
 
+describe('badge labels', () => {
+  it('refuses a custom label without --text and writes nothing, even for valid rows (exit 1); --text "" clears', () => {
+    freshPlan();
+    const hunk = join(dir, 'rows.html');
+    writeFileSync(hunk, '<plan-table><table><tbody>' +
+      '<tr><td>q30 derived</td><td><plan-badge type="open">Open</plan-badge></td></tr>' +
+      '<tr><td>q31 custom</td><td><plan-badge type="open">not started</plan-badge></td></tr>' +
+      '</tbody></table></plan-table>');
+    expect(run(['set-body', P(), 'recon', '--file', hunk]).code).toBe(0);
+    const before = readPlan();
+    const refused = run(['badge', P(), '--match', 'q3', '--set', 'decided', '--all']);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain('carries "not started"');
+    expect(readPlan()).toBe(before);
+    // An empty argv element must survive the process boundary as --text's value.
+    const cleared = run(['badge', P(), '--match', 'q31', '--set', 'decided', '--text', '']);
+    expect(cleared.code, cleared.stderr).toBe(0);
+    expect(readPlan()).toContain('<td>q31 custom</td><td><plan-badge type="decided"></plan-badge>');
+  });
+});
+
 describe('list outline', () => {
   it('includes authored headings by default, and drops them for --no-outline', () => {
     freshPlan();
@@ -243,6 +287,17 @@ describe('flag parsing', () => {
   });
 });
 
+describe('set header.title', () => {
+  it('moves the head <title> with the header, so check --strict stays clean', () => {
+    freshPlan();
+    const r = run(['set', P(), 'header.title=Renamed Plan']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).toContain('<title>Renamed Plan</title>');
+    const c = run(['check', P(), '--strict']);
+    expect(c.code, c.stdout).toBe(0);
+  });
+});
+
 describe('end-to-end editing flow', () => {
   it('new -> add-section -> set -> read reflects each change', () => {
     freshPlan();
@@ -265,5 +320,196 @@ describe('end-to-end editing flow', () => {
     expect(html).toContain('status="review"');
     expect(html).toContain('chips="A | B | C"');
     expect(run(['read', P(), 'overview']).stdout).toContain('status="done"');
+  });
+});
+
+describe('check warnings', () => {
+  it('prints warnings after the structure report and exits 0; --strict exits 1', () => {
+    freshPlan();
+    writeFileSync(P(), readPlan().replace('<main>', '<main>\n<!-- guidance banner left behind -->'));
+    const soft = run(['check', P()]);
+    expect(soft.code, soft.stderr).toBe(0);
+    expect(soft.stdout).toMatch(/^structure OK[\s\S]*\n1 warning\(s\)[^\n]*\n {2}line \d+: <main> opens with a comment carrying text/);
+    // --strict BEFORE the file: a valueless flag not in BOOLEAN_FLAGS eats the filename.
+    const strict = run(['check', '--strict', P()]);
+    expect(strict.code).toBe(1);
+    expect(strict.stdout).toContain('1 warning(s)');
+    expect(strict.stderr).toContain('check --strict: 1 warning(s), listed above');
+  });
+});
+
+describe('check warnings (guards)', () => {
+  it('every shipped template scaffolds a document that passes --strict', () => {
+    for (const t of templateNames()) {
+      const out = join(dir, `${t}.html`);
+      expect(run(['new', out, '--template', t]).code, t).toBe(0);
+      const r = run(['check', out, '--strict']);
+      expect(r.code, `${t}: ${r.stdout}${r.stderr}`).toBe(0);
+    }
+  });
+});
+
+describe('bare-id addressing', () => {
+  it('reads and sets a nested section by its bare id', () => {
+    freshPlan();
+    expect(run(['set', P(), 'step-1.status=done']).code).toBe(0);
+    const r = run(['read', P(), 'step-1']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('<plan-section id="step-1" title="First step" status="done">');
+  });
+});
+
+describe('read --text', () => {
+  it('prints structure-preserving text, with --text accepted before the file', () => {
+    freshPlan();
+    const r = run(['read', '--text', P(), 'step-1']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^### \d+\.1\. First step\n/);
+    expect(r.stdout).toContain('#### Red Phase\n');
+    expect(r.stdout).not.toContain('<');
+    expect(run(['--help']).stdout).toMatch(/read\s+<file> <address> \[--body\] \[--text\]/);
+  });
+});
+
+describe('text-addressed writes', () => {
+  // overview gets a running list and a sentence to address by visible text.
+  const seed = () => {
+    freshPlan();
+    const hunk = join(dir, 'seed.html');
+    writeFileSync(hunk, '\n    <ul>\n      <li>alpha item</li>\n      <li>beta item</li>\n    </ul>\n' +
+                        '    <p>We ship on Friday, after the review.</p>\n  ');
+    expect(run(['set-body', P(), 'overview', '--file', hunk]).code).toBe(0);
+  };
+  const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+
+  it('rm-item removes a list item by its text, and exits 1 on an ambiguous match', () => {
+    seed();
+    const amb = run(['rm-item', P(), 'overview', '--match', 'item']);
+    expect(amb.code).toBe(1);
+    expect(amb.stderr).toContain('matches 2 items');
+    const r = run(['rm-item', P(), 'overview', '--match', 'beta', '--into', 'ul']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).not.toContain('beta item');
+    expect(run(['rm-item', P(), 'overview', '--all', '--match', 'item']).code).toBe(0);
+    expect(readPlan()).not.toContain('alpha item');
+    expect(run(['check', P()]).code).toBe(0);
+    expect(run(['--help']).stdout).toContain('rm-item');
+    expect(skill()).toContain('| `rm-item` |');
+  });
+
+  it('strike wraps a matched run in <s>, and exits 1 on a run already struck', () => {
+    seed();
+    const r = run(['strike', P(), 'overview', '--match', 'on friday']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(readPlan()).toContain('<p>We ship <s>on Friday</s>, after the review.</p>');
+    const again = run(['strike', P(), 'overview', '--match', 'Friday']);
+    expect(again.code).toBe(1);
+    expect(again.stderr).toContain('is already struck');
+    expect(run(['check', P()]).code).toBe(0);
+    expect(run(['--help']).stdout).toContain('strike');
+    expect(skill()).toContain('| `strike` |');
+  });
+
+  it('replace takes the replacement from --with, --file, or stdin', () => {
+    seed();
+    expect(run(['replace', P(), 'overview', '--match', 'Friday', '--with', 'Monday']).code).toBe(0);
+    const hunk = join(dir, 'with.html');
+    writeFileSync(hunk, 'the audit\n');
+    expect(run(['replace', P(), 'overview', '--match', 'the review', '--file', hunk]).code).toBe(0);
+    const piped = run(['replace', P(), 'overview', '--match', 'ship'], { input: 'land' });
+    expect(piped.code, piped.stderr).toBe(0);
+    expect(run(['read', P(), 'overview', '--body', '--text']).stdout)
+      .toBe('- alpha item\n- beta item\nWe land on Monday, after the audit.\n');
+    const both = run(['replace', P(), 'overview', '--match', 'land', '--with', 'x', '--file', hunk]);
+    expect(both.code).toBe(1);
+    expect(both.stderr).toContain('use only one of --with / --file');
+    expect(run(['--help']).stdout).toContain('replace');
+    expect(skill()).toContain('| `replace` |');
+  });
+});
+
+describe('consumer template directory (.claude/planr-templates/)', () => {
+  const PROBE = [
+    '<!-- ════════════════════════════════════════',
+    '     Probe consumer template — owned by the repo, not the skill.',
+    '     ════════════════════════════════════════ -->',
+    '',
+    '  <plan-section id="probe" title="Probe"></plan-section>',
+  ].join('\n');
+  // Stage the skill at <dir>/.claude/skills/html-planning and write `files` into
+  // its sibling consumer directory. Returns the staged planr.js.
+  const stageWithConsumer = (files) => {
+    const staged = stageSkill(dir, 'skills/html-planning');
+    const consumerDir = join(dir, '.claude', 'planr-templates');
+    mkdirSync(consumerDir, { recursive: true });
+    for (const [name, body] of Object.entries(files)) writeFileSync(join(consumerDir, name), body);
+    return staged;
+  };
+
+  it('lists, describes and scaffolds a consumer template beside the skill ones', () => {
+    const staged = stageWithConsumer({ 'probe.html': PROBE });
+    const list = runAt(staged, ['templates']);
+    expect(list.code, list.stderr).toBe(0);
+    expect(list.stdout).toMatch(/^probe\s+\[consumer\] Probe consumer template/m);
+    expect(list.stdout).toMatch(/^tdd\s+TDD implementation plan/m);
+    expect(list.stdout).not.toContain('Template problems');
+
+    const one = runAt(staged, ['templates', 'probe']);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.stdout).toContain('source: consumer template');
+    expect(one.stdout).toContain('1. probe');
+
+    const out = join(dir, 'probe-plan.html');
+    const made = runAt(staged, ['new', out, '--template', 'probe']);
+    expect(made.code, made.stderr).toBe(0);
+    expect(made.stdout).toContain('(template: probe, consumer:');
+    const html = readFileSync(out, 'utf8');
+    expect(html).toContain('<plan-section id="probe" title="Probe">');
+    expect(html).toContain('/skills/html-planning');   // the shell still comes from the skill
+    expect(run(['check', out]).code).toBe(0);
+  });
+  it('lets a consumer template shadow a skill template, and says so', () => {
+    const staged = stageWithConsumer({ 'tdd.html': PROBE });
+    expect(runAt(staged, ['templates']).stdout).toMatch(/^tdd\s+\[consumer, shadows skill\] Probe consumer template/m);
+    const out = join(dir, 'shadowed.html');
+    expect(runAt(staged, ['new', out, '--template', 'tdd']).code).toBe(0);
+    expect(readFileSync(out, 'utf8')).toContain('id="probe"');
+    expect(readFileSync(out, 'utf8')).not.toContain('id="anti-patterns"');
+  });
+  it('refuses a consumer _shell.html (exit 1)', () => {
+    const staged = stageWithConsumer({ '_shell.html': '{{body}}' });
+    for (const args of [['templates'], ['new', join(dir, 'x.html')]]) {
+      const r = runAt(staged, args);
+      expect(r.code, args[0]).toBe(1);
+      expect(r.stderr, args[0]).toContain('the shell is skill-owned');
+    }
+  });
+  it('reports a consumer template that breaks the template rules', () => {
+    const staged = stageWithConsumer({ 'bare.html': '<plan-section id="bare" title="Bare"></plan-section>' });
+    const r = runAt(staged, ['templates']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/Template problems:\n {2}bare \[consumer\]: no leading comment/);
+  });
+
+  // Regression guard — passes before AND after this step. Placed inside the
+  // describe above: with no planr-templates/ beside the staged skill, the
+  // listing is exactly what the unstaged skill prints.
+  it('is simply absent when the directory does not exist', () => {
+    const staged = stageSkill(dir, 'skills/html-planning');
+    expect(runAt(staged, ['templates']).stdout).toBe(run(['templates']).stdout);
+  });
+});
+
+describe('release metadata', () => {
+  it('SKILL.md, package.json, the lockfile root and the README release notes name one version', () => {
+    const root = join(SKILL_DIR, '..', '..');
+    const json = (f) => JSON.parse(readFileSync(join(root, f), 'utf8'));
+    const pkg = json('package.json');
+    const lock = json('package-lock.json');
+    const skillVersion = /^version:\s*(\S+)$/m.exec(readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8'))[1];
+    expect(skillVersion).toBe(pkg.version);
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages[''].version).toBe(pkg.version);
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain(`## What's new in ${pkg.version}`);
   });
 });

@@ -18,6 +18,18 @@ templates/
 
 You will almost always be writing a body. Change `_shell.html` only to alter something every plan shares — a new document-level variable, a `<head>` addition.
 
+## Where a template lives
+
+A template is either **shipped** — in the skill's `templates/` — or **consumer-owned**, in `.claude/planr-templates/`, the directory beside `skills/` under the same `.claude` ancestor. Write a repo's own templates in the consumer directory: updating the skill overwrites `templates/` and never touches `planr-templates/`.
+
+| | Shipped `templates/` | Consumer `.claude/planr-templates/` |
+|---|---|---|
+| Bodies (`<name>.html`) | yes | yes — same format, same rules |
+| `_shell.html` | the one shell | refused — `planr` errors until it is removed |
+| A name the other directory also has | — | the consumer template wins; `planr templates` marks it `[consumer, shadows skill]` |
+
+Everything below applies to both. `planr templates` holds every template it lists to the leading-comment rules and to `check`, and prints any that fail under **Template problems**.
+
 ## Variables
 
 Values fill via a zero-dep `{{var}}` substitution. A placeholder may **declare a default**:
@@ -60,7 +72,7 @@ Both are validated identically. If you add a placeholder whose value has a const
 
 - its **first sentence** becomes the template's one-line gist in `planr templates`;
 - the **whole comment** is what `planr templates <name>` prints;
-- it **ships inside every generated plan**, so the guidance reaches whoever fills the scaffold in — months later, in another repo, without this file.
+- it is **left out of the document `planr new` writes**, so a scaffolded plan never opens with instructions to itself. `new` strips it with the same match `templates` reads it with, so the two never disagree about which comment is the guidance.
 
 Write it for that person: what the document type is for, what each section is meant to contain, and the judgement calls the shape encodes. The `issue` template's comment is a good model — it explains *why* root cause and impact are separate sections, not just that they are.
 
@@ -84,7 +96,7 @@ Seed each section with a sentence describing what belongs there rather than leav
 ## Verifying a new template
 
 ```bash
-node .claude/skills/html-planning/planr.js templates              # gist reads correctly?
+node .claude/skills/html-planning/planr.js templates              # gist reads correctly? no "Template problems"?
 node .claude/skills/html-planning/planr.js templates <name>       # guidance + sections + variables
 node .claude/skills/html-planning/planr.js new /tmp/probe.html --template <name>
 node .claude/skills/html-planning/planr.js check /tmp/probe.html  # exits 1 on a structural break

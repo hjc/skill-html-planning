@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # html-planning
@@ -24,7 +24,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan"
    ```
-   For a **TDD implementation plan**, add `--template tdd` to scaffold the canonical spine (see "Plan Templates & Canonical Sections" below); for a defect write-up, `--template issue`:
+   For a **TDD implementation plan**, add `--template tdd`; for a defect write-up, `--template issue`. Each scaffolds a fixed section spine owned by that document type (see "Templates" below):
    ```bash
    node .claude/skills/html-planning/planr.js new <output-path> --title "My Plan" --template tdd
    ```
@@ -35,28 +35,7 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
    ```
 2. **Read the generated file.**
 3. **Use `planr`** (or `Edit`) to add sections, cards, tables, and other components using the Web Component tags below.
-4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count.
-
-## Plan Templates & Canonical Sections
-
-`planr.js new --template tdd` scaffolds the **canonical TDD-plan spine** — a fixed set of section **ids** and titles. Use them verbatim: a stable id makes every plan addressable (`planr read plan.html anti-patterns` works because the id is never `antipatterns` or `risks`) and makes a corpus of plans comparable. Prefer this template for any test-driven implementation plan, and fill in the scaffold rather than inventing section names.
-
-| # | id | Title | Purpose | Content convention |
-|---|----|-------|---------|--------------------|
-| 1 | `overview` | Overview | Goal, background, the problem solved | prose |
-| 2 | `scope` | Scope & Prerequisites | What's in / out of scope + prerequisites | prose + an info `plan-callout` |
-| 3 | `recon` | Reconnaissance Summary | Load-bearing facts the executor may need | `plan-table` **File / Lines / What** (+ `plan-file` excerpts, `plan-callout` for key facts) |
-| 4 | `decisions` | Design Decisions | The chosen approach and why | `plan-table` **# / Decision / Rationale** |
-| — | `dataflow` | Data Flow *(optional)* | before→after / sequence of a refactor | prose + `plan-diagram` |
-| 5 | `steps` | Implementation Steps | The TDD steps | one nested `plan-section` per step (with `status`), `<h4>Red Phase</h4>` / `<h4>Green Phase</h4>` rhythm, `plan-file`/`plan-diff` |
-| 6 | `callsites` | Callsite Audit | Every reference to the changed thing + its disposition | `plan-table` **# / Callsite / Change** |
-| 7 | `verification` | Verification | Commands that prove it works | `<pre><code class="language-bash">` command + an "Expected: …" line |
-| 8 | `anti-patterns` | Anti-Patterns | Tempting wrong approaches to forbid | `plan-table` **# / Don't / Why** |
-| — | `open-questions` | Open Questions *(optional)* | Unresolved items needing a decision | list or `plan-table` |
-
-**These table shapes are conventions, not components** — a decision row is just a `<tr>`, so it stays a `plan-table`. Match the column headers above so the corpus stays uniform; don't invent a `<plan-decision>` tag.
-
-**This spine is a TDD *profile*, not a universal schema.** PRDs, BSDs, architecture docs, and issue write-ups have their own structures — for those, use the default `--template basic` (a single starter section) and structure the plan however the document type demands. Do **not** force the TDD spine onto a non-TDD plan.
+4. **Run `planr check <file>`** when you are done editing. It is the authoritative structure validation — never hand-roll a `grep -c '<plan-table>'` balance count. Read the warnings it prints after the structure report; each names a line that will not render as written.
 
 ## Component Reference
 
@@ -126,6 +105,8 @@ Grid of metric or summary cards. Wrap cards in `<plan-cards>` for grid layout.
 
 #### `<plan-table>`
 Wrapper that styles any `<table>` inside it with the plan theme.
+
+**A recurring table shape is a convention, not a component.** A decisions table is a `plan-table` whose columns happen to be # / Decision / Rationale — never invent a `<plan-decision>` tag for it. Match the column headers the template scaffolds so the corpus stays uniform.
 ```html
 <plan-table>
   <table>
@@ -134,6 +115,28 @@ Wrapper that styles any `<table>` inside it with the plan theme.
   </table>
 </plan-table>
 ```
+
+#### `<plan-defs>` / `<plan-def>`
+A **sub-record**: two to six name → value pairs that belong to one thing — the fields a model gains, the limits a tier sets. Each `<plan-def>` is one pair: its `key` attribute is the name, its content is the value (inline markup such as `<code>` is fine).
+```html
+<plan-defs>
+  <plan-def key="country_code">CharField(max_length=2), ISO alpha-2</plan-def>
+  <plan-def key="tier">CharField(max_length=10)</plan-def>
+</plan-defs>
+```
+**Attributes:** `key` on `<plan-def>` — plain text. CSS renders it, so markup written in it shows literally.
+
+Standalone it is a compact bordered block with the keys in one column. **Inside a `<plan-table>` cell it drops its chrome** and reads as part of the row — this is the shape for any cell whose content is a sub-record:
+```html
+<tr><td>Add fields to <code>SmsLog</code></td><td><plan-defs>
+  <plan-def key="country_code">CharField(max_length=2)</plan-def>
+  <plan-def key="tier">CharField(max_length=10)</plan-def>
+</plan-defs></td></tr>
+```
+- **Never nest a `<table>` in a `<td>` for this.** The inner table inherits every plan-table rule and compounds inside the host cell's padding and border, and it asserts a peer grid where the content is one row's attributes.
+- **One level only.** A sub-record inside a sub-record is a real table — give it its own `<plan-table>`.
+- **Add a pair with `planr append <file> <section> --into plan-defs --file row.html`.** With several in a section, pick one with `--into plan-defs:<n>`.
+- **`planr read --text` prints each pair as `key: value`** — one line per pair, joined with `; ` inside a table cell.
 
 ### Interactive
 
@@ -170,6 +173,8 @@ Inline status badge.
 <plan-badge type="open">Custom Text</plan-badge>
 ```
 **Attributes:** `type` (decided/open/deferred/high/medium/low).
+
+Leave a status badge **empty** unless it needs words its type cannot say: an empty badge derives its label from `type`, so it stays correct through every `planr badge --set`. A badge with its own text keeps that text, which is why `badge --set` refuses to flip one without `--text`.
 
 ### Formulas & Principles
 
@@ -263,7 +268,7 @@ Prefer `planr set-body --file` / `add-section --body-file` to splice a generated
 ### Diagrams
 
 #### `<plan-diagram>`
-Renders a [Mermaid](https://mermaid.js.org/) diagram from plain text — flowcharts, sequence diagrams, state diagrams, ER diagrams, Gantt charts, etc. Prefer this over hand-drawn SVG: it's far more compact, expressive, and themed automatically to match the plan. The element's text content **is** the Mermaid source.
+Renders a [Mermaid](https://mermaid.js.org/) diagram from plain text — flowcharts, sequence diagrams, state diagrams, ER diagrams, Gantt charts, etc. Prefer this over hand-drawn SVG: it's far more compact, expressive, and themed automatically to match the plan. The element's content **is** the Mermaid source.
 ```html
 <plan-diagram caption="Audit log write path on checkout">
 flowchart LR
@@ -275,7 +280,9 @@ flowchart LR
 ```
 **Attributes:** `caption` (optional muted caption shown below the diagram).
 
-The Mermaid library is **lazy-loaded from cdnjs at runtime** the first time a `<plan-diagram>` appears — nothing is added to the plan skeleton, and plans without diagrams load nothing extra. A diagram needs network access on first render; opened fully offline, it falls back to showing its source text. Write standard Mermaid syntax — arrows like `-->` are safe (a lone `>` is read as text), but if a node/edge label contains a literal `<` or `&`, escape it as `&lt;`/`&amp;` for the same HTML-parser reason as `<plan-file>`/`<plan-diff>` above.
+The Mermaid library is **lazy-loaded from cdnjs at runtime** the first time a `<plan-diagram>` appears — nothing is added to the plan skeleton, and plans without diagrams load nothing extra. A diagram needs network access on first render; opened fully offline, it falls back to showing its source text. A diagram renders at its natural size, and one wider than the page scrolls horizontally rather than shrinking.
+
+Write standard Mermaid syntax. Arrows like `-->` are safe, and a line break in a label is written literally as `<br/>`. Any other `<` that could read as a tag (`List<int>`) or `&` that could read as an entity must be escaped as `&lt;`/`&amp;`, for the same HTML-parser reason as `<plan-file>`/`<plan-diff>` above.
 
 ### Timeline
 
@@ -349,6 +356,11 @@ Apply these to any element:
 7. **Use native `<details>` for optional depth** — lengthy calculations, raw data, edge cases.
 8. **Keep plan files semantic.** The CSS and JS live in the skill folder and are loaded at runtime. Don't inline styles or scripts in plan files.
 9. **Encode code changes as `<plan-diff>` and `<plan-file>`, not prose.** Never write "Around line 45, remove the `CASCADE` argument and replace with `SET_NULL`" — instead, use a `<plan-diff>` that shows the exact change with line numbers, add/delete markers, and syntax highlighting. The markup is the instruction. Prose should describe *why* the change is made, not *what* lines to edit. Similarly, when referencing existing code to read or understand, use `<plan-file>` with the path and line range instead of describing it in a sentence.
+10. **Link every reference to another plan document.** These files are read by clicking through them in a browser; a bare `<code>` path is a dead end. Wrap the `<code>` so the displayed text is unchanged: `<a href="../prd-<feature>.html"><code>prd-<feature>.html</code></a>`.
+    - **The `href` is relative to the file that carries it, not to what the text displays.** A document one directory down cites a sibling as `../research/decisions.html` even where the text reads `research/decisions.html`. Resolve each path against the containing file and confirm it exists before writing it.
+    - **A glob is never a link** (`notes/*.html`, `slices/<n>-*.html`, `tdds/`) — it is not a file. Leave it plain.
+    - Don't double-wrap an existing `<a>`, and don't add icons or link text.
+    - This is a rule for HTML documents. Plain-text instruction docs (`.md`) keep the bare backtick path.
 
 ## Using `planr`
 
@@ -366,11 +378,11 @@ One grammar for every address argument — the positional `<address>`, `--parent
 
 ```
 header                    the <plan-header>
-<sectionId>               a top-level section
+<sectionId>               the section carrying that id, at any depth
 <sectionId>.<child>…      a descendant, to any depth
 ```
 
-Each segment after the first is a child's `id` or its **1-based ordinal** among siblings: `steps.step-3`, `steps.3`, `steps.3.detail`. A bare id only resolves at the top level — a nested section always needs its full path (`steps.step-1`, never `step-1`).
+Each segment after the first is a child's `id` or its **1-based ordinal** among siblings: `steps.step-3`, `steps.3`, `steps.3.detail`. A bare id resolves at **any depth** — `step-1` finds `steps.step-1` — because ids are unique document-wide. A document where two sections carry the id is refused, naming each one's full path and line. The full path is what `list` and `tasks` print, and an ordinal segment still needs its parent in front of it.
 
 `set` is the one exception: its **last** segment is an attribute name, not a node (`steps.3.status=done`).
 
@@ -382,7 +394,7 @@ tr:2          the 2nd <tr>, 1-based
 #tickets      the element carrying id="tickets"
 ```
 
-"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. A `<plan-*>` tag is rejected here: address those with the dot-path.
+"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. `--into` refuses exactly the tags the dot-path addresses — `plan-section`, `plan-subsection`, `plan-header` — and accepts any other container, components included: `--into plan-defs` adds a `<plan-def>` pair, `--into plan-cards` a card. `read --body` on a parent still shows its nested sections' content; when an ordinal taken from it is out of range for `--into`, the error says nested sections are excluded.
 
 ### Command reference
 
@@ -393,32 +405,47 @@ tr:2          the 2nd <tr>, 1-based
 | `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `chips`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. Run `templates <name>` for the variables a template offers. |
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
-| `check` | `<file>` | *(none)* | **Authoritative structure validation.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census. Exits **1** with the offending line numbers on any break. |
+| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`. Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`. Rows are `<address>  [status]  title`. |
-| `read` | `<file> <address>` | `--body` | Print the node's **outer** markup; with `--body`, just its **inner** content. |
+| `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
 | `append` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **end** of that body / container, just above its closing tag. |
 | `insert` | `<file> <address>` | `--before-heading <T>` \| `--after-heading <T>` **(one required)** · `--file <f>` · `--into <sel>` | Insert a hunk relative to an authored heading, matched on visible text (case-insensitive substring). |
-| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. |
+| `badge` | `<file>` | `--match <text>` **(required)** · `--set <type>` **(required)** · `--in <addr>` · `--nth <n>` · `--all` · `--text <T>` | Flip a `<plan-badge>` inside the table row whose visible text contains `--match`. A label that is just the old type's own label is cleared; any other label is refused unless `--text` says what to do with it. |
+| `rm-item` | `<file> <address>` | `--match <text>` **(required)** · `--into <sel>` · `--nth <n>` \| `--all` | Remove the `<li>` or `<tr>` whose visible text contains `--match` — among the section's own items, or those inside the `--into` container. The innermost matching item is the one taken, and an item alone on its line takes the whole line with it. |
+| `strike` | `<file> <address>` | `--match <text>` **(required)** · `--into <sel>` · `--nth <n>` \| `--all` | Wrap the matched text run in `<s>…</s>` — the amendment convention's strike. Refuses a run that crosses an element boundary, one already struck, and one inside a code component. |
+| `replace` | `<file> <address>` | `--match <text>` **(required)** · `--with <T>` \| `--file <f>` (else stdin) · `--into <sel>` · `--nth <n>` \| `--all` | Replace the matched text run with the given markup, spliced verbatim. `--with ""` deletes the run. Refuses a run that crosses an element boundary. |
 | `add-section` | `<file>` | `--id <id>` **(required)** · `--title <T>` · `--status <S>` · `--num <N>` · `--after <addr>` \| `--before <addr>` · `--parent <addr>` · `--body-file <f>` | Insert a section, empty or filled from `--body-file`. |
 | `rm-section` | `<file> <address>` | *(none)* | Remove the section at that address, at any depth. |
 | `move-section` | `<file> <address>` | `--after <addr>` \| `--before <addr>` **(one required)** | Move the addressed section beside a sibling. |
 
 **Rules & gotchas:**
 
-- **Placing a section:** `--after`/`--before` name a **sibling by full address**, which fixes the new section's nesting depth too — so `add-section --id step-2 --after steps.step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
+- **Placing a section:** `--after`/`--before` name a **sibling** — by full path or bare id — which fixes the new section's nesting depth too — so `add-section --id step-2 --after step-1` nests under `steps` with no `--parent`. Use `--parent <addr>` alone to append as that node's **last** child. Passing a `--parent` that contradicts the ref is an error, not a silent override. With neither, the section is appended at top level.
 - **Numbers are automatic.** `1`, `1.1`, `1.1.2` derive from document position and re-derive after every add/move/remove — never write a `num` to keep a plan in order, and never renumber by hand. `num` is a label **override** only: a bare value (`"Part 1"`) replaces that one level and still joins onto its parent (`→ 5.1`); a dotted value (`5.1`) is the complete number, used as-is.
 - **`status` values:** sections use `todo` / `in-progress` / `done` / `blocked`; the header uses `draft` / `review` / `approved` / `implemented` / `rejected`. `set` validates each against **its own** enum, and **rejects** an out-of-set status or a misspelled attribute (`staus`) — it never silently no-ops. That holds for `new --set header.status=…` too, which is the same code path.
 - **Nothing is dropped in silence.** `set` applies every assignment it is given; `new --set` errors on a key that addresses nothing. If a command exits 0, every argument you passed took effect.
 - **Ids are unique document-wide.** `add-section` rejects an id already used at any depth, and `check` reports a duplicate that got in another way.
 - **Quotes in values:** a `set` value cannot contain a literal `"` (attributes are double-quoted). Use `&quot;` — the runtime decodes it on render.
-- **Body input:** `set-body`, `prepend`, `append`, and `insert` read `--file <f>` if given, otherwise **stdin**. `add-section` takes `--body-file <f>` (no stdin).
+- **Body input:** `set-body`, `prepend`, `append`, and `insert` read `--file <f>` if given, otherwise **stdin**. `replace` takes `--with <T>` first, then `--file <f>`, then stdin, and drops a body's trailing newline. `add-section` takes `--body-file <f>` (no stdin).
 - **`set-body` is verbatim; the hunk commands fit the seam.** A `set-body` body owns its whitespace byte-for-byte (that is what makes the round-trip lossless). A `prepend`/`append`/`insert` hunk is placed at one point instead, so blank edge lines are dropped and the anchor's indentation is applied **only when the hunk carries none of its own**. Escaping is yours either way.
 - **Round-trip:** `read --body <addr>` → edit the hunk → `set-body <addr>` is byte-for-byte lossless.
-- **Ambiguity is an error, not a guess.** `insert --before-heading` refuses a text that matches two headings, and `badge --match` refuses a text that matches two rows (pass `--all` if you mean both). Both list the candidates so you can narrow it.
-- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. Every body-writing command — `set-body`, `prepend`, `append`, `insert`, `add-section`, `badge` — **aborts without writing** if the splice would break the plan's structure.
+- **Ambiguity is an error, not a guess.** `insert --before-heading` refuses a text that matches two headings, and `badge --match` refuses a text that matches two rows (pass `--all` if you mean both). A text-addressed write numbers its candidates so `--nth <n>` can pick one, and takes every one only with `--all`. All of them list the candidates so you can narrow it.
+- **Text-addressed writes match visible text.** These commands — `rm-item`, `strike`, `replace` — match `--match` as a case-insensitive substring of the **visible** text: entities decoded (`&amp;` and `&` in `--match` hit the same text), whitespace collapsed so a sentence wrapped across source lines still matches, inline markup adding nothing (`Alerts to <code>ops</code>.` reads `Alerts to ops.`), and a block boundary reading as one space. `badge --match` is looser: it reads every tag as a space. Each sees only what the addressed section **owns** — never a nested section's content (address the child) — and `--into <sel>` narrows that further. List items and table rows need explicit closing tags.
+- **A text run stays inside one element.** `strike` and `replace` refuse a match whose ends sit in different elements — `to <code>ops</code>` is not one run — so narrow `--match` to text inside one. `strike` also refuses a run already inside `<s>`, and one inside `pre`, `plan-file`, `plan-diff` or `plan-diagram`, where markup corrupts the code; `replace` reaches both. Every refusal names the line.
+- **`replace` rewrites; `insert` only adds.** A `prepend`/`append`/`insert` hunk never displaces anything, so using one to swap a sentence leaves both copies and `check` stays green. Rewrite text in place with `replace --match "…" --with "…"`. The replacement is markup, spliced verbatim — escape `<` `>` `&` as in any body. A rewrite spanning several elements is `read --body` → edit → `set-body`.
+- **`badge --set` never leaves a label naming the old state.** An empty badge derives its label from `type`, so it follows every flip. A badge whose text is only its current type's label (`Open` on `type="open"`, compared case-insensitively) is cleared, so the new type names it. A badge carrying any other text is **refused** unless you pass `--text`: `--text "<label>"` keeps or rewrites it, `--text ""` clears it. With `--all`, one refusal writes nothing.
+- **Every attribute write is validated the same way.** `set`, `add-section` and `new` all reject a `status` outside its tag's enum and a `title` containing an HTML tag (titles are plain text). `set header.title=…` also rewrites the document's `<title>`, so the browser tab and the header never disagree.
+- **`check` warns; `--strict` gates.** A warning never changes `check`'s exit code and never blocks a write — every writing command still aborts on a structure break alone. Pass `--strict` where a warning should fail the run.
+- **Not a general HTML editor.** Structural ops act on `<plan-section>` elements, assume one element per line, and leave comments in place. Every body-writing command — `set-body`, `prepend`, `append`, `insert`, `add-section`, `badge`, `rm-item`, `strike`, `replace` — **aborts without writing** if the splice would break the plan's structure.
+- **`list` and `check` are the authoritative counts. Never `grep`.** `grep -c '<plan-section'` counts literal strings, so a commented example inflates the total — and the over-count stays *balanced*, so it never reads as a failure. Use `check` for balance, `list` for the count.
+- **`read <addr> --body` is byte-faithful.** Indentation is preserved exactly; it prepends one leading newline and nothing else, so an `Edit` `old_string` can be lifted from its output directly.
+- **Read for content with `--text`, for editing with `--body`.** `read --text` is for understanding a section without paying for its tags; it is lossy by design (attributes, inline markup and escaping are gone), so never lift an `Edit` `old_string` or a `set-body` hunk from it.
+- **`planr` handles plans written before the CLI existed.** `list`, `read`, `set` and `set-body` address hand-authored files unchanged — no migration step.
+- **A literal `sed -i` substitution is safe for text-content-only changes** (repointing a moved path): the file still parses and every tag pair stays balanced. It is not a substitute for `set-body` on a structural change. Run `check` either way.
+- **Windows paths with forward slashes work from a POSIX shell** (`--file "C:/Users/.../hunk.html"`) with no `MSYS_NO_PATHCONV=1` prefix, because the path sits inside a quoted argument.
 
 ```bash
 node .../planr.js new plan.html --title "My Plan" --template tdd      # generate
@@ -434,6 +461,9 @@ node .../planr.js append plan.html decisions --into ul --file gist.html        #
 node .../planr.js append plan.html vocab --into tbody --file rows.html         # rows onto a table
 node .../planr.js insert plan.html resolution --before-heading "The six decisions" --file note.html
 node .../planr.js badge plan.html --match "q16" --set decided         # flip a badge in a tickets table
+node .../planr.js rm-item plan.html fog --match "graduated patch"     # the inverse of append --into
+node .../planr.js strike plan.html resolution --match "retry hourly"  # strike superseded text in place
+node .../planr.js replace plan.html resolution --match "hourly" --with "daily"   # rewrite text in place
 node .../planr.js add-section plan.html --id risks --title "Risks" --after overview
 node .../planr.js add-section plan.html --id step-2 --title "Wire it up" \
                   --status todo --after steps.step-1                  # nests under steps
@@ -441,18 +471,32 @@ node .../planr.js add-section plan.html --id step-2 --title "Wire it up" \
 
 ### Editing a document too big to load
 
-The characteristic write on a long-lived plan is **small and deep**: an amendment callout at the top of a resolution decided three sessions ago, one `<li>` onto a running gist, four rows onto a vocabulary table, one badge flipped in a ticket table. None of those is a whole-section rewrite, and none should cost a `set-body` of the surrounding 20KB.
+The characteristic write on a long-lived plan is **small and deep**: an amendment callout at the top of a resolution decided three sessions ago, one row onto a decision register, four rows onto a vocabulary table, one badge flipped in a ticket table. None of those is a whole-section rewrite, and none should cost a `set-body` of the surrounding 20KB.
 
 | The write | Reach for |
 |---|---|
 | Amendment above everything in a section | `prepend <section> --file` |
 | One more item on a running list | `append <section> --into ul --file` |
 | More rows on a table | `append <section> --into tbody --file` |
+| One more pair on a sub-record | `append <section> --into plan-defs --file` |
 | Something next to a known heading | `insert <section> --before-heading "…" --file` |
 | A status/badge transition | `set <addr>.status=…` · `badge --match … --set …` |
+| Removing a list item or a table row | `rm-item <section> --match "…"` · `--into <sel>` to scope it |
+| Striking a superseded sentence | `strike <section> --match "…"` |
+| Rewriting a phrase or sentence in place | `replace <section> --match "…" --with "…"` |
 | Replacing a whole section's content | `set-body <section> --file` |
 
 **Prefer these over `Edit` for anything structural.** An `Edit` on a plan means hand-lifting an `old_string` out of a large file, which is where this toolchain's worst failure mode lives — and a `<plan-badge>` in a table row is usually an *empty* tag (`<plan-badge type="open"></plan-badge>`), so an `old_string` written assuming inner text matches nothing at all.
+
+**Never reconstruct an `old_string` from a byte-truncated view of it.** `tail -c N` / `cut -c` cut mid-line, which makes wrapped prose look like it starts at a line boundary when it does not, and the `Edit` fails with "String to replace not found." Use `grep -n` plus `Read` with an offset for line-accurate text — or better, `prepend`/`append`/`insert` and skip the `old_string` entirely.
+
+**To read a large plan for its content rather than to edit it, use `read --text`:**
+
+```
+planr.js read <f>.html <sec> --text
+```
+
+It keeps the structure a tag strip loses — a table row stays one line with its cells separated, a list item stays its own line, code stays verbatim inside a fence — and costs a fraction of the markup. Use `read --body` whenever you need the markup itself.
 
 ### Templates
 
@@ -461,8 +505,24 @@ Templates live in `./templates/`: `_shell.html` is the shared document + runtime
 | Template | For |
 |---|---|
 | `basic` | anything without a fixed spine — one starter section |
-| `tdd` | test-driven implementation plans (the canonical spine above) |
-| `issue` | a defect write-up: danger callout → root cause → impact table → remediation table → what is *not* affected → Open |
+| `tdd` | test-driven implementation plans: overview → scope → recon → decisions → steps → callsites → migration → verification → anti-patterns |
+| `issue` | a defect write-up: overview → root-cause → impact → remediation → not-affected → open |
+
+**A template's section ids are fixed vocabulary owned by that document type, not by this skill.** Use them verbatim, fill the scaffold rather than inventing names, and never force one template's spine onto a document type it was not written for — use `basic` and structure the document as its type demands. A stable id is what makes every document addressable (`planr read plan.html anti-patterns`) and a corpus comparable. This skill decides *how* a document is formatted; the document type decides *what* it contains.
+
+**A repo can add its own templates** without editing this skill folder, so updating the skill stays a plain overwrite. They go in **`.claude/planr-templates/`** — the directory beside `skills/` under the same `.claude` that holds this skill:
+
+```
+.claude/
+├── skills/html-planning/templates/   ← shipped: _shell.html and the bodies above
+└── planr-templates/                  ← the repo's own <name>.html bodies
+```
+
+- **They behave exactly like shipped templates.** `planr templates` lists them, marked `[consumer]`; `planr templates <name>` prints their leading comment; `new --template <name>` scaffolds them.
+- **A consumer template shadows a shipped one of the same name**, visibly: its row reads `[consumer, shadows skill]`, and `new` names the file it used.
+- **The shell stays the skill's.** A `_shell.html` in `planr-templates/` is an error, not an override. Other `_`-prefixed files are ignored, as they are in `templates/`.
+- **The same rules apply.** A template with no leading comment, a literal plan tag inside that comment, or a scaffold that fails `check` is listed under **Template problems** by `planr templates`.
+- Run from a path with no `.claude` ancestor, `planr` has no consumer directory.
 
 **Read a template before using it.** Each one opens with a comment stating what it is for and the conventions it encodes; `planr templates <name>` prints that, along with the sections it scaffolds and the variables it accepts:
 
@@ -478,23 +538,21 @@ node .claude/skills/html-planning/planr.js templates tdd      # what tdd is for,
 
 Both are validated identically (`--set status=aproved` and `--set header.status=aproved` both fail), and a key that matches nothing is an error listing the ones that exist — never a silent drop.
 
-> **Writing or changing a template?** See **[`references/template-authoring.md`](references/template-authoring.md)**.
-
-### Field notes
-
-Established by driving `planr` against real multi-session plan sets. Each of these cost a failed edit or a wrong conclusion before it was written down; they are re-learned every session otherwise.
-
-- **`list` and `check` are the authoritative section counts — `grep` is not.** `grep -c '<plan-section'` counts literal strings, so a commented example inflates the total. The over-count stays *balanced*, so it never reads as a failure, and reconciling it against `list` sends you hunting a splice bug that does not exist. Use `check` for balance and `list` for the count. (The shipped templates no longer contain a commented plan tag, but plans in the wild may.)
-- **`read <addr> --body` is byte-faithful.** Indentation is preserved exactly; it prepends a single leading newline and nothing else. An `Edit` `old_string` can be lifted from its output directly.
-- **…but never reconstruct an `old_string` from a byte-truncated view of it.** `tail -c N` / `cut -c` truncate mid-line, which makes wrapped prose look like it starts at a line boundary when it does not — the resulting `Edit` fails with "String to replace not found." Use `grep -n` plus `Read` with an offset to get line-accurate text. Better: use `prepend`/`append`/`insert` and skip the `old_string` entirely.
-- **`planr` handles plans written before the CLI existed.** `list`, `read`, `set`, and `set-body` all address hand-authored plan files unchanged — no migration step.
-- **Large splices are fine.** A single `set-body --file` of ~17KB into an existing section is a normal operation; there is no observed size-related failure mode. Structure is re-verified after every splice.
-- **A literal `sed -i` substitution over a plan file is safe** for text-content-only changes (repointing a moved path, say) — the file still parses and every tag pair stays balanced. It is still not a substitute for `set-body` when the change is structural. Run `check` afterwards either way.
-- **Windows paths with forward slashes work from the Bash tool** (`--file "C:/Users/.../hunk.html"`) with no `MSYS_NO_PATHCONV=1` prefix, because the path sits inside a quoted argument.
+> **Writing or changing a template?** See **`references/template-authoring.md`**.
+>
+> **Authoring a real document?** See **`references/authoring-traps.md`** — the failure modes that leave `planr check` green and the document wrong: ids carried in table rows, sequential-replace renumbering, unverified enumerations, escaping code bodies, patching from a dump, and the browser check for diagrams.
 
 ### Rich content
 
+**Author an HTML body to a file, not through a shell heredoc.** Write it with your file-writing tool and splice it with `set-body --file` / `add-section --body-file`: the body is written verbatim, the plan is never loaded into context, and a splice that aborts leaves the body on disk to fix and retry.
+
+**A single `set-body --file` of ~17KB is a normal operation** — there is no size-related failure mode, and structure is re-verified after every splice.
+
 Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the content — but you can pay for the content *without* also paying to load the plan. Author the body as normal plan markup in a scratch file, then inject it by address with `add-section --body-file` or `set-body --file`; the plan is mutated in place and never read into context. To fix content in an existing section, pull just that hunk with `read --body`, edit it, and push it back with `set-body` — ~2× the hunk, still far less than materializing the whole plan. To *add* to a section rather than rewrite it, skip the read entirely and use `prepend` / `append` / `insert` (see "Editing a document too big to load"): the cost is the hunk alone. `set-body` and `add-section` splice **verbatim** (the body owns its whitespace); escaping is your responsibility exactly as when authoring markup directly.
+
+## Escaping Inside Code Components
+
+**Escape `<`, `>` and `&` inside `<plan-file>`, `<plan-diff>` and `<code>`.** URL converters (`<uuid:pk>`, `<item_id>`), JSX tags and generics are parsed as HTML otherwise, and the browser eats the content **silently** — the document renders, the snippet is just missing its middle. The markup stays balanced, so the structure check passes.
 
 ## Architecture
 
@@ -502,7 +560,7 @@ Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the 
 .claude/skills/html-planning/
 ├── planr.js          ← Generate (from a template) + address-based plan mutator
 ├── templates/        ← _shell.html (shared doc + loader) and <name>.html bodies (basic, tdd, …)
-├── references/       ← Deep-dive docs, read on demand (template-authoring.md)
+├── references/       ← Deep-dive docs, read on demand (template-authoring.md, authoring-traps.md)
 ├── plan-styles.css   ← Design system (loaded at runtime)
 ├── plan-runtime.js   ← Web Component definitions (loaded at runtime)
 └── SKILL.md          ← This file (agent instructions)

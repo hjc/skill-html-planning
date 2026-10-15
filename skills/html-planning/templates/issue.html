@@ -2,6 +2,10 @@
        Issue template — a defect found while doing something else,
        written for whoever picks it up cold.
 
+       The section ids below are fixed vocabulary, exactly as in the tdd
+       template. Use them verbatim so every issue is addressable
+       (`planr read issue.html remediation`) and the corpus is comparable.
+
        Conventions this template encodes:
          · Lead with a danger callout that states the defect and its
            blast radius in the first sentence. Someone triaging reads
@@ -10,8 +14,7 @@
            the impact is usually a table, because one mechanism tends to
            break several things.
          · Quote the offending code as a plan-file with its real path and
-           line range — never as a bare snippet. A path plus gutter numbers
-           is the difference between a report and a lead.
+           line range — never as a bare snippet.
          · Show the fix as a plan-diff only when its shape is actually
            known. A plausible-looking diff nobody has validated is worse
            than an open question.
@@ -32,8 +35,9 @@
       true, and whether it fails loudly or silently — a silent failure is a different kind of problem and
       the reader needs to know which this is up front.
     </plan-callout>
+  </plan-section>
 
-    <h3>Root cause</h3>
+  <plan-section id="root-cause" title="Root cause">
     <p>
       The single mechanism. Quote the offending construct rather than describing it, and give it a real path
       and line range so the next reader can open it. If the cause was <em>measured</em> rather than reasoned
@@ -45,8 +49,9 @@ def handler(sender, instance, **kwargs):
     if not instance.pk:
         return
     </plan-file>
+  </plan-section>
 
-    <h3>Impact</h3>
+  <plan-section id="impact" title="Impact">
     <p>One mechanism usually breaks more than one thing. Convention: a table, most severe first.</p>
     <plan-table>
       <table>
@@ -68,8 +73,9 @@ def handler(sender, instance, **kwargs):
       another effort already owns, and which ticket or plan owns it. Delete this callout if nothing is
       covered. Its purpose is to stop the next reader from widening scope by accident.
     </plan-callout>
+  </plan-section>
 
-    <h3>Remediation</h3>
+  <plan-section id="remediation" title="Remediation">
     <plan-table>
       <table>
         <thead><tr><th>#</th><th>Step</th><th>Notes</th></tr></thead>
@@ -105,14 +111,17 @@ def handler(sender, instance, **kwargs):
 +    if not instance.pk:
 +        Audit.objects.create(target=instance, action="created")
  </plan-diff>
+  </plan-section>
 
+  <plan-section id="not-affected" title="What is not affected">
     <plan-callout type="warn">
-      <strong>What is NOT affected.</strong> Bound the defect explicitly. A reader who has just learned the
-      mechanism will assume it is everywhere, and the cheapest thing you can give them is the list of places
-      that look implicated but are fine.
+      <strong>Bound the defect explicitly.</strong> A reader who has just learned the mechanism will assume
+      it is everywhere, and the cheapest thing you can give them is the list of places that look implicated
+      but are fine.
     </plan-callout>
+  </plan-section>
 
-    <h3>Open</h3>
+  <plan-section id="open" title="Open">
     <ul>
       <li>A question whose answer changes the remediation.</li>
       <li>Anything downstream that may already be silently compensating for this — or silently relying on

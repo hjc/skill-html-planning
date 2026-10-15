@@ -76,6 +76,32 @@
       </tbody>
     </table>
   </plan-table>
+
+  <p>A <code>&lt;plan-defs&gt;</code> sub-record, standalone — a compact block with keys in one column:</p>
+  <plan-defs>
+    <plan-def key="country_code">CharField(max_length=2), ISO alpha-2</plan-def>
+    <plan-def key="tier">CharField(max_length=10) — <code>"domestic"</code>, <code>"1"</code>, <code>"2"</code></plan-def>
+    <plan-def key="backfill"><plan-badge type="decided"></plan-badge> in migration 0042</plan-def>
+  </plan-defs>
+
+  <p>The same component inside table cells, where it drops its chrome and reads as part of the row:</p>
+  <plan-table>
+    <table>
+      <thead>
+        <tr><th>Requirement</th><th>Change</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Add fields to <code>SmsLog</code></td><td><plan-defs>
+          <plan-def key="country_code">CharField(max_length=2)</plan-def>
+          <plan-def key="tier">CharField(max_length=10)</plan-def>
+        </plan-defs></td></tr>
+        <tr><td>Default limits</td><td><plan-defs>
+          <plan-def key="Enterprise">500/day</plan-def>
+          <plan-def key="Professional (with override)">100/day</plan-def>
+        </plan-defs></td></tr>
+      </tbody>
+    </table>
+  </plan-table>
 </plan-section>
 
 <!-- ═══════════════════════════════════════════════════════ -->
@@ -396,6 +422,21 @@ sequenceDiagram
     V->>DB: INSERT OrderAuditLog
     DB-->>V: ok
     V-->>C: 201 Created
+  </plan-diagram>
+
+  <h3>Line breaks in labels</h3>
+  <p>A <code>&lt;br/&gt;</code> written literally inside a node label renders as a line break.</p>
+  <plan-diagram caption="Slices with two-line labels">
+flowchart LR
+    S1["S1 · Staging environment<br/>infra + portals"] --> S2["S2 · Sync worker<br/>queue + retries"]
+    S2 --> S3["S3 · Reporting &amp; exports"]
+  </plan-diagram>
+
+  <h3>Wide diagram</h3>
+  <p>A diagram wider than the content column renders at its natural size and scrolls horizontally instead of shrinking.</p>
+  <plan-diagram caption="A long pipeline keeps legible labels and scrolls">
+flowchart LR
+    A[Receive upload] --> B[Scan for malware] --> C[Decrypt envelope] --> D[Extract metadata] --> E[Classify document] --> F[Match request item] --> G[Notify requester] --> H[Archive original] --> I[Emit webhook] --> J[Update audit log] --> K[Close request]
   </plan-diagram>
 </plan-section>
 

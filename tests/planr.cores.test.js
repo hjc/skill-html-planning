@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PLANR_URL, SKILL_DIR } from './helpers.js';
 
@@ -64,6 +64,27 @@ const RICH = [
   '</main>',
 ].join('\n');
 const bodyOf = (html, addr) => planr.planRead(html, addr, { body: true });
+
+// A sub-record in both shapes <plan-defs> takes: standalone, and inside a table
+// cell. Two lists, so an `--into plan-defs` without `:<n>` has to pick the LAST.
+const DEFS_DOC = [
+  '<plan-header title="Defs" status="draft"></plan-header>',
+  '<main>',
+  '  <plan-section id="fields" title="Fields">',
+  '    <plan-defs>',
+  '      <plan-def key="country_code">CharField(max_length=2)</plan-def>',
+  '    </plan-defs>',
+  '    <plan-table>',
+  '      <table>',
+  '        <tbody>',
+  '          <tr><td>SmsLog</td><td><plan-defs><plan-def key="tier">CharField</plan-def></plan-defs></td></tr>',
+  '        </tbody>',
+  '      </table>',
+  '    </plan-table>',
+  '  </plan-section>',
+  '</main>',
+].join('\n');
+const skillFile = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
 
 describe('planList', () => {
   it('formats header + numbered top level + indented child', () => {
@@ -151,6 +172,21 @@ describe('planNew', () => {
   it('never lets --set reach {{body}}', () => {
     expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['body=<p>x</p>'] })).toThrow(/matches no \{\{placeholder\}\}/);
   });
+  it('leaves the template\'s leading guidance comment out of the document, and only that comment', () => {
+    const body = [
+      '  <!-- ════════════════════════════════════════',
+      '       Probe template — guidance for whoever fills it in.',
+      '       ════════════════════════════════════════ -->',
+      '',
+      '  <plan-section id="overview" title="Overview"></plan-section>',
+      '  <!-- an inline note the author kept -->',
+    ].join('\n');
+    const html = planr.planNew(SHELL, body, base);
+    expect(html).not.toContain('Probe template');
+    // The blank lines between the comment and the first element go with it.
+    expect(html).toContain('<main>\n  <plan-section id="overview"');
+    expect(html).toContain('  <!-- an inline note the author kept -->');
+  });
 });
 
 describe('planSet', () => {
@@ -219,10 +255,6 @@ describe('planAddSection', () => {
   it('appends as the last child of --parent when no ref is given', () => {
     const out = planr.planAddSection(DOC, { id: 'a2', parent: 'a' }, null).html;
     expect(childIds(out, 'a')).toEqual(['a1', 'a2']);
-  });
-  it('rejects a bare child id as a ref — every address is a full dot-path', () => {
-    expect(() => planr.planAddSection(DOC, { id: 'a2', parent: 'a', after: 'a1' }, null))
-      .toThrow(/section 'a1' not found/);
   });
   it('rejects a --parent that contradicts the ref', () => {
     expect(() => planr.planAddSection(DOC, { id: 'x', parent: 'b', after: 'a.a1' }, null))
@@ -339,6 +371,194 @@ describe('planCheck', () => {
   });
 });
 
+// A plan body placed inside <main>, below a header: the body's first line is line 3.
+const inMain = (body) => ['<plan-header title="T" status="draft"></plan-header>', '<main>', body, '</main>'].join('\n');
+
+describe('planCheck warnings', () => {
+  it('returns an empty warning list for a clean document', () => {
+    expect(planr.planCheck(RICH).warnings).toEqual([]);
+  });
+  it('warns when <main> opens with a text-carrying comment — a scaffold banner — at its line', () => {
+    const html = inMain('  <!-- ════════════\n       TDD plan — the spine.\n       ════════════ -->\n  <plan-section id="a"></plan-section>');
+    const { ok, warnings } = planr.planCheck(html);
+    expect(ok).toBe(true);
+    expect(warnings).toEqual([{ line: 3, text: expect.stringMatching(/^<main> opens with a comment carrying text/) }]);
+  });
+  it('ignores a rule-only comment, and a comment after the first element', () => {
+    expect(planr.planCheck(inMain('<!-- ═══════════════ -->\n<plan-section id="a"></plan-section>')).warnings).toEqual([]);
+    expect(planr.planCheck(inMain('<plan-section id="a"></plan-section>\n<!-- a real note -->')).warnings).toEqual([]);
+  });
+  it('gathers no warnings on a document that fails the structure check', () => {
+    expect(planr.planCheck(inMain('<!-- banner text -->\n<plan-callout type="info">oops'))).toMatchObject({ ok: false, warnings: [] });
+  });
+  it('warningReport prints one line per warning, and nothing when there are none', () => {
+    expect(planr.warningReport([])).toBe('');
+    expect(planr.warningReport([{ line: 3, text: 'a' }, { line: 9, text: 'b' }]))
+      .toBe('2 warning(s) — the document balances, but will not render as written:\n  line 3: a\n  line 9: b');
+  });
+});
+
+describe('planCheck warnings — code components', () => {
+  it('warns on an unescaped tag inside <plan-file> and <plan-diff>, at the first tag\'s line', () => {
+    const html = inMain([
+      '<plan-file path="a.js">',          // 3
+      'const x = 1;',                     // 4
+      'return <Flex gap="2" />;',         // 5
+      '</plan-file>',                     // 6
+      '<plan-diff path="b.js">',          // 7
+      ' ok',                              // 8
+      '+  &lt;Box&gt; is escaped',        // 9
+      '-  </div>',                        // 10
+      '</plan-diff>',
+    ].join('\n'));
+    expect(planr.planCheck(html).warnings).toEqual([
+      { line: 5, text: expect.stringMatching(/^<plan-file path="a\.js">: 1 unescaped tag\(s\), first <Flex> — /) },
+      { line: 10, text: expect.stringMatching(/^<plan-diff path="b\.js">: 1 unescaped tag\(s\), first <\/div> — /) },
+    ]);
+  });
+  it('warns once per <plan-diff> on lines with no gutter character, listing each line', () => {
+    const html = inMain([
+      '<plan-diff path="c.py">',          // 3
+      ' class Config:',                   // 4
+      'debug = True',                     // 5  no gutter
+      '',                                 // 6  blank line = context
+      '+    verbose = True',              // 7
+      '\tindented = 1',                   // 8  a tab is not a gutter
+      '&lt;T&gt; = 2',                    // 9  decodes to "<", not a gutter
+      '  </plan-diff>',
+    ].join('\n'));
+    expect(planr.planCheck(html).warnings).toEqual([
+      { line: 5, text: expect.stringMatching(/^<plan-diff path="c\.py">: 3 line\(s\) with no gutter character \(lines 5, 8, 9\) — /) },
+    ]);
+  });
+});
+
+describe('planCheck warnings — code components (guards)', () => {
+  it('accepts every gutter the runtime accepts, and ignores blank edge lines', () => {
+    expect(planr.planCheck(inMain('<plan-diff>\n\n   \n ctx\n-del\n+add\n\n   \n</plan-diff>')).warnings).toEqual([]);
+  });
+});
+
+describe('planCheck warnings — section references', () => {
+  it('warns on an in-page link whose whole text is a bare section number, suggesting the name', () => {
+    const html = inMain([
+      '<plan-section id="reviews" title="Reviews">',                                             // 3
+      '  <p>See <a href="#reviews">&sect;1</a>.</p>',                                             // 4
+      '  <p>See <a href="#reviews">§1.2</a> and <a href="#reviews">&sect;1 Reviews</a>.</p>',      // 5
+      '  <p><a href="https://example.test/#s">§3</a></p>',                                        // 6
+      '</plan-section>',
+    ].join('\n'));
+    const warnings = planr.planCheck(html).warnings;
+    expect(warnings.map(w => w.line)).toEqual([4, 5]);
+    expect(warnings[0].text).toBe('link text "§1" (href="#reviews") is a bare section number — numbers re-derive ' +
+      'when a section is added or moved; name the section too, e.g. "§1 Reviews"');
+  });
+});
+
+describe('planCheck warnings — badge labels', () => {
+  it('warns on a badge whose label is a DIFFERENT type\'s label', () => {
+    const html = inMain([
+      '<table><tbody>',                                                                   // 3
+      '<tr><td>a</td><td><plan-badge type="open">Decided</plan-badge></td></tr>',         // 4  names another type
+      '<tr><td>b</td><td><plan-badge type="decided">Decided</plan-badge></td></tr>',      // 5  its own label
+      '<tr><td>c</td><td><plan-badge type="open">not started</plan-badge></td></tr>',     // 6  custom
+      '<tr><td>d</td><td><plan-badge>low</plan-badge></td></tr>',                         // 7  no type means open
+      '</tbody></table>',
+    ].join('\n'));
+    const warnings = planr.planCheck(html).warnings;
+    expect(warnings.map(w => w.line)).toEqual([4, 7]);
+    expect(warnings[0].text).toBe('<plan-badge type="open"> reads "Decided", the label of type "decided" — it renders ' +
+      'one state and names another; clear the label with `badge --set <type> --text ""`');
+    expect(warnings[1].text).toMatch(/^<plan-badge type="open"> reads "low", the label of type "low"/);
+  });
+});
+
+describe('header title and the head <title>', () => {
+  const DOCUMENT = [
+    '<!DOCTYPE html>',
+    '<html><head>',
+    '  <title>Old &amp; Busted</title>',
+    '</head><body>',
+    '<plan-header title="Old &amp; Busted" status="draft"></plan-header>',
+    '<main>',
+    '<plan-section id="a" title="A"></plan-section>',
+    '</main>',
+    '</body></html>',
+  ].join('\n');
+  const headText = (html) => /<title>([\s\S]*?)<\/title>/.exec(html)[1];
+  it('set header.title writes the same bytes into <title>, and reports both writes', () => {
+    const { html, message } = planr.planSet(DOCUMENT, 'header.title=New &amp; Shiny');
+    expect(headText(html)).toBe('New &amp; Shiny');
+    expect(planr.getAttr(planr.findElement(html, 'plan-header').attrsRaw, 'title')).toBe('New &amp; Shiny');
+    expect(message).toBe('set header.title = "New &amp; Shiny"\nset <title> = "New &amp; Shiny"');
+  });
+  it('new --set header.title keeps both titles in step', () => {
+    const shell = '<html><head><title>{{title}}</title></head><body>' +
+      '<plan-header title="{{title}}" status="draft"></plan-header><main>{{body}}</main></body></html>';
+    const html = planr.planNew(shell, BODY, { title: 'First', date: 'd', skillSubpath: 's', sets: ['header.title=Second'] });
+    expect(headText(html)).toBe('Second');
+  });
+  it('check warns when <title> and the header title diverge, comparing decoded text', () => {
+    expect(planr.planCheck(DOCUMENT).warnings).toEqual([]);
+    const drifted = DOCUMENT.replace('<title>Old &amp; Busted</title>', '<title>Old & Busted v1</title>');
+    expect(planr.planCheck(drifted).warnings).toEqual([{
+      line: 3,
+      text: '<title> reads "Old & Busted v1" but the header title is "Old & Busted" — `set header.title=…` rewrites both',
+    }]);
+  });
+});
+
+describe('header title and the head <title> (guards)', () => {
+  it('leaves <title> alone for any other header attribute and for a section title', () => {
+    const doc = '<html><head><title>Keep</title></head><body><plan-header title="Keep" status="draft"></plan-header>' +
+      '\n<plan-section id="a" title="A"></plan-section></body></html>';
+    const { html } = planr.planSet(doc, ['header.subtitle=S', 'a.title=Renamed']);
+    expect(/<title>([\s\S]*?)<\/title>/.exec(html)[1]).toBe('Keep');
+  });
+  it('sets header.title on a document with no <head> without inventing one', () => {
+    const { html, message } = planr.planSet(DOC, 'header.title=Renamed');
+    expect(html).not.toContain('<title>');
+    expect(message).toBe('set header.title = "Renamed"');
+  });
+});
+
+describe('attribute rules — every writer validates through validateAttr', () => {
+  const TAG_IN_TITLE = /contains an HTML tag — titles are plain text/;
+  it('add-section rejects an out-of-enum --status — it used to write it and drop out of `tasks`', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', status: 'bogus' }, null))
+      .toThrow("invalid status 'bogus' for <plan-section> — valid: todo, in-progress, done, blocked");
+  });
+  it('add-section rejects a --title carrying a tag', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', title: 'Add the <code>Order</code> model' }, null))
+      .toThrow('title "Add the <code>Order</code> model" on <plan-section> contains an HTML tag — titles are plain text ' +
+        '(the navigation shows markup as literal tags); remove the markup, or write a literal < as &lt;');
+  });
+  it('set rejects a tag in a section title and in the header title, closing tags included', () => {
+    expect(() => planr.planSet(DOC, 'a.title=<b>Bold</b>')).toThrow(/^title "<b>Bold<\/b>" on <plan-section> contains an HTML tag/);
+    expect(() => planr.planSet(DOC, 'header.title=End</title>')).toThrow(/^title "End<\/title>" on <plan-header> contains an HTML tag/);
+  });
+  it('new rejects a tag in the title from --title, a bare --set, and a dotted --set', () => {
+    const base = { date: 'd', skillSubpath: 's' };
+    expect(() => planr.planNew(SHELL, BODY, { ...base, title: 'A <em>plan</em>' })).toThrow(TAG_IN_TITLE);
+    expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['title=<i>x</i>'] })).toThrow(TAG_IN_TITLE);
+    expect(() => planr.planNew(SHELL, BODY, { ...base, sets: ['header.title=<i>x</i>'] })).toThrow(TAG_IN_TITLE);
+  });
+  it('new validates the rendered sections, not only the header', () => {
+    const base = { title: 'T', date: 'd', skillSubpath: 's' };
+    expect(() => planr.planNew(SHELL, '  <plan-section id="o" status="bogus"></plan-section>', base))
+      .toThrow("invalid status 'bogus' for <plan-section>");
+    expect(() => planr.planNew(SHELL, '  <plan-section id="o" title="<b>x</b>"></plan-section>', base))
+      .toThrow(/^title "<b>x<\/b>" on <plan-section> contains an HTML tag/);
+  });
+});
+
+describe('titles are plain text (guards)', () => {
+  it('accepts a bare < that opens no tag, and escaped markup', () => {
+    expect(() => planr.planSet(DOC, 'a.title=a < b &amp; c')).not.toThrow();
+    expect(() => planr.planAddSection(DOC, { id: 'x', title: 'Use &lt;code&gt; sparingly' }, null)).not.toThrow();
+  });
+});
+
 describe('template documentation (the leading-comment convention)', () => {
   const TPL = [
     '  <!-- ════════════════════════════════════════',
@@ -393,6 +613,55 @@ describe('template documentation (the leading-comment convention)', () => {
     expect(() => planr.planTemplateReport(entries, 'nope')).toThrow(/unknown template 'nope' — have: alpha, zeta/);
     expect(() => planr.planTemplateReport([])).toThrow(/no templates found/);
   });
+
+  // Inside describe('template documentation (the leading-comment convention)'),
+  // after the existing `entries` tests — TPL and `entries` are in scope there.
+  const PROBE_SHELL = '<title>{{title}}</title>\n<plan-header title="{{title}}" status="draft"></plan-header>\n<main>\n{{body}}\n</main>';
+
+  it('templateProblems holds a template to the rules every shipped template meets', () => {
+    expect(planr.templateProblems(TPL, PROBE_SHELL)).toEqual([]);
+    expect(planr.templateProblems('<plan-section id="a"></plan-section>', PROBE_SHELL))
+      .toEqual(['no leading comment — open the template with an HTML comment saying what it is for']);
+    expect(planr.templateProblems('<!-- Uses <plan-callout> for notes. -->\n<plan-section id="a"></plan-section>', PROBE_SHELL))
+      .toEqual(['its leading comment contains a literal <plan-*> tag — refer to components in prose']);
+    expect(planr.templateProblems('<!-- Broken. -->\n<plan-section id="a">', PROBE_SHELL))
+      .toContain('fails check once scaffolded — run `planr new` with it and `planr check` the result');
+  });
+  it('templateProblems counts a check WARNING in the scaffold as a problem', () => {
+    // A diff line with no gutter character: structurally sound, one S2 warning.
+    const body = '<!-- Gutterless. -->\n<plan-section id="a" title="A">\n<plan-diff path="a.py">\nno gutter\n</plan-diff>\n</plan-section>';
+    const problems = planr.templateProblems(body, PROBE_SHELL);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/^check warning once scaffolded — line \d+: /);
+  });
+  it('every shipped template has no problems', () => {
+    const dir = join(SKILL_DIR, 'templates');
+    const shell = readFileSync(join(dir, '_shell.html'), 'utf8');
+    const names = planr.planTemplates(readdirSync(dir));
+    expect(names.length).toBeGreaterThan(0);
+    for (const n of names)
+      expect(planr.templateProblems(readFileSync(join(dir, `${n}.html`), 'utf8'), shell), n).toEqual([]);
+  });
+  it('marks a consumer template, and one that shadows a skill template, in the list', () => {
+    const out = planr.planTemplateReport([
+      { name: 'zeta', body: TPL, origin: 'consumer', shadows: false },
+      { name: 'tdd', body: TPL, origin: 'consumer', shadows: true },
+      { name: 'basic', body: TPL, origin: 'skill', shadows: false },
+    ]);
+    expect(out).toMatch(/^basic {2}Probe template/m);
+    expect(out).toMatch(/^tdd {4}\[consumer, shadows skill\] Probe template/m);
+    expect(out).toMatch(/^zeta {3}\[consumer\] Probe template/m);
+  });
+  it('names a consumer template\'s source file when describing it', () => {
+    const out = planr.planTemplateReport([{
+      name: 'tdd', body: TPL, origin: 'consumer', shadows: true, path: '/r/.claude/planr-templates/tdd.html',
+    }], 'tdd');
+    expect(out).toContain("source: consumer template — /r/.claude/planr-templates/tdd.html (shadows the skill template 'tdd')");
+  });
+  it('reports template problems in the list and in the description', () => {
+    expect(planr.planTemplateReport(entries)).toMatch(/Template problems:\n {2}alpha: no leading comment/);
+    expect(planr.planTemplateReport(entries, 'alpha')).toMatch(/Problems:\n {2}no leading comment/);
+  });
 });
 
 describe('planList outline', () => {
@@ -410,6 +679,41 @@ describe('planList outline', () => {
 });
 
 describe('planInsert', () => {
+  it('appends a <plan-def> INTO a <plan-defs>', () => {
+    const one = planr.planInsert(DEFS_DOC, 'fields',
+      '<plan-def key="tier">CharField(max_length=10)</plan-def>', { where: 'end', into: 'plan-defs:1' });
+    expect(one.message).toBe("inserted 56 chars at the end of 'fields' → plan-defs:1 of 2");
+    expect(one.html).toMatch(
+      /<plan-def key="country_code">CharField\(max_length=2\)<\/plan-def>\n {6}<plan-def key="tier">CharField\(max_length=10\)<\/plan-def>\n {4}<\/plan-defs>/);
+    expect(planr.planCheck(one.html).ok).toBe(true);
+
+    // No ordinal → the LAST own <plan-defs>, here the one inside the table cell.
+    const cell = planr.planInsert(DEFS_DOC, 'fields',
+      '<plan-def key="limit">500/day</plan-def>', { where: 'end', into: 'plan-defs' });
+    expect(cell.message).toContain('→ plan-defs:2 of 2');
+    expect(cell.html).toMatch(
+      /<td><plan-defs><plan-def key="tier">CharField<\/plan-def>\s*<plan-def key="limit">500\/day<\/plan-def>\s*<\/plan-defs><\/td>/);
+    expect(planr.planCheck(cell.html).ok).toBe(true);
+  });
+  it('--into refuses exactly the tags the dot-path addresses, and accepts any other component', () => {
+    const doc = [
+      '<plan-header title="T" status="draft"></plan-header>',
+      '<plan-section id="s" title="S">',
+      '  <plan-section id="k" title="K"></plan-section>',
+      '  <plan-subsection id="u" title="U"></plan-subsection>',
+      '  <plan-cards>',
+      '    <plan-card label="A"></plan-card>',
+      '  </plan-cards>',
+      '</plan-section>',
+    ].join('\n');
+    for (const tag of ['plan-section', 'plan-subsection', 'plan-header'])
+      expect(() => planr.planInsert(doc, 's', '<p>x</p>', { into: tag }), tag)
+        .toThrow(new RegExp(`address a <${tag}> with the dot-path`));
+    const { html, message } = planr.planInsert(doc, 's', '<plan-card label="B"></plan-card>', { where: 'end', into: 'plan-cards' });
+    expect(message).toContain('→ plan-cards');
+    expect(html).toMatch(/<plan-card label="A"><\/plan-card>\n {4}<plan-card label="B"><\/plan-card>\n {2}<\/plan-cards>/);
+    expect(planr.planCheck(html).ok).toBe(true);
+  });
   it('prepends to a section body — the amendment-callout write', () => {
     const { html, message } = planr.planInsert(RICH, 'map', '<plan-callout type="warn">Amended.</plan-callout>', { where: 'start' });
     expect(bodyOf(html, 'map').trimStart()).toMatch(/^<plan-callout type="warn">Amended\.<\/plan-callout>/);
@@ -440,7 +744,6 @@ describe('planInsert', () => {
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'ol' })).toThrow(/no <ol> in this section/);
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'tr:9' })).toThrow(/only 2 <tr>/);
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: '#nope' })).toThrow(/no element with id 'nope'/);
-    expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'plan-table' })).toThrow(/address a <plan-table> with the dot-path/);
     expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'a b' })).toThrow(/expected <tag>, <tag>:<n>, or #<id>/);
   });
   it('anchors on a heading, before and after', () => {
@@ -489,6 +792,19 @@ describe('planInsert', () => {
   });
 });
 
+describe('--into range errors name the nested-section exclusion', () => {
+  it('says nested sections are excluded when the addressed section has any', () => {
+    expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'ul:2' }))
+      .toThrow("--into 'ul:2': only 1 <ul> in this section (nested sections are excluded — address the child section directly)");
+    expect(() => planr.planInsert(RICH, 'map', '<li>x</li>', { into: 'ol' }))
+      .toThrow("--into 'ol': no <ol> in this section (nested sections are excluded — address the child section directly)");
+  });
+  it('keeps the plain message for a section with no nested sections', () => {
+    expect(() => planr.planInsert(RICH, 'map.vocab', '<li>x</li>', { into: 'ul:2' }))
+      .toThrow(/^--into 'ul:2': only 1 <ul> in this section$/);
+  });
+});
+
 describe('planBadge', () => {
   const typeOf = (html, n) => planr.getAttr(planr.findElements(html, 'plan-badge')[n].attrsRaw, 'type');
   it('flips the badge in the row matching --match', () => {
@@ -533,8 +849,408 @@ describe('planBadge', () => {
   });
 });
 
+describe('planBadge label handling', () => {
+  const LABELLED = [
+    '<table><tbody>',
+    '<tr><td>q20 derived</td><td><plan-badge type="open">Open</plan-badge></td></tr>',
+    '<tr><td>q21 custom</td><td><plan-badge type="open">not started</plan-badge></td></tr>',
+    '<tr><td>q22 derived-case</td><td><plan-badge type="deferred"> deferred </plan-badge></td></tr>',
+    '<tr><td>q23 custom</td><td><plan-badge type="high">P0</plan-badge></td></tr>',
+    '</tbody></table>',
+  ].join('\n');
+  it('clears a label that is only the current type\'s derived text, and says so', () => {
+    const { html, message } = planr.planBadge(LABELLED, { match: 'q20', set: 'decided' });
+    expect(html).toContain('<td>q20 derived</td><td><plan-badge type="decided"></plan-badge>');
+    expect(message).toBe('set badge type = "decided" in row "q20 derived Open" — cleared its derived label "Open"');
+  });
+  it('compares the derived label trimmed and case-insensitively', () => {
+    const { html } = planr.planBadge(LABELLED, { match: 'q22', set: 'high' });
+    expect(html).toContain('<td>q22 derived-case</td><td><plan-badge type="high"></plan-badge>');
+  });
+  it('refuses a custom label with no --text, naming the label and both remedies', () => {
+    expect(() => planr.planBadge(LABELLED, { match: 'q21', set: 'decided' })).toThrow(
+      'badge --set would leave a label naming the old state:\n' +
+      '  row "q21 custom not started" carries "not started"\n' +
+      'pass --text "<label>" to keep or rewrite the label, or --text "" to clear it so the type names it');
+  });
+  it('lets --text win over any label: rewrite, keep, or clear', () => {
+    const rewrite = planr.planBadge(LABELLED, { match: 'q21', set: 'decided', text: 'Shipped' });
+    expect(rewrite.html).toContain('<plan-badge type="decided">Shipped</plan-badge>');
+    expect(rewrite.message).toBe('set badge type = "decided" text = "Shipped" (was "not started") in row "q21 custom not started"');
+    expect(planr.planBadge(LABELLED, { match: 'q21', set: 'decided', text: '' }).html)
+      .toContain('<td>q21 custom</td><td><plan-badge type="decided"></plan-badge>');
+  });
+  it('with --all, refuses before writing anything and lists every custom label', () => {
+    expect(() => planr.planBadge(LABELLED, { match: 'q2', set: 'decided', all: true }))
+      .toThrow(/carries "not started"\n {2}row "q23 custom P0" carries "P0"\npass --text/);
+  });
+  it('BADGE_LABELS matches the label map PlanBadge renders from', () => {
+    const runtime = readFileSync(join(SKILL_DIR, 'plan-runtime.js'), 'utf8');
+    const block = /class PlanBadge[\s\S]*?const labels = \{([\s\S]*?)\};/.exec(runtime);
+    expect(block, 'PlanBadge label map not found in plan-runtime.js').toBeTruthy();
+    const labels = Object.fromEntries([...block[1].matchAll(/([\w-]+):\s*'([^']*)'/g)].map(m => [m[1], m[2]]));
+    expect(planr.BADGE_LABELS).toEqual(labels);
+    expect(planr.BADGE_TYPES).toEqual(Object.keys(planr.BADGE_LABELS));
+  });
+});
+
 describe('resolveNode error path (now throwing, not exiting)', () => {
   it('throws PlanError on an unknown address', () => {
     expect(() => planr.planRead(DOC, 'nope', {})).toThrow(planr.PlanError);
+  });
+});
+
+describe('bare ids through the cores', () => {
+  it('read, set and set-body all accept a nested section by its bare id', () => {
+    expect(planr.planRead(DOC, 'a1', {})).toContain('<plan-section id="a1"');
+    expect(planr.planSet(DOC, 'a1.status=done').html).toContain('id="a1" status="done"');
+    expect(planr.planRead(planr.planSetBody(DOC, 'a1', '<p>x</p>', {}).html, 'a.a1', { body: true })).toBe('<p>x</p>');
+  });
+  it('add-section accepts a bare ref and a bare --parent that agree', () => {
+    const out = planr.planAddSection(DOC, { id: 'a2', parent: 'a', after: 'a1' }, null).html;
+    expect(childIds(out, 'a')).toEqual(['a1', 'a2']);
+  });
+  it('add-section still refuses a --parent that contradicts a bare ref', () => {
+    expect(() => planr.planAddSection(DOC, { id: 'x', parent: 'b', after: 'a1' }, null))
+      .toThrow(/--parent 'b' contradicts --after 'a1' \(which sits in 'a'\)/);
+  });
+  it('move-section sees a bare id and its full path as the same section', () => {
+    expect(() => planr.planMoveSection(DOC, 'a.a1', { after: 'a1' })).toThrow(/relative to itself/);
+  });
+});
+
+describe('TEXT_RULES', () => {
+  it('declares a read --text rule for every registered component', () => {
+    // A component whose content lives in an attribute (a card's value, a
+    // diagram's caption) is dropped from text output unless its rule says so.
+    const missing = planr.PLAN_TAGS.filter(t => !planr.TEXT_RULES[t]);
+    expect(missing).toEqual([]);
+    for (const t of planr.PLAN_TAGS) expect(['block', 'inline', 'code'], t).toContain(planr.TEXT_RULES[t].kind);
+  });
+});
+
+// Prose, lists, a struck line, a code block and a NESTED section repeating the
+// parent's phrases — the shapes text-addressed writes (rm-item, strike,
+// replace) target, and the decoys they must not reach.
+const PROSE = [
+  '<plan-header title="Ticket" status="draft"></plan-header>',
+  '<main>',
+  '  <plan-section id="resolution" title="Resolution">',
+  '    <p>We keep the legacy queue &amp; retry',
+  '      every hour.</p>',
+  '    <p>Alerts go to <code>ops</code> on failure.</p>',
+  '    <ul>',
+  '      <li>Retry hourly.</li>',
+  '      <li>Page on-call.</li>',
+  '      <li>Retry daily<ul><li>Backoff doubles.</li></ul></li>',
+  '    </ul>',
+  '    <p><s>Old plan retired.</s></p>',
+  '    <plan-file path="retry.py">',
+  'RETRY = &quot;hourly&quot;',
+  '    </plan-file>',
+  '    <plan-section id="history" title="History">',
+  '      <p>We keep the legacy queue for now.</p>',
+  '      <ul><li>Retry hourly in history.</li></ul>',
+  '    </plan-section>',
+  '  </plan-section>',
+  '</main>',
+].join('\n');
+
+describe('planRmItem', () => {
+  it('removes the matching <li> with its whole line', () => {
+    const { html, message } = planr.planRmItem(PROSE, 'resolution', { match: 'page ON-CALL' });
+    expect(html).not.toContain('Page on-call');
+    expect(html).toContain('      <li>Retry hourly.</li>\n      <li>Retry daily');
+    expect(message).toBe(`removed <li> "Page on-call." from 'resolution'`);
+  });
+  it('matches across inline markup the way it renders — no space where <code> sat', () => {
+    const html = '<plan-section id="s">\n  <ul>\n    <li>Alerts to <code>ops</code>.</li>\n    <li>Page on-call.</li>\n  </ul>\n</plan-section>';
+    const { html: out } = planr.planRmItem(html, 's', { match: 'ops.' });
+    expect(out).toBe('<plan-section id="s">\n  <ul>\n    <li>Page on-call.</li>\n  </ul>\n</plan-section>');
+  });
+  it('removes the innermost item the text belongs to, not its parent', () => {
+    const { html } = planr.planRmItem(PROSE, 'resolution', { match: 'backoff' });
+    expect(html).toContain('<li>Retry daily<ul></ul></li>');
+  });
+  it('refuses an ambiguous match with numbered candidates, and takes --nth or --all', () => {
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry' }))
+      .toThrow(/"retry" matches 2 items in 'resolution' — narrow it, pick one with --nth <n>, or pass --all:\n {2}1\. <li> Retry hourly\.\n {2}2\. <li> Retry daily Backoff doubles\./);
+    expect(planr.planRmItem(PROSE, 'resolution', { match: 'retry', nth: '2' }).html).not.toContain('Retry daily');
+    const both = planr.planRmItem(PROSE, 'resolution', { match: 'retry', all: true });
+    expect(both.html).toContain('    <ul>\n      <li>Page on-call.</li>\n    </ul>');
+    expect(both.message.split('\n')).toHaveLength(2);
+  });
+  it('never reaches an item owned by a nested section — address the child for that', () => {
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'in history' }))
+      .toThrow(/^no item matching "in history" in 'resolution'$/);
+    expect(planr.planRmItem(PROSE, 'history', { match: 'in history' }).html).not.toContain('in history');
+  });
+  it('removes a table row, scoped by --into', () => {
+    const { html, message } = planr.planRmItem(RICH, 'map', { match: 'q16', into: 'tbody' });
+    expect(html).not.toContain('q16');
+    expect(html).toContain('        <tbody>\n          <tr><td>q18 signals</td>');
+    expect(message).toBe(`removed <tr> "q16 staging" from 'map' → tbody`);
+    expect(planr.planCheck(html).ok).toBe(true);
+  });
+  it('validates its arguments', () => {
+    expect(() => planr.planRmItem(PROSE, '', { match: 'x' })).toThrow(/rm-item requires an address/);
+    expect(() => planr.planRmItem(PROSE, 'header', { match: 'x' })).toThrow(/the header holds no body/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', {})).toThrow(/rm-item requires --match <text>/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry', nth: 'x' })).toThrow(/--nth expects a 1-based number/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry', nth: '3' })).toThrow(/--nth 3: "retry" matches 2 items/);
+    expect(() => planr.planRmItem(PROSE, 'resolution', { match: 'retry', into: 'ol' })).toThrow(/--into 'ol'/);
+  });
+});
+
+describe('planStrike', () => {
+  it('wraps a run that wraps across source lines, matching its decoded text', () => {
+    const { html, message } = planr.planStrike(PROSE, 'resolution', { match: 'legacy queue & retry every hour' });
+    expect(html).toContain('<p>We keep the <s>legacy queue &amp; retry\n      every hour</s>.</p>');
+    expect(message).toBe(`struck "legacy queue & retry every hour" at line 4 of 'resolution'`);
+    // The nested section's identical phrase is not the parent's to strike.
+    expect(html).toContain('<p>We keep the legacy queue for now.</p>');
+  });
+  it('accepts an entity in --match as the character it renders', () => {
+    expect(planr.planStrike(PROSE, 'resolution', { match: 'queue &amp; retry' }).html)
+      .toContain('<s>queue &amp; retry</s>');
+  });
+  it('refuses an ambiguous run with numbered, located candidates, and takes --nth or --all', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'retry' }))
+      .toThrow(/"retry" matches 4 text runs in 'resolution' — narrow it, pick one with --nth <n>, or pass --all:\n {2}1\. line 4: We keep the legacy queue & \[retry\]\n {2}2\. line 8: \[Retry\] hourly\.\n {2}3\. line 10: \[Retry\] daily Backoff doubles\.\n {2}4\. line 14: \[RETRY\] = "hourly"/);
+    expect(planr.planStrike(PROSE, 'resolution', { match: 'retry', nth: '2' }).html).toContain('<li><s>Retry</s> hourly.</li>');
+    // --all refuses the whole write when any one run is unstrikeable (the fourth sits in code).
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'retry', all: true })).toThrow(/inside <plan-file>/);
+    const list = planr.planStrike(PROSE, 'resolution', { match: 'retry', all: true, into: 'ul:1' }).html;
+    expect(list.match(/<s>retry<\/s>/gi)).toHaveLength(2);
+  });
+  it('scopes to an --into container', () => {
+    expect(planr.planStrike(PROSE, 'resolution', { match: 'page', into: 'ul:1' }).html).toContain('<li><s>Page</s> on-call.</li>');
+  });
+  it('refuses a run that crosses an element boundary', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'go to ops' }))
+      .toThrow(/"go to ops" crosses an element boundary — strike acts on text inside one element; narrow the match \(line 6: /);
+  });
+  it('refuses a run already struck, and one inside a code component', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'old plan' })).toThrow(/"old plan" is already struck/);
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'RETRY = "hourly"' }))
+      .toThrow(/"RETRY = "hourly"" is inside <plan-file>, and markup there corrupts the code/);
+  });
+  it('validates its arguments', () => {
+    expect(() => planr.planStrike(PROSE, 'resolution', {})).toThrow(/strike requires --match <text>/);
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'nowhere' })).toThrow(/^no text run matching "nowhere" in 'resolution'$/);
+    expect(() => planr.planStrike(PROSE, 'resolution', { match: 'retry', nth: '1', all: true })).toThrow(/use only one of --nth \/ --all/);
+    expect(() => planr.planStrike(PROSE, 'header', { match: 'x' })).toThrow(/the header holds no body/);
+  });
+});
+
+describe('planReplace', () => {
+  it('replaces a run with --with, spliced verbatim as markup', () => {
+    const { html, message } = planr.planReplace(PROSE, 'resolution', null, { match: 'every hour', with: 'every <em>day</em>' });
+    expect(html).toContain('retry\n      every <em>day</em>.</p>');
+    expect(message).toBe(`replaced "every hour" at line 5 of 'resolution'`);
+  });
+  it('takes the replacement from a body, dropping its trailing newline', () => {
+    const { html } = planr.planReplace(PROSE, 'resolution', 'on-call lead\n', { match: 'on-call' });
+    expect(html).toContain('<li>Page on-call lead.</li>');
+  });
+  it('deletes the run with --with "", and rewrites struck text (the one-element rule is all it enforces)', () => {
+    expect(planr.planReplace(PROSE, 'resolution', null, { match: 'old plan', with: '' }).html).toContain('<p><s> retired.</s></p>');
+  });
+  it('applies --all to every run, code components included', () => {
+    const { html } = planr.planReplace(PROSE, 'resolution', null, { match: 'retry', with: 'Resend', all: true });
+    expect(html.match(/Resend/g)).toHaveLength(4);
+    expect(html).toContain('Resend = &quot;hourly&quot;');
+    expect(html).toContain('<li>Retry hourly in history.</li>');   // nested section untouched
+  });
+  it('refuses a run that crosses an element boundary, and a replacement that breaks the plan', () => {
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'go to ops', with: 'x' }))
+      .toThrow(/"go to ops" crosses an element boundary — replace acts on text inside one element/);
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: '<plan-callout>' }))
+      .toThrow(/would break the plan/);
+  });
+  it('validates where the replacement comes from', () => {
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: true }))
+      .toThrow(/--with needs a value — pass --with "" to delete the matched text/);
+    expect(() => planr.planReplace(PROSE, 'resolution', null, { match: 'on-call', with: 'x', file: 'f.html' }))
+      .toThrow(/use only one of --with \/ --file/);
+    expect(() => planr.planReplace(PROSE, 'resolution', '\n', { match: 'on-call' }))
+      .toThrow(/the replacement is empty — pass --with "" to delete the matched text/);
+    expect(() => planr.planReplace(PROSE, 'resolution', 'x', {})).toThrow(/replace requires --match <text>/);
+  });
+});
+
+describe('planRead --text', () => {
+  const TEXTY = [
+    '<plan-section id="t" title="Scope &amp; Text">',
+    '  <p>First   paragraph,',
+    '     wrapped &amp; <code>inline</code> &mdash; done &rarr; next.</p>',
+    '  <plan-callout type="warn">Mind the <strong>gap</strong>.</plan-callout>',
+    '  <ul>',
+    '    <li>Outer',
+    '      <ul><li>Inner</li></ul>',
+    '    </li>',
+    '  </ul>',
+    '  <plan-file path="app.py">',
+    '    if a &lt; b:',
+    '        return &quot;x&quot;',
+    '  </plan-file>',
+    '  <plan-table><table><thead><tr><th>#</th><th>Decision</th></tr></thead>',
+    '  <tbody><tr><td>1</td><td>Keep <b>it</b><br>whole</td></tr></tbody></table></plan-table>',
+    '  <!-- <p>commented out</p> -->',
+    '</plan-section>',
+  ].join('\n');
+  it('renders one block per line: title, prose, callout, nested list, fenced code, table rows', () => {
+    expect(planr.planRead(TEXTY, 't', { text: true })).toBe([
+      '## 1. Scope & Text',
+      'First paragraph, wrapped & inline — done → next.',
+      '[warn] Mind the gap.',
+      '- Outer',
+      '  - Inner',
+      '```app.py',
+      '    if a < b:',
+      '        return "x"',
+      '```',
+      '# | Decision',
+      '1 | Keep it whole',
+      '',
+    ].join('\n'));
+  });
+  it('--body drops the node\'s own title line and keeps the rest', () => {
+    const body = planr.planRead(TEXTY, 't', { text: true, body: true });
+    expect(body.startsWith('First paragraph, wrapped & inline — done → next.\n')).toBe(true);
+    expect(body).not.toContain('## 1.');
+  });
+  it('includes nested sections under their own numbered titles, and badges by label', () => {
+    expect(planr.planRead(RICH, 'map', { text: true })).toBe([
+      '## 1. Map',
+      '### Decisions so far',
+      '- First.',
+      '### Tickets',
+      'q16 staging | [open]',
+      'q18 signals | [open]',
+      '',
+      '### 1.1. Vocabulary',
+      '### Nested heading',
+      '- Nested list.',
+      '',
+    ].join('\n'));
+  });
+  it('reads a nested section by address, and the header as its title', () => {
+    expect(planr.planRead(RICH, 'map.vocab', { text: true })).toBe('### 1.1. Vocabulary\n### Nested heading\n- Nested list.\n');
+    expect(planr.planRead(RICH, 'header', { text: true })).toBe('# Map\n');
+  });
+  it('prints a badge\'s own label when it carries one', () => {
+    const html = '<plan-section id="s"><table><tr><td>q1</td><td><plan-badge type="decided">Shipped</plan-badge></td></tr></table></plan-section>';
+    expect(planr.planRead(html, 's', { text: true, body: true })).toBe('q1 | [Shipped]\n');
+  });
+  it('prints the attributes that carry a component\'s content', () => {
+    const html = [
+      '<plan-section id="c" title="C">',
+      '<plan-cards><plan-card label="Cost" value="$780" subtitle="per month"><p>Detail.</p></plan-card></plan-cards>',
+      '<plan-tabs><plan-tab label="Summary"><p>Inside.</p></plan-tab></plan-tabs>',
+      '<plan-timeline><plan-phase num="1" title="Foundation" weeks="Weeks 1-2"><ul><li>Models</li></ul></plan-phase></plan-timeline>',
+      '<plan-formula expr="Total = Sub &times; Rate" note="at checkout"></plan-formula>',
+      '<plan-principles><plan-principle label="Idempotent">Safe to retry.</plan-principle></plan-principles>',
+      '<plan-diagram caption="Write path">',
+      'flowchart LR',
+      '  A --&gt; B',
+      '</plan-diagram>',
+      '</plan-section>',
+    ].join('\n');
+    expect(planr.planRead(html, 'c', { text: true, body: true })).toBe([
+      'Cost: $780', 'per month', 'Detail.', '[Summary]', 'Inside.', 'Foundation (Weeks 1-2)', '- Models',
+      'Total = Sub × Rate — at checkout', 'Idempotent: Safe to retry.',
+      '```mermaid', 'flowchart LR', '  A --> B', '```', 'Write path', '',
+    ].join('\n'));
+    const header = '<plan-header title="Plan" subtitle="What it covers"></plan-header>';
+    expect(planr.planRead(header, 'header', { text: true })).toBe('# Plan\nWhat it covers\n');
+  });
+  it('prints only the title line for an empty section, and nothing for its empty body', () => {
+    const empty = '<plan-section id="e" title="Empty"></plan-section>';
+    expect(planr.planRead(empty, 'e', { text: true })).toBe('## 1. Empty\n');
+    expect(planr.planRead(empty, 'e', { text: true, body: true })).toBe('');
+  });
+});
+
+describe('<plan-defs> component', () => {
+  it('is registered in the runtime, and PLAN_TAGS matches the runtime registry', () => {
+    const map = /const components = \{([\s\S]*?)\};/.exec(skillFile('plan-runtime.js'))[1];
+    const registered = [...map.matchAll(/'(plan-[a-z-]+)'\s*:/g)].map(m => m[1]);
+    expect(registered).toEqual(expect.arrayContaining(['plan-defs', 'plan-def']));
+    expect([...registered].sort()).toEqual([...planr.PLAN_TAGS].sort());
+  });
+  it('passes check standalone and inside a table cell', () => {
+    const { ok, report } = planr.planCheck(DEFS_DOC);
+    expect(ok, report).toBe(true);
+    expect(report).toContain('plan-def 2, plan-defs 2');
+  });
+  it('reads as text: one `key: value` line per pair, and pairs joined by `; ` inside a table cell', () => {
+    // The key lives only in an attribute, so the text rule has to print it.
+    const html = [
+      '<plan-section id="d" title="D">',
+      '  <plan-defs>',
+      '    <plan-def key="country_code">CharField(max_length=2), <code>ISO</code> alpha-2</plan-def>',
+      '    <plan-def key="tier">CharField(max_length=10)</plan-def>',
+      '  </plan-defs>',
+      '  <plan-table><table><tbody>',
+      '    <tr><td>Default limits</td><td><plan-defs><plan-def key="Enterprise">500/day</plan-def><plan-def key="Professional">100/day</plan-def></plan-defs></td></tr>',
+      '  </tbody></table></plan-table>',
+      '</plan-section>',
+    ].join('\n');
+    expect(planr.planRead(html, 'd', { text: true, body: true })).toBe([
+      'country_code: CharField(max_length=2), ISO alpha-2',
+      'tier: CharField(max_length=10)',
+      'Default limits | Enterprise: 500/day; Professional: 100/day',
+      '',
+    ].join('\n'));
+  });
+  it('is styled as a compact block, per row, and chromeless inside a table cell', () => {
+    const css = skillFile('plan-styles.css');
+    expect(css).toMatch(/^plan-defs\s*\{[^}]*display:\s*table;/m);
+    expect(css).toMatch(/^plan-def\s*\{[^}]*display:\s*table-row;/m);
+    expect(css).toMatch(/^plan-def::before\s*\{[^}]*content:\s*attr\(key\);/m);
+    expect(css).toMatch(/^plan-table td plan-defs\s*\{[^}]*border:\s*none;/m);
+  });
+  it('is demonstrated in the sample plan, standalone and inside a table cell', () => {
+    const sample = skillFile('examples/sample-plan.html');
+    const all = (tag) => planr.findElementsDeep(sample, tag, 0, sample.length);
+    const cells = all('td');
+    const inCell = (d) => cells.some(td => td.innerStart <= d.outerStart && d.outerEnd <= td.innerEnd);
+    const defs = all('plan-defs');
+    expect(defs.filter(d => !inCell(d)).length).toBeGreaterThan(0);
+    expect(defs.filter(inCell).length).toBeGreaterThan(0);
+  });
+  it('is documented in SKILL.md, and replaces the nested-table workaround', () => {
+    const skill = skillFile('SKILL.md');
+    expect(skill).toContain('#### `<plan-defs>` / `<plan-def>`');
+    expect(skill).toContain('--into plan-defs');
+    expect(skill).not.toMatch(/bold(ed)? leads/);
+  });
+});
+
+describe('planTemplateIndex', () => {
+  it('merges skill and consumer listings into one sorted index, marking origin', () => {
+    expect(planr.planTemplateIndex({
+      skill: ['_shell.html', 'basic.html', 'tdd.html'],
+      consumer: ['map.html', 'notes.txt', '_draft.html'],
+      consumerDir: '/r/.claude/planr-templates',
+    })).toEqual([
+      { name: 'basic', origin: 'skill', shadows: false },
+      { name: 'map', origin: 'consumer', shadows: false },
+      { name: 'tdd', origin: 'skill', shadows: false },
+    ]);
+  });
+  it('lets a consumer template shadow the skill template of the same name, and records it', () => {
+    expect(planr.planTemplateIndex({ skill: ['tdd.html'], consumer: ['tdd.html'], consumerDir: '/r' }))
+      .toEqual([{ name: 'tdd', origin: 'consumer', shadows: true }]);
+  });
+  it('is the skill listing alone when there is no consumer directory', () => {
+    expect(planr.planTemplateIndex({ skill: ['basic.html'], consumer: null, consumerDir: null }))
+      .toEqual([{ name: 'basic', origin: 'skill', shadows: false }]);
+  });
+  it('refuses a consumer _shell.html — the shell is skill-owned', () => {
+    expect(() => planr.planTemplateIndex({
+      skill: ['basic.html'], consumer: ['_shell.html'], consumerDir: '/r/.claude/planr-templates',
+    })).toThrow(/\/r\/\.claude\/planr-templates\/_shell\.html: the shell is skill-owned/);
   });
 });

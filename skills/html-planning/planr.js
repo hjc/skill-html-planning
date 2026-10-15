@@ -9,15 +9,19 @@
      node planr.js new         <file> [--title T] [--template <name>] [--set k=v ...]
      node planr.js templates  [<name>]   (list templates; with a name, print its guidance)
      node planr.js list        <file> [--no-outline]
-     node planr.js check       <file>
+     node planr.js check       <file> [--strict]
      node planr.js tasks       <file> [--all | --status <s>]
-     node planr.js read        <file> <address> [--body]
+     node planr.js read        <file> <address> [--body] [--text]
      node planr.js set         <file> <path>=<value> [<path>=<value> ...]
      node planr.js set-body    <file> <address> [--file <f>] [--append]
      node planr.js prepend     <file> <address> [--file <f>] [--into <sel>]
      node planr.js append      <file> <address> [--file <f>] [--into <sel>]
      node planr.js insert      <file> <address> (--before-heading T | --after-heading T) [--file <f>]
      node planr.js badge       <file> --match <text> --set <type> [--in <addr>] [--nth N] [--all] [--text T]
+     node planr.js rm-item     <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+     node planr.js strike      <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+     node planr.js replace     <file> <address> --match <text> (--with <T> | --file <f> | stdin)
+                               [--into <sel>] [--nth N | --all]
      node planr.js add-section <file> --id <id> [--num N] [--title T] [--status S]
                                [--parent <addr>] [--after <addr> | --before <addr>] [--body-file <f>]
      node planr.js rm-section  <file> <address>
@@ -25,7 +29,7 @@
 
    Addressing (dot-paths, any depth):
      header                     → the <plan-header>
-     <sectionId>                → a top-level <plan-section id="…">
+     <sectionId>                → the section carrying that id, at any depth
      <sectionId>.<child>[.…]    → a descendant, each segment an id or a 1-based
                                   ordinal among its siblings
    EVERY address argument uses this one grammar — the positional <address>,
@@ -34,13 +38,16 @@
    (e.g. steps.3.status=done, header.status=review).
 
    Sub-section targeting (`--into <sel>`) is the ONE non-address selector, and
-   it only ever names a plain HTML container inside an already-addressed
-   section: `<tag>` (the LAST such element), `<tag>:<n>` (1-based), or `#<id>`.
+   it only ever names a container inside an already-addressed section — any tag
+   except the ones the dot-path addresses (plan-section, plan-subsection,
+   plan-header): `<tag>` (the LAST such element), `<tag>:<n>` (1-based), or `#<id>`.
 
    Templates live in ./templates/ — `_shell.html` is the shared document +
    runtime loader (with a `{{body}}` slot); every other `<name>.html` is a body
    selectable via `--template <name>`. Values fill via `{{var}}` substitution:
    {{title}}, {{date}}, {{skillSubpath}}, plus any BARE `--set key=value`.
+   A consuming repo adds bodies in .claude/planr-templates/ (beside skills/);
+   one there shadows a ./templates/ body of the same name.
    Writing a template: references/template-authoring.md.
    ═══════════════════════════════════════════════════════════ */
 
@@ -89,17 +96,33 @@ function render(tpl, vars) {
   return tpl.replace(PLACEHOLDER, (m, k, def) =>
     (k in vars ? vars[k] : (def !== undefined ? def : m)));
 }
+// The absolute path of the `.claude` directory planr was invoked from — the
+// FIRST `.claude` segment, with `\` normalised to `/` — or null outside one.
+// resolveSkillSubpath and resolveConsumerTemplateDir both read it, so the
+// install subpath and the consumer directory always hang off the same root.
+function claudeRoot(invoked) {
+  const segs = invoked.replace(/\\/g, '/').split('/');
+  const idx = segs.indexOf('.claude');
+  return idx === -1 ? null : segs.slice(0, idx + 1).join('/');
+}
 // The skill's install subpath under .claude, from how planr was invoked:
 // argv[1] preserves the symlinked .claude/skills/<name> path that __dirname
 // would resolve through. Baked into the generated plan's loader.
 function resolveSkillSubpath(invoked = process.argv[1] || __filename) {
   invoked = invoked.replace(/\\/g, '/');
-  const segs = invoked.split('/');
-  const idx = segs.indexOf('.claude');
-  if (idx !== -1) return segs.slice(idx + 1, segs.length - 1).join('/');
+  const root = claudeRoot(invoked);
+  if (root) return invoked.slice(root.length + 1).split('/').slice(0, -1).join('/');
   return 'skills/' + path.basename(path.dirname(invoked));
 }
 const TEMPLATE_DIR = path.join(__dirname, 'templates');
+// The consumer-owned template directory: `planr-templates/` beside `skills/`
+// under claudeRoot, or null when planr runs outside any .claude tree. Pure —
+// whether the directory exists is the shell's question.
+const CONSUMER_TEMPLATE_DIRNAME = 'planr-templates';
+function resolveConsumerTemplateDir(invoked = process.argv[1] || __filename) {
+  const root = claudeRoot(invoked);
+  return root ? `${root}/${CONSUMER_TEMPLATE_DIRNAME}` : null;
+}
 // Every {{placeholder}} the template offers, as {name, def}, sorted. `def` is
 // undefined for a placeholder that declares none. First declaration wins, so a
 // var used twice (title, in <title> and the header) reports one entry.
@@ -127,6 +150,15 @@ function templateDoc(tpl) {
   const text = lines.map(l => l.slice(cut)).join('\n').replace(/^\s*\n+/, '').replace(/\s+$/, '');
   return text || null;
 }
+// The leading comment is guidance for whoever is filling the template in, and
+// `planr templates <name>` is where they read it. Stripped from what `new`
+// writes, so a scaffolded document does not open with instructions to itself.
+function stripTemplateDoc(tpl) {
+  // Same leading-comment match templateDoc uses, so the two never disagree
+  // about which comment is the guidance.
+  const stripped = tpl.replace(/^\s*<!--[\s\S]*?-->/, '');
+  return stripped === tpl ? tpl : stripped.replace(/^(?:[ \t]*\r?\n)+/, '');
+}
 // One-line gist for the `templates` table: the doc's first sentence, or its
 // first paragraph when it has no sentence break.
 function templateSummary(tpl) {
@@ -135,6 +167,31 @@ function templateSummary(tpl) {
   const para = doc.split(/\n[ \t]*\n/)[0].replace(/\s+/g, ' ').trim();
   const sentence = /^(.*?[.!?])(\s|$)/.exec(para);
   return sentence ? sentence[1] : para;
+}
+
+/* Pure: (template body, shell) -> string[]. The rules every shipped template is
+   tested against, applied at runtime so a consumer template is held to them
+   too: a leading comment, no literal plan tag inside it, and a scaffold that
+   passes `check` with ZERO warnings. Empty when the template is sound. */
+function templateProblems(body, shellTpl) {
+  const problems = [];
+  const lead = /^\s*<!--([\s\S]*?)-->/.exec(body);
+  if (!templateDoc(body))
+    problems.push('no leading comment — open the template with an HTML comment saying what it is for');
+  else if (/<plan-[a-z]/.test(lead[1]))
+    problems.push('its leading comment contains a literal <plan-*> tag — refer to components in prose');
+  let html;
+  try {
+    html = planNew(shellTpl, body, { title: 'Template probe', date: '2000-01-01', skillSubpath: 'skills/probe' });
+  } catch (e) {
+    if (!(e instanceof PlanError)) throw e;
+    problems.push(`cannot be scaffolded — ${e.message}`);
+    return problems;
+  }
+  const { ok, warnings } = planCheck(html);
+  if (!ok) problems.push('fails check once scaffolded — run `planr new` with it and `planr check` the result');
+  for (const w of warnings) problems.push(`check warning once scaffolded — line ${w.line}: ${w.text}`);
+  return problems;
 }
 
 /* ── line helpers ─────────────────────────────────────── */
@@ -394,6 +451,135 @@ function walkTags(html, keep, visit) {
   }
 }
 
+/* ── node walk (backs `read --text` and text-run matching) ──
+   walkTags reports tags only; these two readers also need the TEXT between
+   them, with offsets. Visits text chunks and tags in document order within
+   [from, to), skipping comments entirely. A tag token's `name` is lower-cased.
+   `visit` may return an offset to resume from — how a caller steps over a
+   whole element (a nested section, a badge, a code block) in one move. */
+function walkNodes(html, from, to, visit) {
+  const comments = commentRanges(html);
+  let i = from, text = from;
+  const emit = (tok, resume) => {
+    const r = visit(tok);
+    i = text = typeof r === 'number' ? r : resume;
+  };
+  while (i < to) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1 || lt >= to) break;
+    const comment = comments.find(([s, e]) => s <= lt && lt < e);
+    if (comment) {
+      if (lt > text) visit({ kind: 'text', start: text, end: lt });
+      i = text = Math.min(comment[1], to);
+      continue;
+    }
+    const isClose = html.charCodeAt(lt + 1) === 47;   // /
+    const nameStart = lt + (isClose ? 2 : 1);
+    const j = tagNameEnd(html, nameStart);
+    const name = html.slice(nameStart, j).toLowerCase();
+    if (!name) { i = lt + 1; continue; }            // a bare '<' in prose is text
+    const open = isClose ? null : readAttrSpan(html, lt, j);
+    if (!isClose && !open) { i = lt + 1; continue; }
+    if (lt > text) visit({ kind: 'text', start: text, end: lt });
+    if (isClose) {
+      const gt = html.indexOf('>', j);
+      const end = gt === -1 ? to : gt + 1;
+      emit({ kind: 'close', name, start: lt, end }, end);
+    } else {
+      emit({ kind: open.selfClose ? 'self' : 'open', name, start: lt, end: open.openEnd,
+             attrsRaw: html.slice(open.attrStart, open.attrEnd) }, open.openEnd);
+    }
+  }
+  if (to > text) visit({ kind: 'text', start: text, end: to });
+}
+
+/* ── text rules (back read --text and every text match) ──
+   How each tag reads as text, declared once. `kind` is `block` (a boundary:
+   reads as one space, and starts a line in `read --text`), `inline` (adds no
+   text of its own) or `code` (a boundary whose lines `read --text` keeps
+   verbatim). The rest is what `read --text` prints for the tag: `role` gives
+   plain-HTML structure (list, item, row, cell, heading, section); `lines`
+   prints attribute text on lines of its own; `lead` prefixes the next line;
+   `print` replaces an inline element's content; `info` / `after` frame a code
+   block. A tag with no entry is inline. Every PLAN_TAGS entry declares one
+   (asserted), so content that lives only in an attribute is never dropped. */
+function attrText(attrsRaw, name) {
+  const v = getAttr(attrsRaw, name);
+  return typeof v === 'string' ? decodeEntities(v) : '';
+}
+const BLOCK = { kind: 'block' };
+const TEXT_RULES = {
+  'plan-header':     { kind: 'block', lines: r => [`# ${attrText(r, 'title')}`, attrText(r, 'subtitle')] },
+  'plan-nav':        BLOCK,
+  'plan-section':    { kind: 'block', role: 'section' },
+  'plan-subsection': { kind: 'block', role: 'section' },
+  'plan-tabs':       BLOCK,
+  'plan-tab':        { kind: 'block', lines: r => [attrText(r, 'label') && `[${attrText(r, 'label')}]`] },
+  'plan-cards':      BLOCK,
+  'plan-card':       { kind: 'block', lines: r => [[attrText(r, 'label'), attrText(r, 'value')].filter(Boolean).join(': '), attrText(r, 'subtitle')] },
+  'plan-callout':    { kind: 'block', lead: r => `[${attrText(r, 'type') || 'info'}] ` },
+  'plan-formula':    { kind: 'block', lines: r => [[attrText(r, 'expr'), attrText(r, 'note')].filter(Boolean).join(' — ')] },
+  'plan-principles': BLOCK,
+  'plan-principle':  { kind: 'block', lead: r => (attrText(r, 'label') ? `${attrText(r, 'label')}: ` : '') },
+  'plan-timeline':   BLOCK,
+  'plan-phase':      { kind: 'block', lines: r => [[attrText(r, 'title'), attrText(r, 'weeks') && `(${attrText(r, 'weeks')})`].filter(Boolean).join(' ')] },
+  'plan-badge':      { kind: 'inline', print: (r, text) => `[${text || attrText(r, 'type')}]` },
+  'plan-table':      BLOCK,
+  'plan-defs':       BLOCK,
+  'plan-def':        { kind: 'block', lead: r => `${attrText(r, 'key')}: ` },
+  'plan-file':       { kind: 'code', info: r => attrText(r, 'path') },
+  'plan-diff':       { kind: 'code', info: r => attrText(r, 'path') },
+  'plan-diagram':    { kind: 'code', info: () => 'mermaid', after: r => [attrText(r, 'caption')] },
+  pre:               { kind: 'code', info: () => '' },
+  ul: { kind: 'block', role: 'list' }, ol: { kind: 'block', role: 'list' }, li: { kind: 'block', role: 'item' },
+  tr: { kind: 'block', role: 'row' }, td: { kind: 'block', role: 'cell' }, th: { kind: 'block', role: 'cell' },
+  ...Object.fromEntries(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].map(t => [t, { kind: 'block', role: 'heading' }])),
+  ...Object.fromEntries(['p', 'div', 'table', 'thead', 'tbody', 'tfoot', 'blockquote', 'dl', 'dt', 'dd', 'details',
+    'summary', 'section', 'article', 'header', 'footer', 'main', 'figure', 'figcaption', 'hr', 'br'].map(t => [t, BLOCK])),
+};
+const INLINE = { kind: 'inline' };
+function textRule(tag) { return TEXT_RULES[tag] || INLINE; }
+
+// The visible text of [from, to) as units, one per rendered character, each
+// keeping the source span it came from: an entity decodes to its characters, a
+// whitespace run collapses to one space, a block or code tag reads as one space,
+// an inline tag adds nothing. `seg` counts the tags passed, so two units with
+// different `seg` sit on opposite sides of an element boundary. A `skip` range
+// (a nested section) reads as a block. The ONE tag-to-text rule for matching
+// and for `read --text`; `textOf` stays as it is for badge and insert.
+const ENTITY_AT = /&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);/y;
+function visibleUnits(html, from, to, skip = []) {
+  const units = [];
+  let seg = 0;
+  const space = (start, end) => {
+    if (units.length && units[units.length - 1].ch !== ' ') units.push({ ch: ' ', start, end, seg });
+  };
+  walkNodes(html, from, to, tok => {
+    if (tok.kind !== 'text') {
+      seg++;
+      const skipped = tok.kind === 'open' && skip.find(([s]) => s === tok.start);
+      if (skipped) { space(skipped[0], skipped[1]); return skipped[1]; }
+      if (textRule(tok.name).kind !== 'inline') space(tok.start, tok.end);
+      return;
+    }
+    for (let i = tok.start; i < tok.end;) {
+      let ch = html[i], next = i + 1;
+      if (ch === '&') {
+        ENTITY_AT.lastIndex = i;
+        const m = ENTITY_AT.exec(html);
+        if (m && ENTITY_AT.lastIndex <= tok.end) { ch = decodeEntities(m[0]); next = ENTITY_AT.lastIndex; }
+      }
+      if (/^\s+$/.test(ch)) space(i, next);
+      else units.push({ ch, start: i, end: next, seg });
+      i = next;
+    }
+  });
+  return units;
+}
+function visibleText(html, from, to, skip) {
+  return visibleUnits(html, from, to, skip).map(u => u.ch).join('');
+}
+
 /* ── attribute scanner / mutator ──────────────────────────
    scanAttrs walks a raw attribute span into {name, value, positions},
    quote-aware, handling boolean attributes (no value). All positions are
@@ -517,6 +703,10 @@ function textOf(html, el) {
   return decodeEntities(html.slice(el.innerStart, el.innerEnd).replace(/<[^>]*>/g, ' '))
     .replace(/\s+/g, ' ').trim();
 }
+// The tags the dot-path addresses. --into refuses exactly these and accepts any
+// other container — a <ul>, a <tbody>, or a component such as <plan-defs> or
+// <plan-cards> — because the dot-path cannot reach inside a section's content.
+const DOT_PATH_TAGS = ['plan-section', 'plan-subsection', 'plan-header'];
 /* `--into <sel>` — the one non-address selector, scoped to an already-resolved
    section and limited to plain HTML containers: `<tag>` (the LAST one, which is
    what "append to the running list" means), `<tag>:<n>` (1-based), or `#<id>`. */
@@ -530,13 +720,17 @@ function resolveContainer(html, node, sel) {
   const m = /^([A-Za-z][A-Za-z0-9-]*)(?::(\d+))?$/.exec(sel);
   if (!m) throw new PlanError(`--into '${sel}': expected <tag>, <tag>:<n>, or #<id>`);
   const [, tag, nth] = m;
-  if (tag.startsWith('plan-'))
-    throw new PlanError(`--into '${sel}': address a <${tag}> with the dot-path instead — --into is for plain HTML containers`);
+  if (DOT_PATH_TAGS.includes(tag))
+    throw new PlanError(`--into '${sel}': address a <${tag}> with the dot-path instead — --into names a container inside the addressed section`);
   const all = ownElements(html, node, tag);
-  if (!all.length) throw new PlanError(`--into '${sel}': no <${tag}> in this section`);
+  // `read --body` shows a nested section's content too; --into never reaches
+  // it. Say so where a count taken from `read` stops matching.
+  const nested = childSections(html, node.innerStart, node.innerEnd).length
+    ? ' (nested sections are excluded — address the child section directly)' : '';
+  if (!all.length) throw new PlanError(`--into '${sel}': no <${tag}> in this section${nested}`);
   if (nth) {
     const el = all[parseInt(nth, 10) - 1];
-    if (!el) throw new PlanError(`--into '${sel}': only ${all.length} <${tag}> in this section`);
+    if (!el) throw new PlanError(`--into '${sel}': only ${all.length} <${tag}> in this section${nested}`);
     return { el, label: `${tag}:${nth} of ${all.length}` };
   }
   return { el: all[all.length - 1], label: all.length > 1 ? `${tag}:${all.length} of ${all.length}` : tag };
@@ -564,7 +758,14 @@ function findElementById(html, id, from, to) {
 // Attribute values live in the file HTML-escaped (that is what the browser
 // decodes on render), so terminal output must decode them or a title reads
 // `Scope &amp; Prerequisites`.
-const NAMED_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+// Beyond the escaping five, the typographic entities plans actually use, so
+// `read --text` and --match see the characters a reader sees.
+const NAMED_ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  mdash: '—', ndash: '–', rarr: '→', larr: '←', harr: '↔', sect: '§', times: '×', minus: '−',
+  middot: '·', bull: '•', hellip: '…', ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’',
+  ge: '≥', le: '≤', ne: '≠', deg: '°', copy: '©', emsp: ' ', ensp: ' ', thinsp: ' ',
+};
 function decodeEntities(s) {
   return String(s).replace(/&(#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z]+);/g, (m, k) => {
     if (k[0] !== '#') return NAMED_ENTITIES[k.toLowerCase()] ?? m;
@@ -607,7 +808,9 @@ function resolveNode(html, segs) {
     return el;
   }
   // Walk the dot-path to any depth: each segment selects a child of the previous.
-  let node = findSectionById(html, segs[0]);
+  // A first segment that is not a top-level id falls back to a deep scan, so a
+  // bare id resolves wherever it sits.
+  let node = findSectionById(html, segs[0]) || findSectionDeep(html, segs[0]);
   if (!node) throw new PlanError(`section '${segs[0]}' not found`);
   for (let i = 1; i < segs.length; i++) {
     const child = findChildSection(html, node, segs[i]);
@@ -615,6 +818,24 @@ function resolveNode(html, segs) {
     node = child;
   }
   return node;
+}
+// The section-like node carrying `id` at ANY depth, either tag. Ids are unique
+// document-wide, so a bare id names one node in a valid plan; when two carry it
+// the plan is already invalid, and this refuses rather than picking one.
+function findSectionDeep(html, id) {
+  const hits = [];
+  walkSections(html, ({ el, id: got, addr }) => { if (got === id) hits.push({ el, addr }); });
+  if (hits.length > 1)
+    throw new PlanError(`section id '${id}' is used ${hits.length} times — address one by its full path: ${hits.map(h => `${h.addr} (line ${lineOf(html, h.el.outerStart)})`).join(', ')}`);
+  return hits.length ? hits[0].el : null;
+}
+// The full dot-path of a resolved node — what `list` and `tasks` print for it.
+// Lets a caller compare two addresses written in different forms (`a1` vs `a.a1`).
+function canonicalAddress(html, node) {
+  if (node.tag === 'plan-header') return 'header';
+  let found = null;
+  walkSections(html, ({ el, addr }) => { if (el.outerStart === node.outerStart) found = addr; });
+  return found;
 }
 
 /* ── validation + structural safety ───────────────────────
@@ -635,16 +856,74 @@ const SECTION_STATUS = ['todo', 'in-progress', 'done', 'blocked'];
 // keep the two sets in step or a status renders with an uncolored dot.
 const HEADER_STATUS = ['draft', 'review', 'approved', 'implemented', 'rejected'];
 function statusEnum(tag) { return tag === 'plan-header' ? HEADER_STATUS : SECTION_STATUS; }
-// Badge types with a `plan-badge[type="…"]` rule in plan-styles.css. An unknown
-// type renders unstyled, so `badge` refuses to write one.
-const BADGE_TYPES = ['decided', 'open', 'deferred', 'high', 'medium', 'low'];
+// The label an EMPTY <plan-badge> renders, per type — a copy of the `labels`
+// map in plan-runtime.js's PlanBadge (a test asserts the two agree). Every type
+// has a `plan-badge[type="…"]` rule in plan-styles.css; an unknown type renders
+// unstyled, so `badge` refuses to write one.
+const BADGE_LABELS = { decided: 'Decided', open: 'Open', deferred: 'Deferred', high: 'High', medium: 'Medium', low: 'Low' };
+const BADGE_TYPES = Object.keys(BADGE_LABELS);
+// PlanBadge falls back to the type itself for a type it has no label for, and
+// treats a missing type as `open`.
+function badgeLabel(type) { return BADGE_LABELS[type] || type; }
+function badgeType(el) {
+  const t = getAttr(el.attrsRaw, 'type');
+  return typeof t === 'string' && t ? t : 'open';
+}
+function sameLabel(a, b) { return a.trim().toLowerCase() === b.trim().toLowerCase(); }
+
+/* ── attribute rules ──────────────────────────────────────
+   Every writer of a plan-node attribute — set, add-section (via buildSection)
+   and new (over the rendered document) — calls validateAttr, so a rule is
+   one table entry and reaches all of them at once. A rule returns null when
+   the value is acceptable, else the error text. */
+// A title is plain text: the navigation renders it with textContent, so markup
+// shows there as literal tags. `<` followed by a letter or `/` opens a tag.
+const TAG_IN_TEXT = /<[a-zA-Z/]/;
+function statusRule(tag, value) {
+  const valid = statusEnum(tag);
+  return valid.includes(value) ? null : `invalid status '${value}' for <${tag}> — valid: ${valid.join(', ')}`;
+}
+function plainTextRule(tag, value) {
+  return TAG_IN_TEXT.test(value)
+    ? `title "${value}" on <${tag}> contains an HTML tag — titles are plain text (the navigation shows ` +
+      'markup as literal tags); remove the markup, or write a literal < as &lt;'
+    : null;
+}
+const ATTR_RULES = {
+  'plan-header':     { status: statusRule, title: plainTextRule },
+  'plan-section':    { status: statusRule, title: plainTextRule },
+  'plan-subsection': { status: statusRule, title: plainTextRule },
+};
+function validateAttr(tag, attr, value) {
+  const rule = ATTR_RULES[tag] && ATTR_RULES[tag][attr];
+  const problem = rule ? rule(tag, String(value)) : null;
+  if (problem) throw new PlanError(problem);
+}
+// The header and every section of a finished document, each valued attribute
+// through validateAttr — for `new`, whose placeholder fills bypass planSet.
+function validateNodes(html) {
+  const nodes = [];
+  const header = findElement(html, 'plan-header');
+  if (header) nodes.push(header);
+  walkSections(html, ({ el }) => nodes.push(el));
+  for (const el of nodes)
+    for (const a of scanAttrs(el.attrsRaw)) if (a.hasValue) validateAttr(el.tag, a.name, a.value);
+}
+
+// The document's <title>, filled by `new` from the same placeholder as the
+// header title. Looked for inside <head> only.
+function headTitle(html) {
+  const headEnd = html.indexOf('</head>');
+  return headEnd === -1 ? null : findElement(html, 'title', 0, headEnd);
+}
 // Every component the runtime registers (the `components` map at the bottom of
 // plan-runtime.js). `check` flags a <plan-*> tag outside this set: a typo'd
 // component is inert, unstyled markup that otherwise fails silently.
 const PLAN_TAGS = [
   'plan-header', 'plan-nav', 'plan-section', 'plan-subsection', 'plan-tabs', 'plan-tab',
   'plan-cards', 'plan-card', 'plan-callout', 'plan-formula', 'plan-principles', 'plan-principle',
-  'plan-timeline', 'plan-phase', 'plan-badge', 'plan-table', 'plan-file', 'plan-diff', 'plan-diagram',
+  'plan-timeline', 'plan-phase', 'plan-badge', 'plan-table', 'plan-defs', 'plan-def',
+  'plan-file', 'plan-diff', 'plan-diagram',
 ];
 // Plain HTML containers `check` balance-checks alongside the plan tags. Limited
 // to tags whose end tag is never optional in HTML — adding <p>/<li> here would
@@ -679,8 +958,8 @@ function assertIntact(before, after, action) {
   // <plan-callout> inside a hunk swallows its siblings while every id still
   // resolves. Run the full structure check too — but fail only on a break this
   // write INTRODUCED, so a plan that arrived already unbalanced stays editable.
-  const now = planCheck(after);
-  if (!now.ok && planCheck(before).ok)
+  const now = checkStructure(after);
+  if (!now.ok && checkStructure(before).ok)
     throw new PlanError(`${action} would break the plan — aborted; no changes written.\n${now.report}`);
 }
 
@@ -693,6 +972,8 @@ function sectionIndent(html) {
   return html.slice(lineStart(html, idx), idx);
 }
 function buildSection(fields, indent, body) {
+  for (const attr of NODE_ATTRS['plan-section'])
+    if (fields[attr] != null && fields[attr] !== true) validateAttr('plan-section', attr, fields[attr]);
   const attrs = [
     fields.id != null ? `id="${fields.id}"` : null,
     fields.num != null && fields.num !== true ? `num="${fields.num}"` : null,
@@ -782,6 +1063,210 @@ function spliceAfter(html, idx, block) {
 // one — so a hunk never ends up sharing a line with the markup it displaced.
 function breakAfter(html, idx) { return html[idx] === '\n' ? '' : '\n'; }
 
+/* ── plain text (backs `read --text`) ─────────────────────
+   Structure-preserving text, driven by TEXT_RULES: one block per line,
+   headings and section titles as `#` lines at the level the runtime renders
+   them, list items as `- ` lines indented by list depth, table rows as cells
+   joined with ` | `, and code fenced with its lines verbatim. Text between
+   structural tags is read through visibleText, never re-derived here. */
+function nodeText(html, el, { body = false } = {}) {
+  const sections = new Map();
+  walkSections(html, ({ el: s, num, depth }) => sections.set(s.outerStart, { num, depth }));
+  const from = body ? el.innerStart : el.outerStart;
+  const to = body ? el.innerEnd : el.outerEnd;
+  const lines = [];
+  let parts = [], mark = from, lead = '', lists = 0, row = null, inCell = false, cellStart = from;
+  const collapse = s => s.replace(/\s+/g, ' ').trim();
+  const take = end => { if (end > mark) parts.push(visibleText(html, mark, end)); mark = end; };
+  const emit = more => { for (const l of more || []) if (l) lines.push(l); };
+  const flush = () => {
+    const t = collapse(parts.join(''));
+    parts = [];
+    if (t) { lines.push((lead || '  '.repeat(lists)) + t); lead = ''; }
+  };
+  walkNodes(html, from, to, tok => {
+    if (tok.kind === 'text') return;
+    const rule = textRule(tok.name);
+    const open = tok.kind !== 'close';
+    if (rule.print && open) {                                  // inline with its own rendering
+      const inner = findElement(html, tok.name, tok.start);
+      if (!inner) return;
+      take(tok.start);
+      parts.push(` ${rule.print(tok.attrsRaw, collapse(visibleText(html, inner.innerStart, inner.innerEnd)))} `);
+      mark = inner.outerEnd;
+      return inner.outerEnd;
+    }
+    if (rule.kind === 'inline') return;                        // its text flows on
+    if (inCell && !(rule.role === 'cell' && !open)) return;    // a cell reads as one string
+    take(tok.start);
+    mark = tok.end;
+    if (rule.kind === 'code' && open) {
+      const code = findElement(html, tok.name, tok.start);
+      if (!code) return;
+      flush();
+      const src = decodeEntities(html.slice(code.innerStart, code.innerEnd).replace(/<[^>]*>/g, ''))
+        .replace(/^(?:[ \t]*\r?\n)+/, '').replace(/(?:\r?\n[ \t]*)+$/, '');
+      lines.push('```' + rule.info(tok.attrsRaw));
+      if (src) lines.push(...src.split(/\r?\n/));
+      lines.push('```');
+      emit(rule.after && rule.after(tok.attrsRaw));
+      mark = code.outerEnd;
+      return code.outerEnd;
+    }
+    switch (rule.role) {
+      case 'cell':
+        if (open) { parts = []; inCell = !!row; cellStart = tok.end; }
+        else {
+          // <plan-def> pairs are skipped individually while inCell (below), so
+          // a cell holding a <plan-defs> is rendered from its defs directly —
+          // `key: value` per pair, joined `; ` — rather than the generic
+          // collapse, which would drop every key (an attribute, not content).
+          const defs = findElementsDeep(html, 'plan-def', cellStart, tok.start);
+          row.push(defs.length
+            ? defs.map(d => `${attrText(d.attrsRaw, 'key')}: ${collapse(visibleText(html, d.innerStart, d.innerEnd))}`).join('; ')
+            : collapse(parts.join('')));
+          parts = []; inCell = false;
+        }
+        return;
+      case 'heading':
+        if (open) { flush(); return; }
+        { const t = collapse(parts.join('')); parts = []; lead = ''; if (t) lines.push('#'.repeat(Number(tok.name[1])) + ' ' + t); }
+        return;
+    }
+    flush();
+    if (!open) {
+      if (rule.role === 'list') lists = Math.max(lists - 1, 0);
+      if (rule.role === 'row' && row) { if (row.some(Boolean)) lines.push('  '.repeat(lists) + row.join(' | ')); row = null; }
+      if (rule.role === 'item') lead = '';
+      return;
+    }
+    if (rule.role === 'list') lists++;
+    if (rule.role === 'item') lead = '  '.repeat(Math.max(lists - 1, 0)) + '- ';
+    if (rule.role === 'row') { row = []; parts = []; }
+    if (rule.role === 'section') {
+      const s = sections.get(tok.start);
+      if (lines.length) lines.push('');
+      lines.push(`${'#'.repeat(s ? s.depth + 2 : 2)} ${s ? s.num + '. ' : ''}${attrText(tok.attrsRaw, 'title')}`.trimEnd());
+    }
+    emit(rule.lines && rule.lines(tok.attrsRaw));
+    if (rule.lead) lead = rule.lead(tok.attrsRaw);
+  });
+  take(to);
+  flush();
+  return lines.length ? lines.join('\n') + '\n' : '';
+}
+
+/* ── matching by visible text (rm-item, strike, replace) ──
+   One contract for every text-addressed write: --match is a case-insensitive
+   substring of the visible text (visibleUnits — entities decoded, whitespace
+   collapsed, inline markup adding nothing); a miss and an unasked-for second
+   match are errors that list what is there, as `badge --match` does. */
+// The addressed section, and the --into container inside it when given.
+function resolveScope(html, address, into, verb) {
+  if (!address) throw new PlanError(`${verb} requires an address, e.g. \`${verb} plan.html decisions --match "…"\``);
+  const node = resolveNode(html, address.split('.'));
+  if (node.tag === 'plan-header')
+    throw new PlanError('the header holds no body — set its attributes with `set header.<attr>=<value>`');
+  if (!into) return { node, target: node, where: `'${address}'` };
+  const c = resolveContainer(html, node, into);
+  return { node, target: c.el, where: `'${address}' → ${c.label}` };
+}
+// --match as given (for messages) and as compared (decoded, collapsed, lower).
+function matchNeedle(flags, verb) {
+  const raw = flagValue(flags, 'match');
+  if (raw == null) throw new PlanError(`${verb} requires --match <text> — a substring of the visible text`);
+  const needle = decodeEntities(raw).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!needle) throw new PlanError('--match needs visible text — it is empty once whitespace is trimmed');
+  return { raw, needle };
+}
+// --nth / --all, validated identically for every text-addressed write.
+function matchSelection(flags) {
+  if (flags.nth === true) throw new PlanError('--nth expects a 1-based number');
+  const nthRaw = flagValue(flags, 'nth');
+  if (nthRaw != null && !/^[1-9]\d*$/.test(nthRaw)) throw new PlanError(`--nth expects a 1-based number, got "${nthRaw}"`);
+  if (nthRaw != null && flags.all) throw new PlanError('use only one of --nth / --all');
+  return { nth: nthRaw == null ? null : parseInt(nthRaw, 10), all: !!flags.all };
+}
+function pickMatches(hits, { raw, sel, noun, where, describe }) {
+  const count = n => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  if (!hits.length) throw new PlanError(`no ${noun} matching "${raw}" in ${where}`);
+  if (sel.nth != null) {
+    if (sel.nth > hits.length) throw new PlanError(`--nth ${sel.nth}: "${raw}" matches ${count(hits.length)} in ${where}`);
+    return [hits[sel.nth - 1]];
+  }
+  if (hits.length > 1 && !sel.all)
+    throw new PlanError(`"${raw}" matches ${count(hits.length)} in ${where} — narrow it, pick one with --nth <n>, or pass --all:\n` +
+      hits.map((h, i) => `  ${i + 1}. ${describe(h)}`).join('\n'));
+  return hits;
+}
+// An item's visible text, as matched and as listed.
+function itemText(html, el) {
+  return visibleText(html, el.innerStart, el.innerEnd).trim();
+}
+// Every <li> and <tr> in the target that the section owns, whose visible text
+// holds the needle. The innermost wins: an outer <li> that matches only through
+// its nested list is not itself a match.
+const ITEM_TAGS = ['li', 'tr'];
+function findItems(html, node, target, needle) {
+  const kids = childSections(html, node.innerStart, node.innerEnd);
+  const matching = ITEM_TAGS.flatMap(t => findElementsDeep(html, t, target.innerStart, target.innerEnd))
+    .filter(el => !kids.some(k => k.outerStart <= el.outerStart && el.outerEnd <= k.outerEnd))
+    .filter(el => itemText(html, el).toLowerCase().includes(needle))
+    .sort((a, b) => a.outerStart - b.outerStart);
+  return matching.filter(el => !matching.some(o => o !== el && el.innerStart <= o.outerStart && o.outerEnd <= el.innerEnd));
+}
+
+// Every occurrence of the needle in the visible text the section owns, as a
+// source range. `crosses` marks a run whose ends sit in different elements.
+function findTextRuns(html, node, target, needle) {
+  const kids = childSections(html, node.innerStart, node.innerEnd).map(k => [k.outerStart, k.outerEnd]);
+  const units = visibleUnits(html, target.innerStart, target.innerEnd, kids);
+  // Lower-case per unit, keeping an index from each character back to its unit.
+  let hay = '';
+  const owner = [];
+  for (const u of units) for (const c of u.ch.toLowerCase()) { hay += c; for (let k = 0; k < c.length; k++) owner.push(u); }
+  const runs = [];
+  for (let k = hay.indexOf(needle); k !== -1; k = hay.indexOf(needle, k + needle.length)) {
+    const first = owner[k], last = owner[k + needle.length - 1];
+    runs.push({ start: first.start, end: last.end, crosses: first.seg !== last.seg });
+  }
+  return runs;
+}
+// `line N: …before[run]after…`, from the visible text of the run's own lines.
+function runContext(html, run) {
+  const nl = html.indexOf('\n', run.end);
+  const units = visibleUnits(html, lineStart(html, run.start), nl === -1 ? html.length : nl);
+  const part = keep => units.filter(keep).map(u => u.ch).join('');
+  const before = part(u => u.end <= run.start).trimStart();
+  const after = part(u => u.start >= run.end).trimEnd();
+  const b = before.length > 32 ? '…' + before.slice(-32) : before;
+  const a = after.length > 32 ? after.slice(0, 32) + '…' : after;
+  return `line ${lineOf(html, run.start)}: ${b}[${part(u => u.start >= run.start && u.end <= run.end)}]${a}`;
+}
+// The first of `tags` whose body holds `idx`, within the section; else null.
+function enclosingTag(html, node, idx, tags) {
+  return tags.find(t => findElementsDeep(html, t, node.innerStart, node.innerEnd)
+    .some(el => el.innerStart <= idx && idx < el.innerEnd)) || null;
+}
+// A text run rewrite acts inside one element; a run that crosses into another
+// would split a tag pair.
+function assertOneElement(html, runs, raw, verb) {
+  const bad = runs.find(r => r.crosses);
+  if (bad) throw new PlanError(`"${raw}" crosses an element boundary — ${verb} acts on text inside one element; ` +
+    `narrow the match (${runContext(html, bad)})`);
+}
+
+// Remove an item element. Alone on its line(s), the whole line goes with it —
+// indentation and newline included; sharing a line, only the element does.
+function removeItem(html, el) {
+  const ls = lineStart(html, el.outerStart);
+  const nl = html.indexOf('\n', el.outerEnd);
+  const eol = nl === -1 ? html.length : nl;
+  if (/^[ \t]*$/.test(html.slice(ls, el.outerStart)) && /^[ \t\r]*$/.test(html.slice(el.outerEnd, eol)))
+    return html.slice(0, ls) + html.slice(nl === -1 ? eol : nl + 1);
+  return html.slice(0, el.outerStart) + html.slice(el.outerEnd);
+}
+
 /* ── pure cores (strings in → strings / structured result out) ──
    Each core is pure: it takes plan text (and args) and RETURNS a value —
    a string for read-only commands, or { html, message } for mutators —
@@ -799,7 +1284,7 @@ function breakAfter(html, idx) { return html[idx] === '\n' ? '' : '\n'; }
        actually offers, or it throws (it used to be written into the var map and
        never read). */
 function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {}) {
-  const composed = shellTpl.split('{{body}}').join(bodyTpl);
+  const composed = shellTpl.split('{{body}}').join(stripTemplateDoc(bodyTpl));
   const vars = { title: title || 'Untitled Plan', date, skillSubpath };
   const nodeSets = [];
   for (const pair of sets) {
@@ -820,12 +1305,9 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [] } = {
   }
   let html = render(composed, vars);
   if (nodeSets.length) html = planSet(html, nodeSets).html;
-  // A bare fill is substitution, not planSet, so the rendered header needs the
-  // same status check `set` applies — else `--set status=aproved` writes a typo.
-  const header = findElement(html, 'plan-header');
-  const status = header && getAttr(header.attrsRaw, 'status');
-  if (status && status !== true && !HEADER_STATUS.includes(status))
-    throw new PlanError(`invalid status '${status}' for <plan-header> — valid: ${HEADER_STATUS.join(', ')}`);
+  // A bare fill is substitution, not planSet, so the rendered document is held
+  // to the same attribute rules — else `--set status=aproved` writes a typo.
+  validateNodes(html);
   return html;
 }
 // "(default: draft)", or null when the variable declares none. One spelling for
@@ -867,8 +1349,9 @@ function planList(html, flags = {}) {
    balance, unregistered components, duplicate section ids — walking the same
    scanner the rest of the tool addresses with. Replaces `grep -c '<plan-table>'`,
    which counts literal strings and so miscounts a commented example, balanced,
-   in the way that never reads as a failure. */
-function planCheck(html) {
+   in the way that never reads as a failure. assertIntact gates every write on
+   this alone: a warning never blocks a write. */
+function checkStructure(html) {
   const watched = new Set(BALANCED_HTML_TAGS);
   const problems = [];
   const counts = {};
@@ -930,6 +1413,150 @@ function planCheck(html) {
   };
 }
 
+/* Pure: html -> { ok, report, warnings }. `ok` and `report` are the structure
+   check, unchanged; `warnings` ([{ line, text }], by line) lists what balances
+   yet will not render as written. Gathered only on a sound document: the lints
+   locate elements with findElement, which is reliable only once every tag
+   balances. A warning never changes `ok` — `check --strict` makes them fatal. */
+function planCheck(html) {
+  const structure = checkStructure(html);
+  return { ...structure, warnings: structure.ok ? lintPlan(html) : [] };
+}
+
+/* ── check warnings ───────────────────────────────────────
+   Each lint returns [{ line, text }] for markup that passes the structure
+   check and still renders something other than what the author wrote. */
+function lintPlan(html) {
+  return [
+    ...lintScaffoldBanner(html),
+    ...lintCodeBodies(html),
+    ...lintSectionRefs(html),
+    ...lintBadgeLabels(html),
+    ...lintHeadTitle(html),
+  ].sort((a, b) => a.line - b.line);
+}
+// The text-carrying comment a template opens with, left at the top of <main>.
+// templateDoc is the match `templates` reads guidance with, so a decorative
+// rule-line comment (no text) is not a banner.
+function lintScaffoldBanner(html) {
+  const main = findElement(html, 'main');
+  if (!main) return [];
+  const body = html.slice(main.innerStart, main.innerEnd);
+  if (!templateDoc(body)) return [];
+  return [{
+    line: lineOf(html, main.innerStart + body.indexOf('<!--')),
+    text: "<main> opens with a comment carrying text — a template's guidance banner left in the document " +
+          '(`planr templates <name>` prints it); delete the comment',
+  }];
+}
+const CODE_TAGS = ['plan-file', 'plan-diff'];
+const ELEMENT_TAG = /<(\/?[A-Za-z][A-Za-z0-9-]*)/g;
+// PlanDiff's gutter markers. An empty line is context too; nothing else is.
+const DIFF_GUTTER = new Set([' ', '+', '-']);
+function codeLabel(el) {
+  const p = getAttr(el.attrsRaw, 'path');
+  return `<${el.tag}${typeof p === 'string' && p ? ` path="${p}"` : ''}>`;
+}
+// A literal tag inside a code component is parsed as an element by the browser
+// and vanishes from the rendered code.
+function lintCodeBodies(html) {
+  const out = [];
+  for (const tag of CODE_TAGS) {
+    for (const el of findElementsDeep(html, tag, 0, html.length)) {
+      const tags = [...html.slice(el.innerStart, el.innerEnd).matchAll(ELEMENT_TAG)];
+      if (tags.length) out.push({
+        line: lineOf(html, el.innerStart + tags[0].index),
+        text: `${codeLabel(el)}: ${tags.length} unescaped tag(s), first <${tags[0][1]}> — the browser parses them ` +
+              'as markup and they vanish from the code; escape < > & as &lt; &gt; &amp;',
+      });
+      if (tag === 'plan-diff') out.push(...lintDiffGutter(html, el));
+    }
+  }
+  return out;
+}
+// Mirrors PlanDiff: it reads textContent (entities decoded), drops blank edge
+// lines, and consumes column 0 of every other line as the gutter.
+function lintDiffGutter(html, el) {
+  const lines = [];
+  let at = el.innerStart;
+  for (const raw of html.slice(el.innerStart, el.innerEnd).split('\n')) {
+    lines.push({ at, text: decodeEntities(raw.replace(/\r$/, '')) });
+    at += raw.length + 1;
+  }
+  let first = 0, last = lines.length - 1;
+  while (first <= last && !lines[first].text.trim()) first++;
+  while (last >= first && !lines[last].text.trim()) last--;
+  const bad = lines.slice(first, last + 1)
+    .filter(l => l.text !== '' && !DIFF_GUTTER.has(l.text[0]))
+    .map(l => lineOf(html, l.at));
+  if (!bad.length) return [];
+  const shown = bad.slice(0, 10).join(', ') + (bad.length > 10 ? ', …' : '');
+  return [{
+    line: bad[0],
+    text: `${codeLabel(el)}: ${bad.length} line(s) with no gutter character (lines ${shown}) — prefix each with ` +
+          "' ' (context), '+' (added) or '-' (removed); column 0 is always consumed",
+  }];
+}
+// Link text that is only a section number: numbers re-derive from document
+// position, so the digit is wrong once a section is added or moved above it.
+const BARE_SECTION_REF = /^(?:§|&sect;)\s*\d+(?:\.\d+)*$/i;
+function lintSectionRefs(html) {
+  const titles = new Map();
+  walkSections(html, ({ el, id }) => { if (id) titles.set(id, getAttr(el.attrsRaw, 'title')); });
+  const out = [];
+  for (const a of findElementsDeep(html, 'a', 0, html.length)) {
+    const href = getAttr(a.attrsRaw, 'href');
+    if (typeof href !== 'string' || !href.startsWith('#')) continue;
+    const text = textOf(html, a);
+    if (!BARE_SECTION_REF.test(text)) continue;
+    const title = titles.get(href.slice(1));
+    const name = typeof title === 'string' && title ? decodeEntities(title) : '<section name>';
+    out.push({
+      line: lineOf(html, a.outerStart),
+      text: `link text "${text}" (href="${href}") is a bare section number — numbers re-derive when a section ` +
+            `is added or moved; name the section too, e.g. "${text} ${name}"`,
+    });
+  }
+  return out;
+}
+// A labelled badge whose text is ANOTHER type's label renders one state's
+// colour while naming a different state.
+function lintBadgeLabels(html) {
+  const out = [];
+  for (const el of findElementsDeep(html, 'plan-badge', 0, html.length)) {
+    const text = textOf(html, el);
+    if (!text) continue;
+    const type = badgeType(el);
+    const named = BADGE_TYPES.find(t => t !== type && sameLabel(text, BADGE_LABELS[t]));
+    if (named) out.push({
+      line: lineOf(html, el.outerStart),
+      text: `<plan-badge type="${type}"> reads "${text}", the label of type "${named}" — it renders one state ` +
+            'and names another; clear the label with `badge --set <type> --text ""`',
+    });
+  }
+  return out;
+}
+// The head <title> and the header title are one value written twice.
+function lintHeadTitle(html) {
+  const header = findElement(html, 'plan-header');
+  const title = header && getAttr(header.attrsRaw, 'title');
+  const head = headTitle(html);
+  if (!head || typeof title !== 'string') return [];
+  const plain = s => decodeEntities(s).replace(/\s+/g, ' ').trim();
+  const tab = plain(html.slice(head.innerStart, head.innerEnd));
+  if (tab === plain(title)) return [];
+  return [{
+    line: lineOf(html, head.outerStart),
+    text: `<title> reads "${tab}" but the header title is "${plain(title)}" — \`set header.title=…\` rewrites both`,
+  }];
+}
+// Pure: warnings -> the text `check` prints after its structure report ('' for none).
+function warningReport(warnings) {
+  if (!warnings.length) return '';
+  return [`${warnings.length} warning(s) — the document balances, but will not render as written:`,
+    ...warnings.map(w => `  line ${w.line}: ${w.text}`)].join('\n');
+}
+
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
   const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
@@ -954,6 +1581,7 @@ function planTasks(html, flags) {
 function planRead(html, address, flags) {
   if (!address) throw new PlanError('read requires an address, e.g. `read plan.html steps`');
   const el = resolveNode(html, address.split('.'));
+  if (flags && flags.text) return nodeText(html, el, { body: !!flags.body });
   return (flags && flags.body)
     ? html.slice(el.innerStart, el.innerEnd)
     : html.slice(el.outerStart, el.outerEnd) + '\n';
@@ -963,6 +1591,22 @@ function planRead(html, address, flags) {
 function planTemplates(files) {
   return files.filter(f => f.endsWith('.html') && !f.startsWith('_'))
               .map(f => f.replace(/\.html$/, '')).sort();
+}
+
+/* Pure: ({ skill, consumer, consumerDir }) -> [{ name, origin, shadows }], sorted.
+   `skill` and `consumer` are directory listings; `consumer` is null when the
+   consumer directory does not exist. A consumer template shadows the skill
+   template of the same name, and the entry records that it does. The shell is
+   skill-owned, so a consumer `_shell.html` is refused rather than ignored. */
+function planTemplateIndex({ skill = [], consumer = null, consumerDir = null } = {}) {
+  if (consumer && consumer.includes('_shell.html'))
+    throw new PlanError(`${consumerDir}/_shell.html: the shell is skill-owned and is never read from the ` +
+      `consumer template directory — remove or rename it`);
+  const index = new Map();
+  for (const name of planTemplates(skill)) index.set(name, { name, origin: 'skill', shadows: false });
+  for (const name of planTemplates(consumer || []))
+    index.set(name, { name, origin: 'consumer', shadows: index.has(name) });
+  return [...index.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /* Pure: ([{name, body}], name?) -> the `templates` report text.
@@ -982,9 +1626,14 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
     // scanning the body alone under-reports what `--set` accepts.
     const vars = templateVars(shellTpl + hit.body).filter(v => v.name !== 'body');
     const w = vars.length ? Math.max(...vars.map(v => v.name.length)) : 0;
+    const source = hit.origin === 'consumer'
+      ? [`source: consumer template — ${hit.path}${hit.shadows ? ` (shadows the skill template '${hit.name}')` : ''}`, '']
+      : [];
+    const problems = templateProblems(hit.body, shellTpl);
     return [
       `# ${hit.name}    (planr new <file> --template ${hit.name})`,
       '',
+      ...source,
       doc || '(this template has no leading comment — add one to document it)',
       '',
       `Scaffolds ${sections.length} section${sections.length === 1 ? '' : 's'}:`,
@@ -992,10 +1641,16 @@ function planTemplateReport(entries, name = null, shellTpl = '') {
       '',
       `Variables (planr new <file> --set <name>=<value>):`,
       ...vars.map(v => `  ${v.name.padEnd(w)}  ${varDefault(v) || '(no default — always filled)'}`),
+      ...(problems.length ? ['', 'Problems:', ...problems.map(p => '  ' + p)] : []),
     ].join('\n') + '\n';
   }
   const w = Math.max(...sorted.map(t => t.name.length));
-  return sorted.map(t => `${t.name.padEnd(w)}  ${templateSummary(t.body) || '(no description)'}`).join('\n') +
+  const mark = (t) => t.origin !== 'consumer' ? '' : t.shadows ? '[consumer, shadows skill] ' : '[consumer] ';
+  const rows = sorted.map(t => `${t.name.padEnd(w)}  ${mark(t)}${templateSummary(t.body) || '(no description)'}`);
+  const flagged = sorted.flatMap(t => templateProblems(t.body, shellTpl)
+    .map(p => `  ${t.name}${t.origin === 'consumer' ? ' [consumer]' : ''}: ${p}`));
+  return rows.join('\n') +
+    (flagged.length ? `\n\nTemplate problems:\n${flagged.join('\n')}` : '') +
     `\n\nRun \`planr templates <name>\` for a template's full guidance.\n`;
 }
 
@@ -1019,15 +1674,20 @@ function planSet(html, specs) {
     const allowed = NODE_ATTRS[node.tag];
     if (allowed && !allowed.includes(attr))
       throw new PlanError(`unknown attribute '${attr}' for <${node.tag}> — valid: ${allowed.join(', ')}`);
-    // Per-tag enum: the header's set differs from a section's.
-    if (attr === 'status' && NODE_ATTRS[node.tag]) {
-      const valid = statusEnum(node.tag);
-      if (!valid.includes(value))
-        throw new PlanError(`invalid status '${value}' for <${node.tag}> — valid: ${valid.join(', ')}`);
-    }
+    validateAttr(node.tag, attr, value);
     const newRaw = setAttrRaw(node.attrsRaw, attr, value);
     out = out.slice(0, node.attrStart) + newRaw + out.slice(node.attrEnd);
     messages.push(`set ${pathPart} = "${value}"`);
+    // `new` writes the header title into <head> as well, from one placeholder
+    // and with the same bytes; a rename that moves only the attribute leaves the
+    // tab and every bookmark on the old name.
+    if (node.tag === 'plan-header' && attr === 'title') {
+      const head = headTitle(out);
+      if (head) {
+        out = out.slice(0, head.innerStart) + value + out.slice(head.innerEnd);
+        messages.push(`set <title> = "${value}"`);
+      }
+    }
   }
   return { html: out, message: messages.join('\n') };
 }
@@ -1141,17 +1801,115 @@ function planBadge(html, flags) {
       targets.push({ badge: badges[0], row });
     }
   }
+  // Decide each badge's label BEFORE writing any of them, so one refusal in an
+  // --all run leaves every row untouched. `inner` is the new inner content, or
+  // null to leave it as it is.
+  const refused = [];
+  for (const t of targets) {
+    t.label = textOf(html, t.badge);
+    if (text != null) t.inner = text;                                         // --text always wins
+    else if (!t.label) t.inner = null;                                        // empty: the runtime derives it
+    else if (sameLabel(t.label, badgeLabel(badgeType(t.badge)))) t.inner = ''; // derived text, not authored
+    else refused.push(t);
+  }
+  if (refused.length)
+    throw new PlanError('badge --set would leave a label naming the old state:\n' +
+      refused.map(t => `  row "${textOf(html, t.row).slice(0, 60)}" carries "${t.label}"`).join('\n') +
+      '\npass --text "<label>" to keep or rewrite the label, or --text "" to clear it so the type names it');
+
   let out = html;
-  for (const { badge } of [...targets].sort((a, b) => b.badge.outerStart - a.badge.outerStart)) {
+  for (const t of [...targets].sort((a, b) => b.badge.outerStart - a.badge.outerStart)) {
     // Inner content first: its offsets sit after the attribute span, so editing
     // it leaves attrStart/attrEnd valid.
-    if (text != null) out = out.slice(0, badge.innerStart) + text + out.slice(badge.innerEnd);
-    out = out.slice(0, badge.attrStart) + setAttrRaw(badge.attrsRaw, 'type', type) + out.slice(badge.attrEnd);
+    if (t.inner != null) out = out.slice(0, t.badge.innerStart) + t.inner + out.slice(t.badge.innerEnd);
+    out = out.slice(0, t.badge.attrStart) + setAttrRaw(t.badge.attrsRaw, 'type', type) + out.slice(t.badge.attrEnd);
   }
   assertIntact(html, out, 'badge');
+  const labelNote = (t) => text != null
+    ? ` text = "${text}"${t.label && t.label !== text ? ` (was "${t.label}")` : ''}`
+    : '';
+  const clearedNote = (t) => text == null && t.inner === '' ? ` — cleared its derived label "${t.label}"` : '';
   return {
     html: out,
-    message: targets.map(t => `set badge type = "${type}"${text != null ? ` text = "${text}"` : ''} in row "${textOf(html, t.row).slice(0, 60)}"`).join('\n'),
+    message: targets.map(t => `set badge type = "${type}"${labelNote(t)} in row "${textOf(html, t.row).slice(0, 60)}"${clearedNote(t)}`).join('\n'),
+  };
+}
+
+/* Pure: (html, address, flags) -> { html, message }.
+   The inverse of `append --into`: removes the <li> / <tr> whose visible text
+   matches --match, in the section or its --into container. */
+function planRmItem(html, address, flags = {}) {
+  const { node, target, where } = resolveScope(html, address, flagValue(flags, 'into'), 'rm-item');
+  const { raw, needle } = matchNeedle(flags, 'rm-item');
+  const sel = matchSelection(flags);
+  const picked = pickMatches(findItems(html, node, target, needle), {
+    raw, sel, noun: 'item', where, describe: el => `<${el.tag}> ${itemText(html, el).slice(0, 72)}`,
+  });
+  let out = html;
+  // Descending document order: a later removal never shifts an earlier offset.
+  for (const el of [...picked].sort((a, b) => b.outerStart - a.outerStart)) out = removeItem(out, el);
+  assertIntact(html, out, 'rm-item');
+  return {
+    html: out,
+    message: picked.map(el => `removed <${el.tag}> "${itemText(html, el).slice(0, 60)}" from ${where}`).join('\n'),
+  };
+}
+
+/* Pure: (html, address, flags) -> { html, message }.
+   Wraps the matched text run in <s>…</s> — the amendment convention's strike.
+   Refuses a run that crosses an element boundary, one already struck, and one
+   inside a code component (where markup would corrupt the code). */
+function planStrike(html, address, flags = {}) {
+  const { node, target, where } = resolveScope(html, address, flagValue(flags, 'into'), 'strike');
+  const { raw, needle } = matchNeedle(flags, 'strike');
+  const sel = matchSelection(flags);
+  const picked = pickMatches(findTextRuns(html, node, target, needle), {
+    raw, sel, noun: 'text run', where, describe: r => runContext(html, r),
+  });
+  assertOneElement(html, picked, raw, 'strike');
+  for (const r of picked) {
+    const inside = enclosingTag(html, node, r.start, ['s', ...Object.keys(TEXT_RULES).filter(t => TEXT_RULES[t].kind === 'code')]);
+    if (inside === 's') throw new PlanError(`"${raw}" is already struck — ${runContext(html, r)}`);
+    if (inside) throw new PlanError(`"${raw}" is inside <${inside}>, and markup there corrupts the code — ${runContext(html, r)}`);
+  }
+  let out = html;
+  for (const r of [...picked].sort((a, b) => b.start - a.start))
+    out = out.slice(0, r.start) + '<s>' + out.slice(r.start, r.end) + '</s>' + out.slice(r.end);
+  assertIntact(html, out, 'strike');
+  return {
+    html: out,
+    message: picked.map(r => `struck "${visibleText(html, r.start, r.end)}" at line ${lineOf(html, r.start)} of ${where}`).join('\n'),
+  };
+}
+
+/* Pure: (html, address, body, flags) -> { html, message }.
+   Replaces the matched text run with --with, else with `body` (the shell reads
+   --file / stdin). The replacement is markup, spliced verbatim like every other
+   body; same one-element rule as strike. */
+function planReplace(html, address, body, flags = {}) {
+  const { node, target, where } = resolveScope(html, address, flagValue(flags, 'into'), 'replace');
+  const { raw, needle } = matchNeedle(flags, 'replace');
+  const sel = matchSelection(flags);
+  let replacement;
+  if ('with' in flags) {
+    if (flags.with === true) throw new PlanError('--with needs a value — pass --with "" to delete the matched text');
+    if ('file' in flags) throw new PlanError('use only one of --with / --file');
+    replacement = flagValue(flags, 'with');
+  } else {
+    replacement = String(body == null ? '' : body).replace(/(?:\r?\n)+$/, '');
+    if (!replacement) throw new PlanError('the replacement is empty — pass --with "" to delete the matched text');
+  }
+  const picked = pickMatches(findTextRuns(html, node, target, needle), {
+    raw, sel, noun: 'text run', where, describe: r => runContext(html, r),
+  });
+  assertOneElement(html, picked, raw, 'replace');
+  let out = html;
+  for (const r of [...picked].sort((a, b) => b.start - a.start))
+    out = out.slice(0, r.start) + replacement + out.slice(r.end);
+  assertIntact(html, out, 'replace');
+  return {
+    html: out,
+    message: picked.map(r => `replaced "${visibleText(html, r.start, r.end)}" at line ${lineOf(html, r.start)} of ${where}`).join('\n'),
   };
 }
 
@@ -1173,8 +1931,9 @@ function planAddSection(html, flags, body /* string | null */) {
     // rather than a silently ignored flag.
     const ref = resolveNode(html, refAddr.split('.'));
     if (ref.tag === 'plan-header') throw new PlanError('cannot place a section relative to the header');
-    const refParent = refAddr.split('.').slice(0, -1).join('.');
-    if (parentAddr && parentAddr !== refParent)
+    // Compared as canonical paths: either flag may be a bare id.
+    const refParent = canonicalAddress(html, ref).split('.').slice(0, -1).join('.');
+    if (parentAddr && canonicalAddress(html, resolveNode(html, parentAddr.split('.'))) !== refParent)
       throw new PlanError(`--parent '${parentAddr}' contradicts --${position} '${refAddr}' ` +
         `(which sits in '${refParent || 'the top level'}') — the ref alone determines placement`);
     // Match the ref's own indentation: the new section is its sibling.
@@ -1208,9 +1967,11 @@ function planMoveSection(html, address, flags) {
   if (flags.after && flags.before) throw new PlanError('use only one of --after / --before');
   const refAddr = flagValue(flags, position);
   if (!refAddr) throw new PlanError(`--${position} requires a section address`);
-  if (address === refAddr) throw new PlanError('cannot move a section relative to itself');
   const el = resolveNode(html, address.split('.'));
   if (el.tag === 'plan-header') throw new PlanError('cannot move the header');
+  // By node, not by string: `a1` and `a.a1` are the same section.
+  if (resolveNode(html, String(refAddr).split('.')).outerStart === el.outerStart)
+    throw new PlanError('cannot move a section relative to itself');
   const from = lineStart(html, el.outerStart);
   const to = lineEndAfterNewline(html, el.outerEnd);
   const block = html.slice(from, to).replace(/\n$/, '');
@@ -1224,13 +1985,34 @@ function planMoveSection(html, address, flags) {
    error text live in the cores (they throw PlanError); main() is the sole site
    that maps a PlanError to die(). */
 
+// Every selectable template: the skill's templates/ merged with the consumer
+// directory when it exists (planTemplateIndex decides precedence). Both dirs
+// are parameters; the defaults are the installed layout. Bodies are read by
+// the caller from each entry's `path`.
+function loadTemplates({ skillDir = TEMPLATE_DIR, consumerDir = resolveConsumerTemplateDir() } = {}) {
+  const listDir = (d) => {
+    try { return fs.readdirSync(d); }
+    catch (e) { throw new PlanError(`cannot read templates dir '${d}': ${e.message}`); }
+  };
+  const consumer = consumerDir && fs.existsSync(consumerDir) ? listDir(consumerDir) : null;
+  const index = planTemplateIndex({ skill: listDir(skillDir), consumer, consumerDir });
+  return {
+    shell: read(path.join(skillDir, '_shell.html')),
+    entries: index.map(t => ({
+      ...t,
+      path: path.join(t.origin === 'consumer' ? consumerDir : skillDir, `${t.name}.html`),
+    })),
+  };
+}
+
 function cmdNew(outPath, flags) {
   if (!outPath) throw new PlanError('new requires an output path, e.g. `new plan.html --template tdd`');
   const template = flagValue(flags, 'template') || 'basic';
   if (template.startsWith('_')) throw new PlanError(`'${template}' is not a selectable template`);
-  const bodyPath = path.join(TEMPLATE_DIR, `${template}.html`);
-  if (!fs.existsSync(bodyPath)) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
-  const html = planNew(read(path.join(TEMPLATE_DIR, '_shell.html')), read(bodyPath), {
+  const { shell, entries } = loadTemplates();
+  const hit = entries.find(t => t.name === template);
+  if (!hit) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
+  const html = planNew(shell, read(hit.path), {
     title: flagValue(flags, 'title'),
     date: new Date().toISOString().slice(0, 10),
     skillSubpath: resolveSkillSubpath(),
@@ -1239,24 +2021,25 @@ function cmdNew(outPath, flags) {
   const parent = path.dirname(outPath);
   if (parent && !fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
   write(outPath, html);
-  process.stdout.write(`Created ${outPath} (template: ${template})\n`);
+  const origin = hit.origin === 'consumer' ? `, consumer: ${hit.path}` : '';
+  process.stdout.write(`Created ${outPath} (template: ${template}${origin})\n`);
 }
 
 // Read-only shell: read, run core, print.
 function cmdList(file, flags)        { process.stdout.write(planList(read(file), flags)); }
 function cmdTasks(file, flags)       { process.stdout.write(planTasks(read(file), flags)); }
 function cmdRead(file, addr, flags)  { process.stdout.write(planRead(read(file), addr, flags)); }
-function cmdCheck(file) {
-  const { ok, report } = planCheck(read(file));
+function cmdCheck(file, flags) {
+  const { ok, report, warnings } = planCheck(read(file));
   if (!ok) throw new PlanError(report);      // → stderr + exit 1, so CI can gate on it
   process.stdout.write(report + '\n');
+  if (warnings.length) process.stdout.write(warningReport(warnings) + '\n');
+  if (flags.strict && warnings.length)
+    throw new PlanError(`check --strict: ${warnings.length} warning(s), listed above`);
 }
 function cmdTemplates(name) {
-  let files;
-  try { files = fs.readdirSync(TEMPLATE_DIR); }
-  catch (e) { throw new PlanError(`cannot read templates dir: ${e.message}`); }
-  const entries = planTemplates(files).map(n => ({ name: n, body: read(path.join(TEMPLATE_DIR, `${n}.html`)) }));
-  process.stdout.write(planTemplateReport(entries, name, read(path.join(TEMPLATE_DIR, '_shell.html'))));
+  const { shell, entries } = loadTemplates();
+  process.stdout.write(planTemplateReport(entries.map(t => ({ ...t, body: read(t.path) })), name, shell));
 }
 
 // Mutating shell: read, run core, write, print message.
@@ -1286,6 +2069,20 @@ function cmdBadge(file, flags) {
   const { html, message } = planBadge(read(file), flags);
   write(file, html); process.stdout.write(message + '\n');
 }
+function cmdRmItem(file, address, flags) {
+  const { html, message } = planRmItem(read(file), address, flags);
+  write(file, html); process.stdout.write(message + '\n');
+}
+function cmdStrike(file, address, flags) {
+  const { html, message } = planStrike(read(file), address, flags);
+  write(file, html); process.stdout.write(message + '\n');
+}
+// --with carries the replacement inline; only without it is a body read.
+function cmdReplace(file, address, flags) {
+  const body = 'with' in flags ? null : hunkBody(flags);
+  const { html, message } = planReplace(read(file), address, body, flags);
+  write(file, html); process.stdout.write(message + '\n');
+}
 function cmdAddSection(file, flags) {
   const src = flagValue(flags, 'body-file');
   const { html, message } = planAddSection(read(file), flags, src ? read(src) : null);
@@ -1305,8 +2102,16 @@ function cmdMoveSection(file, address, flags) {
 // from one whose value follows, so `tasks --all plan.html` consumed the FILENAME
 // as --all's value and then reported a missing <file> — with the file right
 // there on the line. Declaring them keeps flag order free.
-const BOOLEAN_FLAGS = new Set(['all', 'body', 'append', 'outline', 'no-outline', 'help']);
-function parseFlags(argv) {
+const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict']);
+// `--text` is the one flag name two commands share with different shapes:
+// `read --text` is a boolean (structure-preserving plain text), `badge --text
+// <T>` takes the replacement label, including `--text ""` to clear one. Scope
+// the exception to `badge` rather than splitting BOOLEAN_FLAGS into two sets.
+function isBooleanFlag(cmd, key) {
+  if (key === 'text' && cmd === 'badge') return false;
+  return BOOLEAN_FLAGS.has(key);
+}
+function parseFlags(argv, cmd) {
   const flags = {};
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
@@ -1314,7 +2119,7 @@ function parseFlags(argv) {
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (!BOOLEAN_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) {
+      if (!isBooleanFlag(cmd, key) && next !== undefined && !next.startsWith('--')) {
         flags[key] = key in flags ? [].concat(flags[key], next) : next; // repeats accumulate
         i++;
       } else {
@@ -1333,29 +2138,34 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   new          <file> [--title T] [--template <name>] [--set k=v ...]
   templates    [<name>]                                   (with a name: that template's guidance)
   list         <file> [--no-outline]
-  check        <file>                                     (structure validation; exit 1 on a break)
+  check        <file> [--strict]                          (exit 1 on a structure break; warnings exit 1 only with --strict)
   tasks        <file> [--all | --status <s>]
-  read         <file> <address> [--body]
+  read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   set          <file> <path>=<value> [<path>=<value> ...]
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   prepend      <file> <address> [--file <f>] [--into <sel>]
   append       <file> <address> [--file <f>] [--into <sel>]
   insert       <file> <address> (--before-heading T | --after-heading T) [--file <f>] [--into <sel>]
   badge        <file> --match <text> --set <type> [--in <addr>] [--nth N] [--all] [--text T]
+  rm-item      <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+  strike       <file> <address> --match <text> [--into <sel>] [--nth N | --all]
+  replace      <file> <address> --match <text> (--with <T> | --file <f> | stdin) [--into <sel>] [--nth N | --all]
   add-section  <file> --id <id> [--num N] [--title T] [--status S]
                       [--parent <addr>] [--after <addr> | --before <addr>] [--body-file <f>]
   rm-section   <file> <address>
   move-section <file> <address> (--after <addr> | --before <addr>)
 
 address: header | <sectionId> | <sectionId>.<child> … (dot-path, any depth; a
-         child is an id or a 1-based ordinal). Every address argument — the
+         child is an id or a 1-based ordinal; a bare <sectionId> is found at
+         any depth). Every address argument — the
          positional one, --parent, --after, --before, --in, and a DOTTED
          \`new --set\` key — uses this grammar. --after/--before name a SIBLING,
          which also fixes the nesting depth, so --parent is only needed to
          append as the last child.
 --into:  a plain HTML container inside the addressed section — <tag> (the LAST
-         one), <tag>:<n> (1-based), or #<id>. Never a <plan-*> tag: address
-         those with the dot-path.
+         one), <tag>:<n> (1-based), or #<id>. Any container, plan-defs and
+         plan-cards included, except the tags the dot-path addresses
+         (plan-section, plan-subsection, plan-header).
 new --set: a DOTTED key is a node address applied to the generated file
          (--set header.status=review); a BARE key fills a {{placeholder}}.
 round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`;
@@ -1363,12 +2173,12 @@ round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { process.stdout.write(USAGE + '\n'); return; }
-  const { flags, positional } = parseFlags(rest);
+  const { flags, positional } = parseFlags(rest, cmd);
   const file = positional[0];
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
   const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'set', 'set-body', 'prepend', 'append',
-    'insert', 'badge', 'add-section', 'rm-section', 'move-section'];
+    'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
   try {
     if (cmd !== 'templates' && !NEEDS_FILE.includes(cmd)) throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
@@ -1376,7 +2186,7 @@ function main() {
       case 'new':          return cmdNew(file, flags);
       case 'templates':    return cmdTemplates(positional[0]);
       case 'list':         return cmdList(file, flags);
-      case 'check':        return cmdCheck(file);
+      case 'check':        return cmdCheck(file, flags);
       case 'tasks':        return cmdTasks(file, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
@@ -1387,6 +2197,9 @@ function main() {
       case 'append':       return cmdInsert(file, positional[1], flags, { where: 'end' });
       case 'insert':       return cmdInsert(file, positional[1], flags, { anchored: true });
       case 'badge':        return cmdBadge(file, flags);
+      case 'rm-item':      return cmdRmItem(file, positional[1], flags);
+      case 'strike':       return cmdStrike(file, positional[1], flags);
+      case 'replace':      return cmdReplace(file, positional[1], flags);
       case 'add-section':  return cmdAddSection(file, flags);
       case 'rm-section':   return cmdRmSection(file, positional[1]);
       case 'move-section': return cmdMoveSection(file, positional[1], flags);
@@ -1401,13 +2214,15 @@ function main() {
 if (require.main === module) main();   // run the CLI only when invoked directly
 
 module.exports = {
-  render, templateVars, templateDoc, templateSummary, resolveSkillSubpath,
+  render, templateVars, templateDoc, templateSummary, templateProblems, claudeRoot, resolveSkillSubpath, resolveConsumerTemplateDir,
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
-  childSections, resolveNode, ownElements, ownHeadings, resolveContainer, textOf,
+  childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,
   buildSection, sectionIds, allSectionIds, walkSections, walkTags, sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
-  PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, PLAN_TAGS,
-  planNew, planTemplates, planTemplateReport, planList, planCheck, planTasks, planRead,
-  planSet, planSetBody, planInsert, planBadge, planAddSection, planRmSection, planMoveSection,
+  walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
+  findItems, itemText, removeItem, findTextRuns,
+  PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS,
+  planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
+  planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };
