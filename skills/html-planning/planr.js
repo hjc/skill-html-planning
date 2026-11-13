@@ -18,7 +18,8 @@
      node planr.js query       <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>]
                                [--rank <name>] [--sort <k[:asc|desc],...>] [--fields <cols>]
                                [--limit N] [--format table|json|tsv|paths]
-     node planr.js next        <dir|glob> [--rank <name>] [--format text|json]
+     node planr.js next        <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>]
+                               [--rank <name>] [--format text|json]
      node planr.js set         <file> <path>=<value> [<path>=<value> ...]
      node planr.js set-body    <file> <address> [--file <f>] [--append]
      node planr.js prepend     <file> <address> [--file <f>] [--into <sel>]
@@ -2872,16 +2873,27 @@ function docOutline(html) {
    agent dispatches on. An EMPTY queue is not a failure — `next` returns its
    report and exits 0 — because an orchestrator polling "is there anything to
    do" must be able to tell "nothing" from "broken". */
-function planNext(docs, { schema, target = null, rank = 'default', format = 'text', schemaSources = [], readDoc = () => null } = {}) {
+function planNext(docs, {
+  schema, target = null, where = [], has = [], missing = [], rank = 'default', format = 'text',
+  schemaSources = [], readDoc = () => null,
+} = {}) {
   if (!NEXT_FORMATS.includes(format))
     throw new PlanError(`unknown --format '${format}' — valid: ${NEXT_FORMATS.join(', ')}`);
   if (!schema.rankings[rank]) throw new PlanError(
     `unknown ranking '${rank}' — declared: ${Object.keys(schema.rankings).join(', ') || '(none)'}` +
     (rank === 'default' ? "\nnext is driven by a schema-declared ranking: declare one named 'default', or pass --rank <name>" : ''));
-  const plan = applyRanking(schema, rank, {});
+  // The same filters as `query`, composed with the ranking the same way: a flag
+  // on a field the ranking filters replaces that condition, and each half is
+  // compiled under its own label so a bad literal is blamed on its real source.
+  const cli = parseWhere(schema, { where, has, missing });
+  const plan = applyRanking(schema, rank, { where: cli });
+  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
   const q = queryDocs(docs, {
     schema,
-    where: compileWhere(schema, plan.where, `ranking '${rank}' where`),
+    where: [
+      ...compileWhere(schema, cli, 'filter'),
+      ...compileWhere(schema, preset, `ranking '${rank}' where`),
+    ],
     order: parseSort(schema, plan.sort, `ranking '${rank}' order`),
     limit: 1,
     readDoc,
@@ -2906,7 +2918,8 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
     target, rank, scanned: q.scanned, matched: q.matched, schema: sources, document, skipped: q.skipped,
   }, null, 2) + '\n');
 
-  if (!document) return done(`no document matches ranking '${rank}' — ${q.scanned} scanned\n`);
+  if (!document) return done(`no document matches ranking '${rank}'` +
+    (Object.keys(cli).length ? ' and the given filters' : '') + ` — ${q.scanned} scanned\n`);
   const set = Object.entries(top.fields).filter(([k, f]) => f.source && k !== titleKey);
   const kw = Math.max(...set.map(([k]) => k.length));
   const vw = Math.max(...set.map(([, f]) => f.raw.length));
@@ -3665,6 +3678,7 @@ function cmdNext(target, flags) {
   const { schema, sources } = loadSchema();
   const { report, skipped } = planNext(collectDocs(target), {
     schema, target: String(target).replace(/\\/g, '/'),
+    where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
     rank: flagValue(flags, 'rank') || 'default',
     format: flagValue(flags, 'format') || 'text', schemaSources: sources, readDoc: readBlocker,
   });
@@ -3803,7 +3817,7 @@ const COMMAND_FLAGS = {
   meta:           { format: 'value', set: 'value', unset: 'value', stamp: 'bool' },
   query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
                     fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
-  next:           { rank: 'value', format: 'value', strict: 'bool' },
+  next:           { where: 'value', has: 'value', missing: 'value', rank: 'value', format: 'value', strict: 'bool' },
   wordy:          { ...Object.fromEntries(WORDY_KINDS.map(k => [k.flag, 'value'])), format: 'value' },
   set:            {},
   'set-body':     { file: 'value', append: 'bool' },
@@ -3880,7 +3894,8 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   query        <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                           [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                           [--format table|json|tsv|paths] [--strict]
-  next         <dir|glob> [--rank <name>] [--format text|json] [--strict]
+  next         <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
+                          [--format text|json] [--strict]
   wordy        <file|dir|glob> [...] [--format text|json]  (detects long, dense and run-on lines; exit 1 on any)
                           [--max-chars N] [--max-sentences N] [--max-sentence-chars N]
   set          <file> <path>=<value> [<path>=<value> ...]

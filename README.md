@@ -334,7 +334,7 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 - The field vocabulary is **data**, not built in. `planr-schema.json` beside the skill ships the core set; a repo extends or replaces it with `.claude/planr-schema.json`, in the same format.
 - `planr meta` reads a document's resolved metadata and where each value came from, and writes it with `--set` / `--unset`. An unknown field or an out-of-schema value is refused.
 - **`planr query <dir|glob>`** filters, sorts and projects a whole corpus — `--where`, `--has`, `--missing`, `--sort`, `--fields`, `--limit`, and `--format table|json|tsv|paths`. Comparisons read the order the schema declares. No index and no cache: 142 documents scan in about a quarter of a second.
-- **`planr next <dir>`** hands one document to an agent: the top-ranked path, its metadata, and the section addresses to act on it. `--format json` is the machine surface for both commands, and it carries the whole metadata record per result, not just the printed columns.
+- **`planr next <dir>`** hands one document to an agent, taking `query`'s filters: the top-ranked path, its metadata, and the section addresses to act on it. `--format json` is the machine surface for both commands, and it carries the whole metadata record per result, not just the printed columns.
 - Rankings are named `where` + `order` presets declared in the schema, so each repo defines its own queue. `--rank <name>` applies one; an explicit flag overrides it per field.
 - `planr check` reports metadata problems as warnings, and `check --strict` gates them.
 

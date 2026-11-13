@@ -912,6 +912,23 @@ describe('next (wiring)', () => {
     } finally { rmTmp(root); }
   });
 
+  it('wires --where, --has and --missing through to the ranked queue', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const all = JSON.parse(runAt(P, ['next', issues, '--format', 'json']).stdout);
+      const w = runAt(P, ['next', issues, '--where', `priority=${all.document.fields.priority.raw}`, '--format', 'json']);
+      expect(w.code, w.stderr).toBe(0);
+      expect(JSON.parse(w.stdout).document.path).toBe(all.document.path);
+      const none = runAt(P, ['next', issues, '--where', 'title~no-such-title-anywhere', '--format', 'json']);
+      expect(none.code, none.stderr).toBe(0);
+      expect(JSON.parse(none.stdout).document).toBeNull();
+      expect(runAt(P, ['next', issues, '--has', 'priority']).code).toBe(0);
+      expect(runAt(P, ['next', issues, '--missing', 'priority']).code).toBe(0);
+      expect(runAt(P, ['next', issues, '--has']).code).toBe(1);
+    } finally { rmTmp(root); }
+  });
+
   it('refuses to guess a queue when the schema declares no ranking', () => {
     const root = mkTmp();
     try {
