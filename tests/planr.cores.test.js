@@ -2683,6 +2683,56 @@ describe('planNext', () => {
   });
 });
 
+describe('planNext — query filters', () => {
+  let FS;
+  beforeAll(() => {
+    FS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:    { type: 'string', from: 'header:title' },
+        status:   { type: 'enum', values: ['draft', 'review', 'implemented'], from: 'header:status' },
+        priority: { type: 'enum', values: ['p0', 'p1', 'p2'] },
+        owner:    { type: 'string' },
+      },
+      rankings: { default: { where: { priority: { in: ['p0', 'p1'] } }, order: ['priority'] } },
+    }, 'probe.json'));
+  });
+  const DOCS = () => [
+    { path: 'a/p0-ann.html',  html: NDOC({ priority: 'p0', owner: 'ann' }) },
+    { path: 'a/p1-bob.html',  html: NDOC({ priority: 'p1', owner: 'bob' }) },
+    { path: 'a/p1-none.html', html: NDOC({ priority: 'p1' }) },
+    { path: 'a/p2-bob.html',  html: NDOC({ priority: 'p2', owner: 'bob' }) },
+  ];
+  const N = (opts) => JSON.parse(planr.planNext(DOCS(), { schema: FS, format: 'json', ...opts }).report);
+
+  it('narrows the ranked queue with --where, keeping the ranking\'s own conditions', () => {
+    const out = N({ where: ['owner=bob'] });
+    expect(out.document.path).toBe('a/p1-bob.html');   // p2-bob is outside the ranking
+    expect(out.matched).toBe(1);
+  });
+
+  it('takes --has and --missing as query does', () => {
+    expect(N({ missing: ['owner'] }).document.path).toBe('a/p1-none.html');
+    expect(N({ has: ['owner'] }).document.path).toBe('a/p0-ann.html');
+  });
+
+  it('lets a --where on a field the ranking filters replace that condition, as query does', () => {
+    expect(N({ where: ['priority=p2'] }).document.path).toBe('a/p2-bob.html');
+  });
+
+  it('returns an empty queue, not an error, when the filter matches nothing', () => {
+    const out = N({ where: ['owner=cy'] });
+    expect(out.document).toBeNull();
+    expect(planr.planNext(DOCS(), { schema: FS, where: ['owner=cy'] }).report)
+      .toBe("no document matches ranking 'default' and the given filters — 4 scanned\n");
+  });
+
+  it('attributes a bad filter to the filter, not the ranking', () => {
+    expect(() => N({ where: ['priority=p9'] })).toThrow(/filter/);
+    expect(() => N({ where: ['priority=p9'] })).not.toThrow(/ranking 'default' where/);
+    expect(() => N({ has: ['nope'] })).toThrow(/nope/);
+  });
+});
+
 describe('blockers — blocked-by holds a document while its target is open', () => {
   let BS;
   beforeAll(() => {
