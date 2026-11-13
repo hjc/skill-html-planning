@@ -948,7 +948,7 @@ function validateNodes(html, schema = null) {
   const block = readMetaBlock(html);
   for (const f of block ? block.fields : []) {
     if (!f.key) throw new PlanError('<plan-field> has no `key` attribute');
-    // C9: a template default may never name a field the header already owns.
+    // A template default may never name a field the header already owns.
     const owned = headerOwnedProblem(schema, f.key);
     if (owned) throw new PlanError(`a template may not declare a header field — ${owned}`);
     const problem = validateField(schema, f.key, f.raw);
@@ -1307,7 +1307,7 @@ function planMeta(html, { schema, docPath = null, schemaSources = [], format = '
   return out.join('\n') + '\n';
 }
 
-/* C9 — one writable home per fact. A field declared `from: "header:…"` is a
+/* One writable home per fact. A field declared `from: "header:…"` is a
    READ-ONLY VIEW of a header attribute: the header is where the value lives,
    planSet and planNew write it there, and planList and the runtime header dot
    read it there. A second copy inside <plan-meta> outranks the header in the
@@ -1357,7 +1357,7 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
   for (const key of drops)
     if (!present.has(key)) {
       // A header field is never in a well-formed block, so an --unset of one is
-      // the C9 mistake, not a missing field — name its real writer. Removing one
+      // a second copy of a header-owned value, not a missing field — name its real writer. Removing one
       // that IS present stays allowed: that is the lint's remedy.
       const owned = headerOwnedProblem(schema, key);
       throw new PlanError(owned || `'${key}' is not in this document's <plan-meta> — nothing to unset`);
@@ -1492,7 +1492,7 @@ function insertMetaBlock(html, block) {
   return html.slice(0, pos) + block + '\n' + html.slice(pos);
 }
 // The first ELEMENT inside a node, or null — comments and whitespace do not
-// count. Backs both the placement above and the position lint in the next step.
+// count. Backs both the placement above and the position check in lintMeta.
 function firstElementIn(html, node) {
   let hit = null;
   walkNodes(html, node.innerStart, node.innerEnd, tok => {
@@ -2174,7 +2174,7 @@ function planCheck(html, schema = null, ctx = {}) {
   return { ...structure, warnings: structure.ok ? lintPlan(html, schema, ctx) : [] };
 }
 
-/* Metadata lints — C5's warning tier. A metadata problem never fails the
+/* Metadata lints — the warning tier. A metadata problem never fails the
    structure check and never blocks a write (assertIntact gates on
    checkStructure alone); `check --strict` is the gate. With no schema the
    schema-independent problems are still reported, so `templateProblems` and any
@@ -2205,7 +2205,7 @@ function lintMeta(html, schema) {
     if (seen.has(f.key)) { out.push({ line: f.line, text: `duplicate field '${f.key}' — only the first is read` }); continue; }
     seen.add(f.key);
     if (!schema) continue;
-    // C9: the header owns this value, so the field is a second copy that will
+    // The header owns this value, so the field is a second copy that will
     // outrank it. Reported instead of the value check, not as well as it.
     const owned = headerOwnedProblem(schema, f.key);
     if (owned) { out.push({ line: f.line, text: `${owned}; remove the field from <plan-meta>` }); continue; }
@@ -2718,7 +2718,7 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
 
 /* Pure: the columns to print. `path`, then every schema field at least one
    matched document resolves, in schema-declaration order. Derived, so no field
-   name is written into this file (contract C2), and a column that would be
+   name is written into this file, and a column that would be
    empty for every row never appears. */
 function defaultFields(schema, results) {
   return ['path', ...Object.keys(schema.fields).filter(n => results.some(r => r.fields[n].source))];
@@ -2890,7 +2890,7 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
   const top = q.results[0] || null;
   const outline = top ? docOutline(docs.find(d => d.path === top.path).html) : null;
   // The headline is whichever field the schema binds to the header's title —
-  // `from: header:title`, not a field NAME, so nothing here is hardcoded (C2).
+  // `from: header:title`, not a field NAME, so nothing here is hardcoded.
   const titleKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:title') || null;
   const document = top ? {
     path: top.path,
@@ -3604,7 +3604,7 @@ function cmdMeta(file, flags) {
 /* The one filesystem boundary for a corpus: a directory, a single file, or a
    glob -> [{ path, html } | { path, error }], sorted by path so every run
    orders ties identically. No index and no cache — query reads the documents
-   (contract C6). Paths come back with forward slashes on every platform.
+   directly. Paths come back with forward slashes on every platform.
    `accept` picks the files a DIRECTORY contributes (HTML, for query and
    next); a named file is always taken, and a glob takes whatever it matches. */
 const HTML_FILE = (p) => /\.html$/i.test(p);

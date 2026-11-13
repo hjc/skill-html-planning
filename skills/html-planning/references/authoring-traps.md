@@ -65,6 +65,10 @@ error-prone and unreadable. Write the body as normal source, apply `html.escape(
 `<plan-diff>` line missing its gutter character (` `/`+`/`-`) — run it after every splice; a missed
 escape no longer stays invisible. Inline `<code>` and `<pre><code>` are not checked.
 
+**Never `replace --match` an indented line inside a code body.** `replace` matches the
+whitespace-trimmed text run and leaves the leading indent in place, so a replacement carrying its own
+indent lands doubly indented. Edit code with `read --body` → `perl -0pi` → `set-body --file`.
+
 ## Patching an existing document
 
 **Lift a patch anchor from the dumped text, never retype it.** `planr read --body` preserves the

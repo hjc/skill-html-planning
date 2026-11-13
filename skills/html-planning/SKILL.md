@@ -12,11 +12,11 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
 
 1. **You MUST run `planr new` before writing any plan content.** This is non-negotiable. It creates the skeleton from a template with the inline loader that resolves `plan-styles.css` and `plan-runtime.js` from the skill folder. Without it, the plan has no styling or interactivity.
 
-2. **NEVER write inline `<style>` blocks, CSS custom properties, or `<script>` blocks in plan files.** All styling comes from `plan-styles.css`, loaded at runtime by the skeleton's inline loader. If you find yourself writing CSS in a plan file, STOP — you are doing it wrong.
+2. **NEVER write `<style>` blocks, CSS custom properties, or `<script>` blocks in a plan file.** All styling comes from `plan-styles.css`, loaded at runtime by the skeleton's inline loader. Only a template may carry style or script, and the scaffold keeps what its template put there (`references/template-authoring.md` → Linking code).
 
 3. **NEVER write raw `<div>` structures for visual elements.** Use the Web Component tags documented below (`<plan-card>`, `<plan-callout>`, `<plan-table>`, `<plan-tabs>`, etc.). These are defined in `plan-runtime.js` and styled by `plan-styles.css`.
 
-4. **Plan files contain ONLY semantic markup.** No CSS. No JS. Just the HTML skeleton from the generator plus the Web Component tags you add via `Edit`.
+4. **Plan files contain ONLY semantic markup.** No CSS. No JS. Just the HTML skeleton from the generator, including any asset links its template declared, plus the Web Component tags you add via `Edit`.
 
 ## Quick Start
 
@@ -892,6 +892,6 @@ planr wordy plan.html --format json         # the work list
 └── SKILL.md          ← This file (agent instructions)
 ```
 
-The inline loader in each generated plan file finds `.claude/` in the file path and resolves the skill assets from there, appending the install subpath that `planr new` baked in at generation time (so the skill works under any folder name within `.claude/skills/`). Plan files contain only semantic markup — no CSS or JS.
+The inline loader in each generated plan file finds `.claude/` in the file path and resolves the skill assets from there, appending the install subpath that `planr new` baked in at generation time (so the skill works under any folder name within `.claude/skills/`). Plan files contain only semantic markup; a template's linked assets resolve through `plan-runtime.js` (`references/template-authoring.md` → Linking code).
 
 Every rendered plan also gets a **view-settings gear** (floating, top-right) injected by the runtime, with per-reader toggles persisted via `localStorage`: **"Wrap long lines"** (soft-wraps code/diff blocks), **"Side-panel navigation"** (**on by default** — a left **side-panel tree** listing every section at every depth; turning it off falls back to the two-level top nav), **"Start sections collapsed"**, and **"Full-width content"** (drops the centered reading cap so content fills the available width). A toggle the reader has never touched tracks its default, so changing a default reaches everyone who hasn't opted out. The panel is runtime-injected from the live section tree and drawn as a file-tree with connector guides; it has a header with a collapse control, collapses to a floating opener, is resizable by dragging its right edge, and on narrow screens overlays full-screen. A single scroll-spy highlights the active section in whichever view is showing. This is all automatic; you don't author it, and you shouldn't hand-roll your own settings UI or navigation tree.

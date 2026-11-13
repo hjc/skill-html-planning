@@ -89,9 +89,39 @@ Ordinary plan markup, subject to the same rules as any plan (`SKILL.md` is the c
 
 - **Never write `num=`.** Section numbers derive from document position and re-derive after every insert. A hardcoded `num` collides the moment someone adds a section.
 - **Give every section a stable `id`.** Ids are addresses (`planr read plan.html anti-patterns`) and browser anchors, and a fixed vocabulary is what makes a corpus of plans comparable. Choose them as deliberately as the titles, and do not rename them later.
-- **No inline `<style>`, `<script>`, or CSS custom properties.** Styling arrives at runtime; a template that inlines it breaks the contract for every plan it generates.
+- **Style and script belong to the template, never to the plan.** A template may carry them, linked from files on disk (Linking code below). An author never adds one to a scaffolded plan.
 
 Seed each section with a sentence describing what belongs there rather than leaving it empty. That placeholder prose is what an author actually reads, and it is where a convention gets enforced — "Convention: a table of decision → rationale" does more work than an empty section.
+
+## Linking code
+
+A template whose documents need their own styling or behaviour **links on-disk `.css` and `.js` files and inlines nothing**. Inline code is copied into every document scaffolded from it and drifts as the files it depends on are upgraded; a linked file is upgraded once.
+
+Write the links in the body, stylesheets above the first section, scripts below the last:
+
+```html
+<link rel="stylesheet" data-planr-href="~/skills/<skill>/assets/x.css">
+<link rel="stylesheet" data-planr-href="{page}.css">
+...
+<script data-planr-src="{page}.js"></script>
+<script data-planr-src="~/skills/<skill>/assets/x.js"></script>
+```
+
+`plan-runtime.js` resolves them once the document has parsed:
+
+| Path | Resolves against |
+|---|---|
+| `~/…` | the `.claude` directory the runtime was loaded from, found the way the shell's loader finds the skill: any document depth, any checkout |
+| anything else | the document's own directory |
+| `{page}` inside either | the document's file name without `.html` |
+
+- Stylesheets apply in place; scripts run in document order, after the components have rendered.
+- A file that does not exist is skipped, so a template may link an optional sibling the author writes only when needed.
+- A URL linked twice loads once.
+- A script that writes into the page targets a plain element directly inside a section, never inside another component: most components replace their own children when they render.
+- `<style>` and inline `<script>` stay legal in a template and are never the first choice.
+
+`templates/` and `.claude/planr-templates/` both link this way. `planr check` does not read the links.
 
 ## Declaring metadata defaults
 
