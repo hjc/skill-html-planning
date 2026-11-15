@@ -18,6 +18,8 @@ templates/
 
 You will almost always be writing a body. Change `_shell.html` only to alter something every plan shares — a new document-level variable, a `<head>` addition.
 
+**The inline loader in `_shell.html` is a contract, not markup to tidy.** `planr loader` finds it as the first `<script>` before `<body>` with no `src` whose code names `plan-runtime.js`, reads `data-planr-loader` as its version and `data-skill-href` as its hint, and replaces the whole element in existing documents with the shell's. Bump `data-planr-loader` when you change how the loader resolves, so `planr loader` reports an upgrade rather than a refresh, and run `npm run verify:loader` (SKILL.md → "Where plans live" describes the resolution order).
+
 ## Where a template lives
 
 A template is either **shipped** — in the skill's `templates/` — or **consumer-owned**, in `.claude/planr-templates/`, the directory beside `skills/` under the same `.claude` ancestor. Write a repo's own templates in the consumer directory: updating the skill overwrites `templates/` and never touches `planr-templates/`.
@@ -53,6 +55,7 @@ Names are `\w+`. Values are substituted through a function replacer, so a `$` in
 | `title` | `--title`, defaulting to `Untitled Plan` |
 | `date` | today, `YYYY-MM-DD` |
 | `skillSubpath` | the skill's install path, baked into the loader — **do not repurpose this name** |
+| `skillHref` | the relative path from the new document's directory to the skill folder, baked into the loader as `data-skill-href` (empty when none exists) — **do not repurpose this name** |
 | `body` | the selected body template; consumed before substitution, so it is not a knob |
 
 The shell also declares `lang`, `subtitle` and `status`. Reuse those names in a body only if you mean the same thing — they share one namespace.

@@ -287,6 +287,7 @@ Every command that writes re-verifies the document afterwards and **aborts witho
 |-------|----------|
 | Generate | `new` (`--template`, `--set`), `templates [<name>]` |
 | Inspect | `list`, `check [--strict]`, `tasks`, `read [--body \| --text]` |
+| Maintain | `loader` — rewrite a plan's inline loader in place (after a move, or for a plan made before loader v2 that lives outside `.claude`) |
 | Metadata | `meta` (`--set`, `--unset`, `--stamp`, `--format json`) |
 | Corpus | `query <dir\|glob>` (`--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields`, `--limit`, `--format table\|json\|tsv\|paths`), `next <dir\|glob>` |
 | Prose | `wordy <file\|dir\|glob> …` (`--max-chars`, `--max-sentences`, `--max-sentence-chars`, `--format text\|json`) |
