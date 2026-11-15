@@ -47,7 +47,39 @@ describe('resolveSkillSubpath wiring (real argv[1] under .claude)', () => {
     const staged = stageSkill(dir, 'skills/custom-name');
     const out = join(dir, 'out.html');
     expect(runAt(staged, ['new', out]).code).toBe(0);
-    expect(readFileSync(out, 'utf8')).toContain('/skills/custom-name');
+    expect(readFileSync(out, 'utf8')).toContain('data-skill-subpath="skills/custom-name"');
+  });
+  it('bakes the relative path from the plan to the skill, through the invoked path', () => {
+    const staged = stageSkill(dir, 'skills/custom-name');
+    const out = join(dir, 'docs', 'plans', 'x', 'map.html');
+    expect(runAt(staged, ['new', out]).code).toBe(0);
+    expect(readFileSync(out, 'utf8')).toContain('data-skill-href="../../../.claude/skills/custom-name"');
+  });
+});
+
+describe('loader (wiring)', () => {
+  it('rewrites only the loader, then reports it current; check warns on a stale hint first', () => {
+    const staged = stageSkill(dir, 'skills/html-planning');
+    const made = join(dir, 'docs', 'plans', 'x', 'map.html');
+    expect(runAt(staged, ['new', made]).code).toBe(0);
+    const moved = join(dir, 'docs', 'moved.html');
+    writeFileSync(moved, readFileSync(made, 'utf8'));
+    const warned = runAt(staged, ['check', moved]);
+    expect(warned.code).toBe(0);
+    expect(warned.stdout).toContain("data-skill-href '../../../.claude/skills/html-planning' does not reach");
+    const r = runAt(staged, ['loader', moved]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toBe("loader refreshed (data-skill-href '../../../.claude/skills/html-planning' → '../.claude/skills/html-planning')\n");
+    expect(readFileSync(moved, 'utf8')).toBe(readFileSync(made, 'utf8')
+      .replace('data-skill-href="../../../.claude', 'data-skill-href="../.claude'));
+    expect(runAt(staged, ['check', '--strict', moved]).code).toBe(0);
+    expect(runAt(staged, ['loader', moved]).stdout).toBe('loader already current\n');
+  });
+  it('exits 1 on a document with no loader', () => {
+    writeFileSync(P(), '<plan-header title="T"></plan-header>\n');
+    const r = run(['loader', P()]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^planr: no inline loader/);
   });
 });
 
