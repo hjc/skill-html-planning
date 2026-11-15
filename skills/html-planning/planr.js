@@ -138,6 +138,79 @@ function resolveConsumerTemplateDir(invoked = process.argv[1] || __filename) {
   const root = claudeRoot(invoked);
   return root ? `${root}/${CONSUMER_TEMPLATE_DIRNAME}` : null;
 }
+/* ── the inline loader ────────────────────────────────────
+   Every plan carries one <script> in <head> that finds plan-styles.css and
+   plan-runtime.js (templates/_shell.html). It tries, in order: the relative
+   path `new` baked into data-skill-href; the `.claude` segment of the page's
+   own path; then <dir>/.claude/<subpath> for the page's directory and its
+   ancestors. The hint is what lets a plan outside any .claude directory
+   (docs/plans/, a .plans/ mount) find the skill without a failed request.
+   Version 1 — no data-planr-loader attribute — knew only the second rule. */
+// The relative URL path from a plan's directory to the skill directory, for
+// data-skill-href, or '' when there is none (another drive). Both paths are
+// absolute; the shell resolves them. Each segment is percent-encoded, so the
+// value is safe in a URL and in a double-quoted attribute.
+function skillHrefFor(planAbs, skillDirAbs, p = path) {
+  const rel = p.relative(p.dirname(planAbs), skillDirAbs);
+  if (p.isAbsolute(rel)) return '';
+  return (rel || '.').split(p.sep === '\\' ? /[\\/]/ : '/').map(encodeURIComponent).join('/');
+}
+// The inline loader: the first <script> before <body> with no src whose code
+// names plan-runtime.js. { start, end, version, href } or null. A loader with
+// no data-planr-loader attribute is version 1.
+const SCRIPT_ELEMENT = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+function findLoader(html) {
+  const bodyAt = html.search(/<body[\s>]/i);
+  const head = bodyAt === -1 ? html : html.slice(0, bodyAt);
+  for (const m of head.matchAll(SCRIPT_ELEMENT)) {
+    if (getAttr(m[1], 'src') !== undefined || !m[2].includes('plan-runtime.js')) continue;
+    const version = Number(getAttr(m[1], 'data-planr-loader')) || 1;
+    const href = getAttr(m[1], 'data-skill-href');
+    return { start: m.index, end: m.index + m[0].length, version,
+      href: typeof href === 'string' ? decodeEntities(href) : '' };
+  }
+  return null;
+}
+/* Pure: replace a document's inline loader with the one the shell renders for
+   `vars` ({ skillSubpath, skillHref }). Everything outside the <script> element
+   is left byte-exact; the new element takes the document's line endings. */
+function planLoader(html, shellTpl, vars) {
+  const old = findLoader(html);
+  if (!old) throw new PlanError('no inline loader — a plan document has a <script> in <head> that loads plan-runtime.js');
+  const shell = render(shellTpl, vars);
+  const fresh = findLoader(shell);
+  if (!fresh) throw new PlanError('templates/_shell.html has no inline loader');
+  let block = shell.slice(fresh.start, fresh.end).replace(/\r\n/g, '\n');
+  if (html.includes('\r\n')) block = block.replace(/\n/g, '\r\n');
+  const out = html.slice(0, old.start) + block + html.slice(old.end);
+  const message = out === html ? 'loader already current'
+    : old.version < fresh.version ? `loader upgraded from v${old.version} to v${fresh.version} (data-skill-href '${fresh.href}')`
+    : `loader refreshed (data-skill-href '${old.href}' → '${fresh.href}')`;
+  return { html: out, message };
+}
+/* Two ways a loader stops finding the skill, both reported by `check` with the
+   command that fixes them. A version-1 loader outside .claude never finds it;
+   a stale hint still loads (the page falls back to searching for .claude) but
+   costs a failed request per miss, and none at all if no .claude is above.
+   Needs the document's absolute path and the shell's readDoc. */
+function lintLoader(html, { docAbs = null, readDoc = null } = {}) {
+  const loader = docAbs ? findLoader(html) : null;
+  if (!loader) return [];
+  const line = lineOf(html, loader.start);
+  const doc = String(docAbs).replace(/\\/g, '/');
+  if (loader.version < 2) {
+    if (doc.split('/').includes('.claude')) return [];
+    return [{ line, text: 'the inline loader finds the skill only from inside a .claude directory, so this page ' +
+      'renders unstyled — run `planr loader <file>`' }];
+  }
+  if (!loader.href || !readDoc) return [];
+  let rel;
+  try { rel = decodeURIComponent(loader.href); } catch (e) { rel = loader.href; }
+  const css = path.posix.join(path.posix.dirname(doc), rel, 'plan-styles.css');
+  if (readDoc(css) !== null) return [];
+  return [{ line, text: `the loader's data-skill-href '${loader.href}' does not reach ${css}; the page falls back ` +
+    'to searching for .claude — run `planr loader <file>` to refresh it' }];
+}
 // Every {{placeholder}} the template offers, as {name, def}, sorted. `def` is
 // undefined for a placeholder that declares none. First declaration wins, so a
 // var used twice (title, in <title> and the header) reports one entry.
@@ -2009,9 +2082,9 @@ function removeItem(html, el) {
      · a BARE key fills a {{placeholder}}, and must name one that this template
        actually offers, or it throws (it used to be written into the var map and
        never read). */
-function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [], schema = null } = {}) {
+function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, skillHref, sets = [], schema = null } = {}) {
   const composed = shellTpl.split('{{body}}').join(stripTemplateDoc(bodyTpl));
-  const vars = { title: title || 'Untitled Plan', date, skillSubpath };
+  const vars = { title: title || 'Untitled Plan', date, skillSubpath, skillHref: skillHref ?? '' };
   const nodeSets = [];
   for (const pair of sets) {
     const eq = String(pair).indexOf('=');
@@ -2272,6 +2345,7 @@ function lintPlan(html, schema = null, ctx = {}) {
     ...lintBadgeLabels(html),
     ...lintHeadTitle(html),
     ...lintHeaderChips(html),
+    ...lintLoader(html, ctx),
   ].sort((a, b) => a.line - b.line);
 }
 // The text-carrying comment a template opens with, left at the top of <main>.
@@ -3709,10 +3783,11 @@ function cmdNew(outPath, flags) {
   const { shell, entries } = loadTemplates();
   const hit = entries.find(t => t.name === template);
   if (!hit) throw new PlanError(`unknown template '${template}' — run \`planr templates\` to list`);
+  const vars = loaderVars(outPath);
   const html = planNew(shell, read(hit.path), {
     title: flagValue(flags, 'title'),
     date: new Date().toISOString().slice(0, 10),
-    skillSubpath: resolveSkillSubpath(),
+    ...vars,
     sets: flags.set == null ? [] : [].concat(flags.set),
     schema: loadSchema().schema,
   });
@@ -3721,6 +3796,21 @@ function cmdNew(outPath, flags) {
   write(outPath, html);
   const origin = hit.origin === 'consumer' ? `, consumer: ${hit.path}` : '';
   process.stdout.write(`Created ${outPath} (template: ${template}${origin})\n`);
+  if (!vars.skillHref) process.stderr.write(`note: no relative path from ${outPath} to the skill; ` +
+    `the page will look for .claude/${vars.skillSubpath} in its own directory and above\n`);
+}
+// The loader's two baked values for a document at `docPath`, from how planr was
+// invoked — argv[1] keeps a symlinked .claude/skills/<name> path, so the hint
+// stays inside the consuming repo.
+function loaderVars(docPath) {
+  const skillDir = path.dirname(path.resolve(process.argv[1] || __filename));
+  return { skillSubpath: resolveSkillSubpath(), skillHref: skillHrefFor(path.resolve(docPath), skillDir) };
+}
+function cmdLoader(file) {
+  const before = read(file);
+  const { html, message } = planLoader(before, loadTemplates().shell, loaderVars(file));
+  if (html !== before) write(file, html);
+  process.stdout.write(message + '\n');
 }
 
 // Read-only shell: read, run core, print.
@@ -3728,7 +3818,8 @@ function cmdList(file, flags)        { process.stdout.write(planList(read(file),
 function cmdTasks(file, flags)       { process.stdout.write(planTasks(read(file), flags)); }
 function cmdRead(file, addr, flags)  { process.stdout.write(planRead(read(file), addr, flags)); }
 function cmdCheck(file, flags) {
-  const { ok, report, warnings } = planCheck(read(file), loadSchema().schema, { docPath: file, readDoc: readBlocker });
+  const { ok, report, warnings } = planCheck(read(file), loadSchema().schema,
+    { docPath: file, docAbs: path.resolve(file), readDoc: readBlocker });
   if (!ok) throw new PlanError(report);      // → stderr + exit 1, so CI can gate on it
   process.stdout.write(report + '\n');
   if (warnings.length) process.stdout.write(warningReport(warnings) + '\n');
@@ -3812,6 +3903,7 @@ const COMMAND_FLAGS = {
   templates:      {},
   list:           { 'no-outline': 'bool' },
   check:          { strict: 'bool' },
+  loader:         {},
   tasks:          { all: 'bool', status: 'value' },
   read:           { body: 'bool', text: 'bool' },
   meta:           { format: 'value', set: 'value', unset: 'value', stamp: 'bool' },
@@ -3848,7 +3940,7 @@ function assertKnownFlags(cmd, flags) {
 // Which positional a command requires, for main()'s missing-argument message.
 // Together with `templates` (which takes an optional name) these are exactly
 // COMMAND_FLAGS's keys — a test holds the two to each other.
-const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
+const NEEDS_FILE = ['new', 'list', 'check', 'loader', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
   'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
 // The corpus commands take a <dir|glob> in the same slot, so they need their
 // own required-argument message rather than one that says <file>. `wordy`
@@ -3886,6 +3978,7 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   templates    [<name>]                                   (with a name: that template's guidance)
   list         <file> [--no-outline]
   check        <file> [--strict]                          (exit 1 on a structure break; warnings exit 1 only with --strict)
+  loader       <file>                                     (rewrite the inline loader in <head> to the current one; nothing else changes)
   tasks        <file> [--all | --status <s>]
   read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   meta         <file> [--format text|json]                (resolved metadata, with each value's source)
@@ -3951,6 +4044,7 @@ function main() {
       case 'templates':    return cmdTemplates(positional[0]);
       case 'list':         return cmdList(file, flags);
       case 'check':        return cmdCheck(file, flags);
+      case 'loader':       return cmdLoader(file);
       case 'tasks':        return cmdTasks(file, flags);
       case 'meta':         return cmdMeta(file, flags);
       case 'query':        return cmdQuery(file, flags);
@@ -3983,6 +4077,7 @@ if (require.main === module) main();   // run the CLI only when invoked directly
 
 module.exports = {
   render, templateVars, templateDoc, templateSummary, templateProblems, claudeRoot, resolveSkillSubpath, resolveConsumerTemplateDir,
+  skillHrefFor, findLoader, planLoader, lintLoader,
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
   childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,

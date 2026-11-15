@@ -8,24 +8,38 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
   <!-- ── Inline loader: resolves .claude/ from any plan depth ── -->
-  <script>
+  <script data-planr-loader="2" data-skill-href="{{skillHref}}" data-skill-subpath="{{skillSubpath}}">
     (function() {
-      var segs = location.pathname.split('/');
-      var idx = segs.indexOf('.claude');
-      if (idx === -1) { /* fallback: try parent dirs */
-        var base = location.pathname.substring(0, location.pathname.lastIndexOf('/'));
-        while (base && !base.endsWith('.claude')) base = base.substring(0, base.lastIndexOf('/'));
-        if (base) idx = base.split('/').indexOf('.claude');
+      // Tried in order until plan-styles.css loads; plan-runtime.js then loads
+      // from the same place. 1: the relative path planr baked (data-skill-href).
+      // 2: the .claude segment in this page's own path. 3: <dir>/.claude/<subpath>
+      // for this page's directory and up to 9 of its ancestors.
+      var me = document.currentScript, sub = me.getAttribute('data-skill-subpath');
+      var hint = me.getAttribute('data-skill-href'), path = location.pathname;
+      var bases = [], seen = {};
+      function add(b) { b = new URL(b, location.href).href; if (!seen[b]) { seen[b] = 1; bases.push(b); } }
+      if (hint) add(hint);
+      var segs = path.split('/'), idx = segs.indexOf('.claude');
+      if (idx !== -1) add(segs.slice(0, idx + 1).join('/') + '/' + sub);
+      for (var d = path.substring(0, path.lastIndexOf('/')), n = 0; n < 10; n++) {
+        add(d + '/.claude/' + sub);
+        if (!d) break;
+        d = d.substring(0, d.lastIndexOf('/'));
       }
-      var root = idx !== -1 ? segs.slice(0, idx + 1).join('/') : '.claude';
-      var skillBase = root + '/{{skillSubpath}}';
-      var link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = skillBase + '/plan-styles.css';
-      document.head.appendChild(link);
-      var script = document.createElement('script');
-      script.src = skillBase + '/plan-runtime.js';
-      document.head.appendChild(script);
+      var i = 0;
+      (function next() {
+        if (i === bases.length) { console.error('html-planning: plan-styles.css not found; tried ' + bases.join(', ')); return; }
+        var base = bases[i++], link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = base + '/plan-styles.css';
+        link.onload = function() {
+          var script = document.createElement('script');
+          script.src = base + '/plan-runtime.js';
+          document.head.appendChild(script);
+        };
+        link.onerror = function() { link.parentNode.removeChild(link); next(); };
+        document.head.appendChild(link);
+      })();
     })();
   </script>
 </head>
