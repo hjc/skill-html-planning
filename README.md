@@ -314,6 +314,7 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 
 - **`planr next --where` / `--has` / `--missing`.** `next` narrows its ranking with the same filters as `query`, composed the same way: a flag on a field the ranking already filters replaces that condition, and every other condition still applies. An empty filtered queue still exits 0 with `"document": null`.
 - **Templates link on-disk code.** A template carries `<link rel="stylesheet" data-planr-href="…">` and `<script data-planr-src="…"></script>` instead of inline code; `~/` resolves against the `.claude` directory and `{page}` expands to the page's name. See `references/template-authoring.md` → Linking code.
+- **`references/grammar.md`.** Every structured argument `planr` parses (addresses, `--into` selectors, `set` and `new --set` keys, filter expressions, sort specs, rankings, template placeholders) now has its grammar in EBNF in one reference. `SKILL.md` keeps a one-line form of each and points there.
 
 ## What's new in 1.4.0
 
@@ -385,7 +386,7 @@ Relative to `skills/html-planning/`:
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
 | `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure and warns on silent rendering traps (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
 | `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). A consuming repo adds its own in `.claude/planr-templates/`. |
-| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md` and `authoring-traps.md`. |
+| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md`, `authoring-traps.md` and `grammar.md` (the EBNF for every structured argument). |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |
