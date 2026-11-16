@@ -55,7 +55,7 @@ Names are `\w+`. Values are substituted through a function replacer, so a `$` in
 | `skillSubpath` | the skill's install path, baked into the loader — **do not repurpose this name** |
 | `body` | the selected body template; consumed before substitution, so it is not a knob |
 
-The shell also declares `lang`, `subtitle`, `status` and `chips`. Reuse those names in a body only if you mean the same thing — they share one namespace.
+The shell also declares `lang`, `subtitle` and `status`. Reuse those names in a body only if you mean the same thing — they share one namespace.
 
 ### How `--set` reaches your variables
 

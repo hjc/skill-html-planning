@@ -50,8 +50,7 @@ After the skill, when asked to produce an HTML plan, Claude uses the skill to ge
   title="Sample Plan — Customer UUID Additions"
   subtitle="Add a UUID field for each customer"
   status="draft"
-  date="2026-05-26"
-  chips="Backend | Database Updates">
+  date="2026-05-26">
 </plan-header>
 
 <main>
@@ -130,7 +129,10 @@ node .claude/skills/html-planning/planr.js new <plan-output-path>.html --title "
 
 # start from a spine, and fill the header in the same command
 node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --template issue \
-  --set status=review --set "chips=Bug | Production"
+  --set status=review
+
+# typed metadata, rendered as header chips
+node .claude/skills/html-planning/planr.js meta plan.html --set owner=hayden
 ```
 
 Then start adding any relevant components, open in your browser and enjoy!
@@ -205,6 +207,8 @@ That is the tour. The authoring reference ships with the skill at [`references/t
 
 Every document can carry a small `<plan-meta>` block of queryable facts (`type`, `status`, `owner`, `area`, …), resolved from the block itself, the header, the file's path, or a schema default — with no block at all still fully queryable. The field vocabulary is data: a shipped `planr-schema.json` plus an optional `.claude/planr-schema.json` a consuming repo adds for its own fields. Read and write it with `planr meta <file>`; see `SKILL.md`'s "Metadata" section for the full contract.
 
+The fields render as chips in the header, beside the status and date. A schema enum can give each value a tone (`danger`, `warn`, `info`, `ok`, `final`, `muted`) and any field can stay out of the header with `"hidden": true`.
+
 ## Editing Plans Cheaply
 
 The same token pressure that makes verbose HTML expensive to *write* also makes it expensive to *edit*. Agents looking to flip a single status have to read the whole plan back into context just to locate and change one string.
@@ -244,6 +248,16 @@ planr replace plan.html resolution --match "hourly" --with "daily"  # rewrite te
 Every command that writes re-verifies the document afterwards and **aborts without writing** if the change would break it — and `planr check` validates one on demand, exiting non-zero on a structural break so CI can gate on it. It also warns, by line, on markup that balances but will not render as written (an unescaped tag in a code block, a diff line with no gutter, a stale `<title>`); `planr check --strict` makes those fatal too.
 
 `planr.js` is zero-dependency and drives the same Web Component DSL the rest of the skill uses. `planr query` and `planr next` read a whole directory of plans by their metadata rather than one file; `planr meta` reads and writes a single document's. The rest of the surface — `new`, `templates`, `tasks`, `add-section`, `rm-section`, `move-section`, and every flag — is in `planr --help` and `SKILL.md`.
+
+## What's new in 1.4.0
+
+**One colour system, and metadata in the header**
+
+- **Tones.** Every coloured mark — a badge, the header status dot, a metadata chip — colours by one of six tones (`danger`, `warn`, `info`, `ok`, `final`, `muted`), each mapped onto the theme's own colours. Badges and status dots look exactly as before.
+- **A schema enum declares a tone per value** (`"tones": { "p0": "danger" }`), and any field can stay out of the header with `"hidden": true` while remaining queryable. An unknown tone, or a tone for an undeclared value, is refused when the schema loads.
+- **Metadata renders in the header.** `<plan-header>` shows each `<plan-meta>` field as a chip — key, value and a tone dot — beside the status and date, and the separate metadata strip is gone. The status chip stays visibly distinct.
+- **`planr meta <file> --stamp`.** `planr` writes each field's tone and hidden flag onto the page, so the browser never needs the schema. `--stamp` brings an existing document in line after a schema change, and `check` warns when a stamp disagrees with the schema.
+- **Free-text header chips are deprecated.** No template writes them and `check` warns on a header carrying them. They still render, so nothing breaks before a repo moves them into schema fields.
 
 ## What's new in 1.3.0
 

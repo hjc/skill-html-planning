@@ -74,13 +74,14 @@ describe('read --body | set-body round-trip (crosses the process boundary)', () 
 describe('new --set (one-command scaffold)', () => {
   it('fills the shipped shell from repeated --set flags, bare and dotted', () => {
     const r = run(['new', P(), '--title', 'Probe', '--set', 'lang=fr',
-      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'header.chips=A | B']);
+      '--set', 'subtitle=SUB', '--set', 'status=review', '--set', 'header.date=2026-01-02']);
     expect(r.code, r.stderr).toBe(0);
     const html = readPlan();
     expect(html).toContain('<html lang="fr">');
     expect(html).toContain('subtitle="SUB"');
     expect(html).toContain('status="review"');
-    expect(html).toContain('chips="A | B"');
+    expect(html).toContain('date="2026-01-02"');
+    expect(html).not.toContain('chips=');      // the shell no longer emits the deprecated attribute
     expect(html).not.toContain('{{');           // every declared var resolved
   });
   it('exits 1 on an unknown key and on an invalid value, by either key shape', () => {
@@ -313,12 +314,12 @@ describe('end-to-end editing flow', () => {
   });
   it('applies every positional assignment `set` is given', () => {
     freshPlan();
-    const r = run(['set', P(), 'header.status=review', 'header.chips=A | B | C', 'overview.status=done']);
+    const r = run(['set', P(), 'header.status=review', 'header.subtitle=A | B | C', 'overview.status=done']);
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout.trim().split('\n')).toHaveLength(3);
     const html = readPlan();
     expect(html).toContain('status="review"');
-    expect(html).toContain('chips="A | B | C"');
+    expect(html).toContain('subtitle="A | B | C"');
     expect(run(['read', P(), 'overview']).stdout).toContain('status="done"');
   });
 });
@@ -587,6 +588,28 @@ describe('meta (write)', () => {
       expect(runAt(staged, ['meta', doc, '--set']).code).toBe(1);
     } finally { rmTmp(root); }
   });
+
+  it('--stamp brings a document in line with a consumer schema, and refuses --set beside it', () => {
+    const root = mkTmp();
+    try {
+      const staged = stageSkill(root, 'skills/html-planning');
+      writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify({
+        fields: { priority: { type: 'enum', values: ['p0', 'p1'], tones: { p0: 'danger' } } },
+      }));
+      const doc = join(root, '.claude', 'plans', 'issues', 'foo.html');
+      expect(runAt(staged, ['new', doc, '--template', 'issue', '--title', 'Quota']).code).toBe(0);
+      // A field written by hand, before stamps existed.
+      writeFileSync(doc, readFileSync(doc, 'utf8').replace('<plan-field key="type">issue</plan-field>',
+        '<plan-field key="type">issue</plan-field>\n    <plan-field key="priority">p0</plan-field>'));
+      const r = runAt(staged, ['meta', '--stamp', doc]);   // valueless flag BEFORE the file
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toBe('stamped priority\n');
+      expect(readFileSync(doc, 'utf8')).toContain('<plan-field key="priority" tone="danger">p0</plan-field>');
+      const both = runAt(staged, ['meta', doc, '--stamp', '--set', 'priority=p1']);
+      expect(both.code).toBe(1);
+      expect(both.stderr).toMatch(/--stamp rewrites stamps only/);
+    } finally { rmTmp(root); }
+  });
 });
 
 it('check reports a metadata problem as a warning, and --strict makes it fatal', () => {
@@ -653,6 +676,25 @@ describe('metadata documentation', () => {
     expect(c).toContain('resolveMeta');
     expect(c).toContain('headerOwnedProblem');
     expect(c).toContain('One writable home per fact');
+    expect(c).toContain('fieldStamp');
+    expect(c).toContain('TONES');
+  });
+
+  it('SKILL.md documents tones, the stamps, the hidden flag and the chips deprecation', () => {
+    const s = skillDoc('SKILL.md');
+    expect(s).toContain('### Tones and the header');
+    for (const t of ['danger', 'warn', 'info', 'ok', 'final', 'muted']) expect(s, t).toContain(`\`${t}\``);
+    expect(s).toContain('"tones"');
+    expect(s).toContain('"hidden"');
+    expect(s).toContain('planr meta <file> --stamp');
+    expect(s).toMatch(/`chips` is deprecated/);
+    expect(s).not.toMatch(/--set "?(header\.)?chips=/);
+  });
+
+  it('the README carries the 1.4.0 release notes and no chips example', () => {
+    const r = readFileSync(join(SKILL_DIR, '..', '..', 'README.md'), 'utf8');
+    expect(r).toContain("## What's new in 1.4.0");
+    expect(r).not.toMatch(/chips="|--set "?chips=/);
   });
 });
 

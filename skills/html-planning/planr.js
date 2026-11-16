@@ -14,6 +14,7 @@
      node planr.js read        <file> <address> [--body] [--text]
      node planr.js meta        <file> [--format text|json]
      node planr.js meta        <file> --set <k>=<v> [...] [--unset <k> ...]
+     node planr.js meta        <file> --stamp
      node planr.js query       <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>]
                                [--rank <name>] [--sort <k[:asc|desc],...>] [--fields <cols>]
                                [--limit N] [--format table|json|tsv|paths]
@@ -868,18 +869,27 @@ const NODE_ATTRS = {
   'plan-subsection': ['id', 'num', 'title', 'status'],
 };
 const SECTION_STATUS = ['todo', 'in-progress', 'done', 'blocked'];
-// The header's own status enum. Distinct from SECTION_STATUS — a plan moves
+// The tone vocabulary. Every coloured mark the runtime draws — a badge, the
+// header status dot, a metadata chip's dot — colours by one of these, and each
+// has a `.dot.tone-<t>` and a `plan-badge.tone-<t>` rule in plan-styles.css
+// mapped onto an existing colour token (a test asserts the sets agree). Fixed:
+// a schema picks among them and never declares a colour.
+const TONES = ['danger', 'warn', 'info', 'ok', 'final', 'muted'];
+// The header's own status enum, and the tone each status's dot draws in.
+// Distinct from SECTION_STATUS — a plan moves
 // draft → review → approved → implemented (or rejected), while a section is a
-// unit of work. Every value here has a `.dot.<value>` rule in plan-styles.css;
-// keep the two sets in step or a status renders with an uncolored dot.
-const HEADER_STATUS = ['draft', 'review', 'approved', 'implemented', 'rejected'];
+// unit of work. A copy of plan-runtime.js's STATUS_TONES (a test asserts the two agree).
+const HEADER_STATUS_TONES = { draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger' };
+const HEADER_STATUS = Object.keys(HEADER_STATUS_TONES);
 function statusEnum(tag) { return tag === 'plan-header' ? HEADER_STATUS : SECTION_STATUS; }
 // The label an EMPTY <plan-badge> renders, per type — a copy of the `labels`
-// map in plan-runtime.js's PlanBadge (a test asserts the two agree). Every type
-// has a `plan-badge[type="…"]` rule in plan-styles.css; an unknown type renders
-// unstyled, so `badge` refuses to write one.
+// map in plan-runtime.js's PlanBadge (a test asserts the two agree). An unknown
+// type renders unstyled, so `badge` refuses to write one.
 const BADGE_LABELS = { decided: 'Decided', open: 'Open', deferred: 'Deferred', high: 'High', medium: 'Medium', low: 'Low' };
 const BADGE_TYPES = Object.keys(BADGE_LABELS);
+// The tone each badge type colours with — a copy of the `tones` map in
+// plan-runtime.js's PlanBadge (a test asserts the two agree).
+const BADGE_TONES = { decided: 'ok', open: 'warn', deferred: 'muted', high: 'ok', medium: 'warn', low: 'danger' };
 // PlanBadge falls back to the type itself for a type it has no label for, and
 // treats a missing type as `open`.
 function badgeLabel(type) { return BADGE_LABELS[type] || type; }
@@ -958,7 +968,7 @@ function resolveConsumerSchemaPath(invoked = process.argv[1] || __filename) {
   return root ? `${root}/${CONSUMER_SCHEMA_FILENAME}` : null;
 }
 const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
-const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label'];
+const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden'];
 const SCHEMA_KEYS = ['fields', 'infer', 'defaults', 'rankings'];
 const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
 const HEADER_SOURCE = /^header:(title|subtitle|status|date|chips)$/;
@@ -1007,9 +1017,32 @@ function parseSchema(data, origin) {
       schemaFail(origin, `field '${name}': \`from\` must be header:title|subtitle|status|date|chips, got '${def.from}'`);
     if (def.label !== undefined && typeof def.label !== 'string')
       schemaFail(origin, `field '${name}': \`label\` must be a string`);
+    // Rendering keys. `tones` gives an enum value its colour in the header chip;
+    // `hidden` keeps a field out of the header while leaving it queryable. Both
+    // are read only from this def, so they are SHAPE checks, made here.
+    if (def.hidden !== undefined && typeof def.hidden !== 'boolean')
+      schemaFail(origin, `field '${name}': \`hidden\` must be true or false`);
+    if (def.tones !== undefined) {
+      if (def.type !== 'enum') schemaFail(origin, `field '${name}': \`tones\` applies only to type enum`);
+      if (def.repeatable === true)
+        schemaFail(origin, `field '${name}': \`tones\` needs a single-valued field — a repeatable one has no single tone`);
+      if (!isPlainObject(def.tones)) schemaFail(origin, `field '${name}': \`tones\` must be an object of value → tone`);
+      for (const [v, t] of Object.entries(def.tones)) {
+        if (!def.values.includes(v))
+          schemaFail(origin, `field '${name}': \`tones\` names '${v}', which is not a declared value — declared: ${def.values.join(', ')}`);
+        if (!TONES.includes(t))
+          schemaFail(origin, `field '${name}': tone '${t}' for '${v}' is not a tone — valid: ${TONES.join(', ')}`);
+      }
+    }
+    // A header-owned field never sits in <plan-meta>: the header draws it.
+    if (def.from !== undefined && (def.tones !== undefined || def.hidden !== undefined))
+      schemaFail(origin, `field '${name}': \`tones\` and \`hidden\` do not apply to a header field — the header renders it in its own chip`);
     // `list` IS `string` + repeatable; normalising here gives one code path for
     // splitting, validating and normalising a multi-valued field.
-    fields[name] = { ...def, repeatable: def.type === 'list' || def.repeatable === true, origin };
+    fields[name] = {
+      ...def, ...(def.tones ? { tones: { ...def.tones } } : {}),
+      repeatable: def.type === 'list' || def.repeatable === true, origin,
+    };
   }
   const infer = [];
   if (data.infer !== undefined) {
@@ -1324,7 +1357,11 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
     messages.push('removed <plan-meta> — no fields left');
   } else {
     const indent = block ? elementIndent(html, block.el) : metaIndent(html);
-    const body = '\n' + order.map(k => `${indent}  <plan-field key="${k}">${valueOf(k)}</plan-field>`).join('\n') + `\n${indent}`;
+    // The whole block is rebuilt, so every field — not only the ones set — is
+    // stamped from the schema as it stands now.
+    const body = '\n' + order.map(k =>
+      `${indent}  <plan-field key="${k}"${stampAttrs(fieldStamp(schema, k, valueOf(k)))}>${valueOf(k)}</plan-field>`,
+    ).join('\n') + `\n${indent}`;
     const rebuilt = `${indent}<plan-meta>${body}</plan-meta>`;
     if (block) out = html.slice(0, lineStart(html, block.el.outerStart)) + rebuilt + html.slice(block.el.outerEnd);
     else { out = insertMetaBlock(html, rebuilt); messages.push('created <plan-meta>'); }
@@ -1333,6 +1370,83 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
   for (const key of drops) messages.push(`unset ${key}`);
   assertIntact(html, out, 'meta');
   return { html: out, message: messages.join('\n') };
+}
+/* ── stamps ───────────────────────────────────────────────
+   The page is schema-free: the runtime cannot read planr-schema.json, so the
+   writer STAMPS what rendering needs onto each <plan-field> — `tone="<t>"` when
+   the schema gives the value a tone, `hidden` when the field opts out of the
+   header. fieldStamp is the ONE stamping rule: planMetaSet and stampMetaFields
+   write through it, and lintMeta compares a document against it. An unknown
+   field gets no stamp (null): it is check's to report, not the writer's to
+   decorate. */
+function fieldStamp(schema, key, raw) {
+  const def = schema && schema.fields[key];
+  if (!def) return null;
+  const v = String(raw).trim();
+  const tone = def.tones && Object.prototype.hasOwnProperty.call(def.tones, v) ? def.tones[v] : null;
+  return { tone, hidden: def.hidden === true };
+}
+function stampAttrs(stamp) {
+  if (!stamp) return '';
+  return (stamp.tone ? ` tone="${stamp.tone}"` : '') + (stamp.hidden ? ' hidden' : '');
+}
+// What a field's stamped attributes say that the schema does not, or '' when
+// they agree. The ONE comparison: lintMeta reports it and `meta --stamp` fixes
+// it. A valueless `tone` attribute counts as no tone.
+function stampDrift(want, attrsRaw, raw) {
+  const t = getAttr(attrsRaw, 'tone');
+  const tone = typeof t === 'string' && t ? t : null;
+  const hidden = getAttr(attrsRaw, 'hidden') !== undefined;
+  const out = [];
+  if (tone && !TONES.includes(tone)) out.push(`tone '${tone}' is not a tone (valid: ${TONES.join(', ')})`);
+  else if (tone !== want.tone)
+    out.push(!want.tone ? `stamped tone '${tone}', but the schema gives '${raw}' no tone`
+      : tone ? `stamped tone '${tone}', but the schema gives '${raw}' the tone '${want.tone}'`
+      : `carries no tone, but the schema gives '${raw}' the tone '${want.tone}'`);
+  if (hidden !== want.hidden)
+    out.push(want.hidden ? 'is not stamped hidden, but the schema hides it' : 'is stamped hidden, but the schema shows it');
+  return out.join('; ');
+}
+// A field's attributes with `tone` and `hidden` replaced by `stamp`. Every
+// other attribute keeps its exact bytes and position; the stamp goes last.
+function restampAttrs(attrsRaw, stamp) {
+  const kept = scanAttrs(attrsRaw).filter(a => a.name !== 'tone' && a.name !== 'hidden')
+    .map(a => attrsRaw.slice(a.nameStart, a.end));
+  return ' ' + kept.join(' ') + stampAttrs(stamp);
+}
+// Brings each schema field's stamp in line, leaving its value bytes untouched.
+// "Already in line" is stampDrift's verdict, never a text comparison, so a tag
+// check calls clean (attributes in another order, other quoting, an extra
+// attribute) is left byte-for-byte. A drifting tag has only `tone`/`hidden`
+// rewritten. Back to front, so a rewrite never shifts a later field's offsets.
+// Returns the keys whose tag changed, in document order.
+function stampMetaFields(html, schema) {
+  const block = readMetaBlock(html);
+  if (!block) return { html, stamped: [] };
+  let out = html;
+  const stamped = [];
+  for (const f of [...block.fields].reverse()) {
+    const stamp = fieldStamp(schema, f.key, f.raw);
+    if (!stamp || !stampDrift(stamp, f.el.attrsRaw, f.raw)) continue;
+    out = out.slice(0, f.el.attrStart) + restampAttrs(f.el.attrsRaw, stamp) + out.slice(f.el.attrEnd);
+    stamped.unshift(f.key);
+  }
+  return { html: out, stamped };
+}
+/* Pure: (html, { schema, sets, unsets }) -> { html, message }. `meta --stamp`:
+   brings every field's stamp in line with the schema without touching a value.
+   It is the remedy check names when the two drift, and the migration for a
+   document written before stamps existed. A document already in line comes
+   back unchanged, so the shell writes nothing. `sets`/`unsets` are taken only
+   to refuse them: a --set already stamps the whole block it rebuilds. */
+function planMetaStamp(html, { schema, sets = [], unsets = [] } = {}) {
+  if (sets.length || unsets.length)
+    throw new PlanError('--stamp rewrites stamps only, and --set/--unset already stamp every field they write — use one or the other');
+  if (!readMetaBlock(html)) return { html, message: 'no <plan-meta> block — nothing to stamp' };
+  const { html: out, stamped } = stampMetaFields(html, schema);
+  if (!stamped.length) return { html, message: 'every field already matches the schema — nothing to stamp' };
+  assertIntact(html, out, 'meta --stamp');
+  return { html: out, message: stamped.map(k => `stamped ${k}`).join('\n') };
 }
 // The indentation a created block takes: whatever <main>'s first element uses,
 // else two spaces (the shell's own body indentation).
@@ -1744,9 +1858,9 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [], sche
     if (key.includes('.')) { nodeSets.push(`${key}=${value}`); continue; }
     const offered = templateVars(composed).filter(v => v.name !== 'body');
     if (!offered.some(v => v.name === key)) {
-      const hint = NODE_ATTRS['plan-header'].includes(key)
-        ? ` — or address the node directly: --set header.${key}=…`
-        : '';
+      const hint = key === 'chips'
+        ? ' — header chips are deprecated; declare a metadata field and use `planr meta --set`'
+        : NODE_ATTRS['plan-header'].includes(key) ? ` — or address the node directly: --set header.${key}=…` : '';
       throw new PlanError(`--set key '${key}' matches no {{placeholder}}${hint}\n` +
         `this template offers: ${offered.map(v => [v.name, varDefault(v)].filter(Boolean).join(' ')).join(', ')}`);
     }
@@ -1754,6 +1868,9 @@ function planNew(shellTpl, bodyTpl, { title, date, skillSubpath, sets = [], sche
   }
   let html = pruneEmptyFields(render(composed, vars));
   if (nodeSets.length) html = planSet(html, nodeSets).html;
+  // A template's declared fields are stamped exactly as `meta --set` would stamp
+  // them, so a fresh scaffold never drifts from the schema it was made under.
+  if (schema) html = stampMetaFields(html, schema).html;
   // A bare fill is substitution, not planSet, so the rendered document is held
   // to the same attribute rules — else `--set status=aproved` writes a typo.
   validateNodes(html, schema);
@@ -1924,7 +2041,11 @@ function lintMeta(html, schema) {
     const owned = headerOwnedProblem(schema, f.key);
     if (owned) { out.push({ line: f.line, text: `${owned}; remove the field from <plan-meta>` }); continue; }
     const problem = validateField(schema, f.key, f.raw);
-    if (problem) out.push({ line: f.line, text: problem });
+    if (problem) { out.push({ line: f.line, text: problem }); continue; }
+    // A valid value's stamp must match the schema, or the header renders what
+    // the schema does not say.
+    const drift = stampDrift(fieldStamp(schema, f.key, f.raw), f.el.attrsRaw, f.raw);
+    if (drift) out.push({ line: f.line, text: `<plan-field key="${f.key}">: ${drift} — run \`planr meta <file> --stamp\`` });
   }
   return out;
 }
@@ -1940,6 +2061,7 @@ function lintPlan(html, schema = null) {
     ...lintSectionRefs(html),
     ...lintBadgeLabels(html),
     ...lintHeadTitle(html),
+    ...lintHeaderChips(html),
   ].sort((a, b) => a.line - b.line);
 }
 // The text-carrying comment a template opens with, left at the top of <main>.
@@ -2055,6 +2177,20 @@ function lintHeadTitle(html) {
   return [{
     line: lineOf(html, head.outerStart),
     text: `<title> reads "${tab}" but the header title is "${plain(title)}" — \`set header.title=…\` rewrites both`,
+  }];
+}
+// Free-text header chips are deprecated: every recurring chip belongs in a
+// schema field, where it is typed, queryable and rendered in the header. An
+// EMPTY attribute is not a chip — every 1.3.0 scaffold carries chips="".
+function lintHeaderChips(html) {
+  const header = findElement(html, 'plan-header');
+  const chips = header && getAttr(header.attrsRaw, 'chips');
+  if (typeof chips !== 'string' || !chips.trim()) return [];
+  return [{
+    line: lineOf(html, header.outerStart),
+    text: `<plan-header chips="${decodeEntities(chips)}"> — free-text chips are deprecated; declare each recurring ` +
+          'chip as a metadata field in .claude/planr-schema.json and write it with ' +
+          '`planr meta <file> --set <field>=<value>`',
   }];
 }
 // Pure: warnings -> the text `check` prints after its structure report ('' for none).
@@ -2622,6 +2758,9 @@ function planSet(html, specs) {
         messages.push(`set <title> = "${value}"`);
       }
     }
+    // Still writable, so automation keeps working until it migrates; check warns too.
+    if (node.tag === 'plan-header' && attr === 'chips' && value.trim())
+      messages.push('note: header chips are deprecated — declare a metadata field in the schema and write it with `planr meta <file> --set`');
   }
   return { html: out, message: messages.join('\n') };
 }
@@ -2967,6 +3106,13 @@ function cmdMeta(file, flags) {
   // `meta f.html --set` print the report and exit 0 — a silent no-op.
   if ([...sets, ...unsets].some(v => v === true))
     throw new PlanError('--set expects <key>=<value> and --unset expects a field name');
+  if (flags.stamp) {
+    const html = read(file);
+    const { html: out, message } = planMetaStamp(html, { schema, sets, unsets });
+    if (out !== html) write(file, out);
+    process.stdout.write(message + '\n');
+    return;
+  }
   if (!sets.length && !unsets.length) {
     process.stdout.write(planMeta(read(file), {
       schema, docPath: file, schemaSources: sources, format: flagValue(flags, 'format') || 'text',
@@ -3138,7 +3284,7 @@ function cmdMoveSection(file, address, flags) {
 // from one whose value follows, so `tasks --all plan.html` consumed the FILENAME
 // as --all's value and then reported a missing <file> — with the file right
 // there on the line. Declaring them keeps flag order free.
-const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict']);
+const BOOLEAN_FLAGS = new Set(['all', 'body', 'text', 'append', 'outline', 'no-outline', 'help', 'strict', 'stamp']);
 // `--text` is the one flag name two commands share with different shapes:
 // `read --text` is a boolean (structure-preserving plain text), `badge --text
 // <T>` takes the replacement label, including `--text ""` to clear one. Scope
@@ -3179,6 +3325,7 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
   read         <file> <address> [--body] [--text]             (--text: structure-preserving plain text)
   meta         <file> [--format text|json]                (resolved metadata, with each value's source)
   meta         <file> --set <k>=<v> [...] [--unset <k> ...]
+  meta         <file> --stamp                             (rewrite each field's tone/hidden stamp from the schema)
   query        <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                           [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                           [--format table|json|tsv|paths] [--strict]
@@ -3277,9 +3424,11 @@ module.exports = {
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
-  PlanError, SECTION_STATUS, HEADER_STATUS, BADGE_TYPES, BADGE_LABELS, PLAN_TAGS, FIELD_TYPES,
+  PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
+  PLAN_TAGS, FIELD_TYPES,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
+  fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,

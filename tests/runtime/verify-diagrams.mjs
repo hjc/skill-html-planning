@@ -1,6 +1,8 @@
 // browser.mjs --script for examples/sample-plan.html. Measures the rendered
 // diagrams on a cold load and three warm reloads, then exercises a re-connect
-// and an empty source in the live page. Every field in `pass` must be true.
+// and an empty source in the live page; then the tone colours of the status
+// dot and the badges, and the header's metadata chips. Every field in `pass`
+// must be true.
 const settle = (page) => page.waitForFunction(
   () => document.querySelectorAll('plan-diagram').length > 0
      && document.querySelectorAll('.diagram-render[aria-busy]').length === 0,
@@ -62,6 +64,72 @@ export default async (page) => {
     return text;
   });
 
+  // Colours come from tones. A probe span resolves each token to the rgb()
+  // string getComputedStyle reports, so every comparison is exact. The sample's
+  // header status is `draft`.
+  const colours = await page.evaluate(() => {
+    const token = (v) => {
+      const p = document.createElement('span');
+      p.style.color = `var(${v})`;
+      document.body.appendChild(p);
+      const c = getComputedStyle(p).color;
+      p.remove();
+      return c;
+    };
+    const badge = (type) => getComputedStyle(document.querySelector(`plan-tab plan-badge[type="${type}"]`)).color;
+    return {
+      statusDot: getComputedStyle(document.querySelector('plan-header .meta-row .meta-chip:first-child .dot')).backgroundColor,
+      badges: {
+        decided: badge('decided'), open: badge('open'), deferred: badge('deferred'),
+        high: badge('high'), medium: badge('medium'), low: badge('low'),
+      },
+      token: { amber: token('--amber'), red: token('--red'), green: token('--green'), muted: token('--text-muted') },
+    };
+  });
+  const b = colours.badges, k = colours.token;
+
+  // Header metadata chips. The runtime is schema-free: it reads only the
+  // attributes planr stamps, so the toned, hidden, duplicate and legacy cases
+  // are injected here rather than written into the sample with stamps the core
+  // schema would dispute.
+  const AREA = 'skills/html-planning, tests/runtime, references, templates, examples';
+  const header = await page.evaluate(() => {
+    const h = document.querySelector('plan-header');
+    const chips = () => [...h.querySelectorAll('.meta-field')].map((c) => {
+      const v = c.querySelector('.meta-value');
+      const dot = c.querySelector('.dot');
+      return {
+        key: c.querySelector('.meta-key').textContent,
+        value: v.textContent,
+        title: c.getAttribute('title'),
+        dot: dot ? getComputedStyle(dot).backgroundColor : null,
+        truncated: v.scrollWidth > v.clientWidth,
+      };
+    });
+    const shipped = {
+      chips: chips(),
+      statusIsSeparate: h.querySelectorAll('.meta-status').length === 1
+        && !h.querySelector('.meta-status').classList.contains('meta-field'),
+      legacy: h.querySelectorAll('.meta-legacy').length,
+      metaDisplay: getComputedStyle(document.querySelector('plan-meta')).display,
+    };
+    document.querySelector('plan-meta').insertAdjacentHTML('beforeend',
+      '<plan-field key="priority" tone="danger">p0</plan-field>'
+      + '<plan-field key="secret" hidden>x</plan-field>'
+      + '<plan-field key="type">duplicate</plan-field>');
+    h.setAttribute('chips', 'Legacy | Two');
+    const parent = h.parentNode, next = h.nextSibling;
+    h.remove();
+    parent.insertBefore(h, next);
+    return {
+      shipped,
+      injected: { chips: chips(), legacy: [...h.querySelectorAll('.meta-legacy')].map((c) => c.textContent) },
+    };
+  });
+  const shippedChips = header.shipped.chips, injectedChips = header.injected.chips;
+  const areaChip = shippedChips.find((c) => c.key === 'area');
+  const priorityChip = injectedChips.find((c) => c.key === 'priority');
+
   const good = (m) => m.svg === m.diagrams && m.errors.length === 0;
   return {
     pass: {
@@ -72,10 +140,25 @@ export default async (page) => {
       wideNaturalSize: cold.wideRendered === cold.wideNatural && cold.wideBodyScroll > cold.wideBodyClient,
       movedRerenders: moved.svg && !moved.error,
       emptySourceLoud: typeof empty === 'string' && empty.includes('not a content error'),
+      statusDotToned: colours.statusDot === k.amber,
+      badgeColoursKept: b.decided === k.green && b.open === k.amber && b.deferred === k.muted
+        && b.high === k.green && b.medium === k.amber && b.low === k.red,
+      metaBlockHidden: header.shipped.metaDisplay === 'none',
+      fieldChipsInOrder: shippedChips.map((c) => c.key).join() === 'type,owner,area'
+        && shippedChips.every((c) => c.dot === null),
+      statusChipSeparate: header.shipped.statusIsSeparate,
+      longValueTruncated: !!areaChip && areaChip.truncated && areaChip.title === `area: ${AREA}`,
+      noLegacyChipsInSample: header.shipped.legacy === 0,
+      tonedChipColoured: !!priorityChip && priorityChip.dot === k.red && priorityChip.value === 'p0',
+      hiddenFieldSkipped: !injectedChips.some((c) => c.key === 'secret'),
+      repeatedKeyOnce: injectedChips.filter((c) => c.key === 'type').map((c) => c.value).join() === 'doc',
+      legacyChipsStillRender: header.injected.legacy.join('|') === 'Legacy|Two',
     },
     cold,
     warm: warm.map((m) => ({ svg: m.svg, errors: m.errors.length })),
     moved,
     empty,
+    colours,
+    header,
   };
 };
