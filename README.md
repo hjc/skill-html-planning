@@ -308,6 +308,13 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 
 `--format json` is the machine surface: one record per document with every resolved field and its source. An empty queue exits 0, so "nothing to do" is distinguishable from "broken".
 
+## What's new in 1.5.0
+
+**`next` takes `query`'s filters, and templates link their code**
+
+- **`planr next --where` / `--has` / `--missing`.** `next` narrows its ranking with the same filters as `query`, composed the same way: a flag on a field the ranking already filters replaces that condition, and every other condition still applies. An empty filtered queue still exits 0 with `"document": null`.
+- **Templates link on-disk code.** A template carries `<link rel="stylesheet" data-planr-href="…">` and `<script data-planr-src="…"></script>` instead of inline code; `~/` resolves against the `.claude` directory and `{page}` expands to the page's name. See `references/template-authoring.md` → Linking code.
+
 ## What's new in 1.4.0
 
 **One colour system, and metadata in the header**
