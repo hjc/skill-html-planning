@@ -78,22 +78,17 @@ function write(file, html) {
   try { fs.writeFileSync(file, html, 'utf8'); }
   catch (e) { throw new PlanError(`cannot write '${file}': ${e.message}`); }
 }
-// A flag's string value, or null when the flag is absent or was passed with no
-// value (parseFlags stores that as `true`). Repeats: the last one wins.
+// A flag's string value, or null when the flag is absent. A value flag given
+// with no value never gets here: parseFlags refuses it. Repeats: the last one wins.
 function flagValue(flags, key) {
   const v = key ? flags[key] : undefined;
   if (v == null || v === true) return null;
   return String(Array.isArray(v) ? v[v.length - 1] : v);
 }
-// Every value a repeatable flag was given, in order. A bare occurrence is a
-// mistake, not an empty value: parseFlags records it as `true`, and dropping
-// it silently is exactly the class of bug COMMAND_FLAGS's 'bool' kind prevents.
+// Every value a repeatable flag was given, in order. parseFlags has already
+// refused a value flag given with no value, so every entry here is a string.
 function flagList(flags, key) {
-  if (flags[key] == null) return [];
-  return [].concat(flags[key]).map((v) => {
-    if (v === true) throw new PlanError(`--${key} was given with no value`);
-    return String(v);
-  });
+  return flags[key] == null ? [] : [].concat(flags[key]).map(String);
 }
 function readStdin() {
   if (process.stdin.isTTY) throw new PlanError('no --file given and no stdin piped; use --file <f> or pipe content on stdin');
@@ -1645,12 +1640,12 @@ function sectionIndent(html) {
 }
 function buildSection(fields, indent, body) {
   for (const attr of NODE_ATTRS['plan-section'])
-    if (fields[attr] != null && fields[attr] !== true) validateAttr('plan-section', attr, fields[attr]);
+    if (fields[attr] != null) validateAttr('plan-section', attr, fields[attr]);
   const attrs = [
     fields.id != null ? `id="${fields.id}"` : null,
-    fields.num != null && fields.num !== true ? `num="${fields.num}"` : null,
-    fields.title != null && fields.title !== true ? `title="${fields.title}"` : null,
-    fields.status != null && fields.status !== true ? `status="${fields.status}"` : null,
+    fields.num != null ? `num="${fields.num}"` : null,
+    fields.title != null ? `title="${fields.title}"` : null,
+    fields.status != null ? `status="${fields.status}"` : null,
   ].filter(Boolean).join(' ');
   // A provided body is spliced verbatim (it owns its own whitespace); otherwise
   // seed an empty paragraph to fill in later via `set-body`.
@@ -1735,26 +1730,43 @@ function spliceAfter(html, idx, block) {
 // one — so a hunk never ends up sharing a line with the markup it displaced.
 function breakAfter(html, idx) { return html[idx] === '\n' ? '' : '\n'; }
 
-/* ── plain text (backs `read --text`) ─────────────────────
+/* ── plain text (backs `read --text` and `wordy`) ─────────
    Structure-preserving text, driven by TEXT_RULES: one block per line,
    headings and section titles as `#` lines at the level the runtime renders
    them, list items as `- ` lines indented by list depth, table rows as cells
    joined with ` | `, and code fenced with its lines verbatim. Text between
-   structural tags is read through visibleText, never re-derived here. */
-function nodeText(html, el, { body = false } = {}) {
+   structural tags is read through visibleUnits, never re-derived here.
+   textLines returns the lines as records — { kind, text, at } with kind
+   'text' | 'heading' | 'code' | 'row' (a row also carries `cells`, each
+   { text, at }) and `at` the source offset of the line's first visible
+   character — so a caller can map a line back to the source. nodeText is
+   their join; the two can never disagree about a line. */
+function textLines(html, el, { body = false } = {}) {
   const sections = new Map();
   walkSections(html, ({ el: s, num, depth }) => sections.set(s.outerStart, { num, depth }));
   const from = body ? el.innerStart : el.outerStart;
   const to = body ? el.innerEnd : el.outerEnd;
   const lines = [];
-  let parts = [], mark = from, lead = '', lists = 0, row = null, inCell = false, cellStart = from;
+  let parts = [], origin = null, mark = from, lead = '', lists = 0, row = null, inCell = false, cellStart = from;
   const collapse = s => s.replace(/\s+/g, ' ').trim();
-  const take = end => { if (end > mark) parts.push(visibleText(html, mark, end)); mark = end; };
-  const emit = more => { for (const l of more || []) if (l) lines.push(l); };
+  const reset = () => { parts = []; origin = null; };
+  const push = (kind, text, at, extra) => lines.push({ kind, text, at, ...extra });
+  const take = end => {
+    if (end > mark) {
+      const units = visibleUnits(html, mark, end);
+      const first = origin === null && units.find(u => u.ch !== ' ');
+      if (first) origin = first.start;
+      parts.push(units.map(u => u.ch).join(''));
+    }
+    mark = end;
+  };
+  // Attribute lines; the header's title is the one that prints as `# …`.
+  const emit = (more, at) => { for (const l of more || []) if (l) push(/^#+ /.test(l) ? 'heading' : 'text', l, at); };
   const flush = () => {
     const t = collapse(parts.join(''));
-    parts = [];
-    if (t) { lines.push((lead || '  '.repeat(lists)) + t); lead = ''; }
+    const at = origin === null ? mark : origin;
+    reset();
+    if (t) { push('text', (lead || '  '.repeat(lists)) + t, at); lead = ''; }
   };
   walkNodes(html, from, to, tok => {
     if (tok.kind === 'text') return;
@@ -1764,6 +1776,7 @@ function nodeText(html, el, { body = false } = {}) {
       const inner = findElement(html, tok.name, tok.start);
       if (!inner) return;
       take(tok.start);
+      if (origin === null) origin = tok.start;
       parts.push(` ${rule.print(tok.attrsRaw, collapse(visibleText(html, inner.innerStart, inner.innerEnd)))} `);
       mark = inner.outerEnd;
       return inner.outerEnd;
@@ -1778,54 +1791,67 @@ function nodeText(html, el, { body = false } = {}) {
       flush();
       const src = decodeEntities(html.slice(code.innerStart, code.innerEnd).replace(/<[^>]*>/g, ''))
         .replace(/^(?:[ \t]*\r?\n)+/, '').replace(/(?:\r?\n[ \t]*)+$/, '');
-      lines.push('```' + rule.info(tok.attrsRaw));
-      if (src) lines.push(...src.split(/\r?\n/));
-      lines.push('```');
-      emit(rule.after && rule.after(tok.attrsRaw));
+      push('code', '```' + rule.info(tok.attrsRaw), tok.start);
+      if (src) for (const l of src.split(/\r?\n/)) push('code', l, tok.start);
+      push('code', '```', tok.start);
+      emit(rule.after && rule.after(tok.attrsRaw), tok.start);
       mark = code.outerEnd;
       return code.outerEnd;
     }
     switch (rule.role) {
       case 'cell':
-        if (open) { parts = []; inCell = !!row; cellStart = tok.end; }
+        if (open) { reset(); inCell = !!row; cellStart = tok.end; }
         else {
           // <plan-def> pairs are skipped individually while inCell (below), so
           // a cell holding a <plan-defs> is rendered from its defs directly —
           // `key: value` per pair, joined `; ` — rather than the generic
           // collapse, which would drop every key (an attribute, not content).
           const defs = findElementsDeep(html, 'plan-def', cellStart, tok.start);
-          row.push(defs.length
+          const text = defs.length
             ? defs.map(d => `${attrText(d.attrsRaw, 'key')}: ${collapse(visibleText(html, d.innerStart, d.innerEnd))}`).join('; ')
-            : collapse(parts.join('')));
-          parts = []; inCell = false;
+            : collapse(parts.join(''));
+          row.push({ text, at: origin === null ? cellStart : origin });
+          reset(); inCell = false;
         }
         return;
       case 'heading':
         if (open) { flush(); return; }
-        { const t = collapse(parts.join('')); parts = []; lead = ''; if (t) lines.push('#'.repeat(Number(tok.name[1])) + ' ' + t); }
+        {
+          const t = collapse(parts.join(''));
+          const at = origin === null ? tok.start : origin;
+          reset(); lead = '';
+          if (t) push('heading', '#'.repeat(Number(tok.name[1])) + ' ' + t, at);
+        }
         return;
     }
     flush();
     if (!open) {
       if (rule.role === 'list') lists = Math.max(lists - 1, 0);
-      if (rule.role === 'row' && row) { if (row.some(Boolean)) lines.push('  '.repeat(lists) + row.join(' | ')); row = null; }
+      if (rule.role === 'row' && row) {
+        if (row.some(c => c.text)) push('row', '  '.repeat(lists) + row.map(c => c.text).join(' | '), row[0].at, { cells: row });
+        row = null;
+      }
       if (rule.role === 'item') lead = '';
       return;
     }
     if (rule.role === 'list') lists++;
     if (rule.role === 'item') lead = '  '.repeat(Math.max(lists - 1, 0)) + '- ';
-    if (rule.role === 'row') { row = []; parts = []; }
+    if (rule.role === 'row') { row = []; reset(); }
     if (rule.role === 'section') {
       const s = sections.get(tok.start);
-      if (lines.length) lines.push('');
-      lines.push(`${'#'.repeat(s ? s.depth + 2 : 2)} ${s ? s.num + '. ' : ''}${attrText(tok.attrsRaw, 'title')}`.trimEnd());
+      if (lines.length) push('text', '', tok.start);
+      push('heading', `${'#'.repeat(s ? s.depth + 2 : 2)} ${s ? s.num + '. ' : ''}${attrText(tok.attrsRaw, 'title')}`.trimEnd(), tok.start);
     }
-    emit(rule.lines && rule.lines(tok.attrsRaw));
+    emit(rule.lines && rule.lines(tok.attrsRaw), tok.start);
     if (rule.lead) lead = rule.lead(tok.attrsRaw);
   });
   take(to);
   flush();
-  return lines.length ? lines.join('\n') + '\n' : '';
+  return lines;
+}
+function nodeText(html, el, opts) {
+  const lines = textLines(html, el, opts);
+  return lines.length ? lines.map(l => l.text).join('\n') + '\n' : '';
 }
 
 /* ── matching by visible text (rm-item, strike, replace) ──
@@ -1853,7 +1879,6 @@ function matchNeedle(flags, verb) {
 }
 // --nth / --all, validated identically for every text-addressed write.
 function matchSelection(flags) {
-  if (flags.nth === true) throw new PlanError('--nth expects a 1-based number');
   const nthRaw = flagValue(flags, 'nth');
   if (nthRaw != null && !/^[1-9]\d*$/.test(nthRaw)) throw new PlanError(`--nth expects a 1-based number, got "${nthRaw}"`);
   if (nthRaw != null && flags.all) throw new PlanError('use only one of --nth / --all');
@@ -2717,10 +2742,12 @@ function cellText(rec, name, blank) {
   if (f.source === null) return blank;
   return Array.isArray(f.value) ? f.value.join(', ') : String(f.value);
 }
-function parseLimit(raw) {
+// A positive whole-number flag value — query's `--limit` and wordy's three
+// limits. null (absent) passes through.
+function parseLimit(raw, flag = 'limit') {
   if (raw === null) return null;
   if (!/^\d+$/.test(String(raw).trim()) || Number(raw) < 1)
-    throw new PlanError(`--limit '${raw}' must be a positive whole number`);
+    throw new PlanError(`--${flag} '${raw}' must be a positive whole number`);
   return Number(raw);
 }
 const projected = (f) => ({ value: f.value, raw: f.raw, source: f.source, type: f.type, rank: f.rank });
@@ -2903,9 +2930,190 @@ function planNext(docs, { schema, target = null, rank = 'default', format = 'tex
   return done(out.join('\n') + '\n');
 }
 
+/* ── wordy: the sentence rule ─────────────────────────────
+   The ONE sentence splitter. Tuned for agent-written prose, not for every
+   human edge case. Backtick code spans and URLs are masked first — same
+   length, so every offset still indexes the original — then a sentence ends
+   at a run of . ! ? (plus any closing quote, bracket or emphasis marker)
+   followed by whitespace and a capital letter or an opening marker: a
+   backtick, *, (, [ or a quote. A '.' that ends e.g., i.e., vs or cf never
+   ends a sentence. Returns the sentences, trimmed. */
+const CODE_SPAN = /(`+)(?:[^`]|(?!\1)`)*?\1/g;
+const URL_SPAN = /\bhttps?:\/\/[^\s<>`]*[^\s<>`.,;:!?)\]'"]/g;
+const SENTENCE_END = /[.!?]+["'”’)\]*_]*(?=\s+[A-Z`*(\["'“‘])/g;
+const NOT_AN_END = /(?:^|[\s(\[])(?:e\.g|i\.e|vs|cf)$/i;
+function maskProse(text) {
+  return text
+    .replace(CODE_SPAN, m => m.replace(/[^`]/g, 'x'))
+    .replace(URL_SPAN, m => 'x'.repeat(m.length));
+}
+function splitSentences(text) {
+  const masked = maskProse(text);
+  const out = [];
+  let from = 0;
+  for (const m of masked.matchAll(SENTENCE_END)) {
+    if (m[0][0] === '.' && NOT_AN_END.test(masked.slice(from, m.index))) continue;
+    const end = m.index + m[0].length;
+    const s = text.slice(from, end).trim();
+    if (s) out.push(s);
+    from = end;
+  }
+  const last = text.slice(from).trim();
+  if (last) out.push(last);
+  return out;
+}
+
+/* ── wordy: the measured units of a plain-text document ───
+   Markdown (and any other plain text) is measured line by line as written.
+   Exempt: YAML front-matter opening the file (`---` … `---` or `...`), fenced
+   code (``` or ~~~, any indentation, closed by a fence of the same character
+   at least as long; an unclosed fence runs to the end), and ATX headings.
+   A table row (a line starting with `|`) yields one unit per non-empty cell,
+   numbered from 1, split on every `|` not escaped as `\|`; its delimiter row
+   yields none. Each unit is { line, column, context, text } — `column` is
+   null and `context` 'prose' outside a table. */
+const FENCE = /^\s*(`{3,}|~{3,})/;
+const FENCE_CLOSE = /^\s*(`{3,}|~{3,})\s*$/;
+const ATX_HEADING = /^\s{0,3}#{1,6}(\s|$)/;
+const TABLE_DELIMITER_CELL = /^:?-+:?$/;
+function markdownUnits(text) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/);
+  const units = [];
+  let i = 0;
+  if (lines[0].trimEnd() === '---') {
+    const close = lines.findIndex((l, k) => k > 0 && /^(---|\.\.\.)\s*$/.test(l));
+    if (close > 0) i = close + 1;
+  }
+  let fence = null;
+  for (; i < lines.length; i++) {
+    const raw = lines[i];
+    if (fence) {
+      const c = FENCE_CLOSE.exec(raw);
+      if (c && c[1][0] === fence[0] && c[1].length >= fence.length) fence = null;
+      continue;
+    }
+    const f = FENCE.exec(raw);
+    if (f) { fence = f[1]; continue; }
+    if (ATX_HEADING.test(raw)) continue;
+    const t = raw.trim();
+    if (!t) continue;
+    if (t.startsWith('|')) {
+      const cells = t.slice(1).replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map(c => c.trim());
+      if (cells.every(c => !c || TABLE_DELIMITER_CELL.test(c))) continue;
+      cells.forEach((c, k) => { if (c) units.push({ line: i + 1, column: k + 1, context: 'table', text: c }); });
+      continue;
+    }
+    units.push({ line: i + 1, column: null, context: 'prose', text: t });
+  }
+  return units;
+}
+
+/* ── wordy: the measured units of an HTML document ────────
+   An HTML document is read through textLines — the read --text rule, never a
+   second tag-to-text conversion — over its <body> (the whole file when it has
+   none, so the <head>'s inline loader is never read as prose). Code and
+   heading lines are exempt; a table row yields one unit per non-empty cell.
+   `line` is the SOURCE line the text starts on, and `section` the dot-path
+   address of the innermost section holding it (null outside every section),
+   so a finding can be acted on with `read`, `replace` or `set-body`. */
+function htmlUnits(html) {
+  const body = findElement(html, 'body');
+  const el = body || { outerStart: 0, outerEnd: html.length, innerStart: 0, innerEnd: html.length };
+  const spans = [];
+  walkSections(html, ({ el: s, addr }) => spans.push({ from: s.outerStart, to: s.outerEnd, addr }));
+  // walkSections is pre-order, so the LAST span holding an offset is the innermost.
+  const sectionAt = (at) => spans.reduce((hit, s) => (s.from <= at && at < s.to ? s.addr : hit), null);
+  const unit = (at, column, context, text) => ({ line: lineOf(html, at), column, context, section: sectionAt(at), text });
+  const units = [];
+  for (const rec of textLines(html, el, { body: true })) {
+    if (rec.kind === 'row') rec.cells.forEach((c, k) => { if (c.text) units.push(unit(c.at, k + 1, 'table', c.text)); });
+    else if (rec.kind === 'text' && rec.text) units.push(unit(rec.at, null, 'prose', rec.text));
+  }
+  return units;
+}
+
+/* ── wordy: measure and report ────────────────────────────
+   Three kinds, and a unit may carry several: `long` (characters), `dense`
+   (sentences) and `run-on` (characters in the longest sentence), each flagged
+   when the measure is ABOVE its limit. Characters are code points. Detection
+   only — wordy never rewrites; the JSON report is the work list a rewriting
+   skill consumes. */
+const charCount = (s) => [...s].length;
+// The one home of kind -> flag -> default -> measure. `measure` takes the text
+// and its sentences.
+const WORDY_KINDS = [
+  { kind: 'long', flag: 'max-chars', max: 600, unit: 'chars', measure: (t) => charCount(t) },
+  { kind: 'dense', flag: 'max-sentences', max: 5, unit: 'sentences', measure: (t, ss) => ss.length },
+  { kind: 'run-on', flag: 'max-sentence-chars', max: 300, unit: 'chars in one sentence',
+    measure: (t, ss) => ss.reduce((n, x) => Math.max(n, charCount(x)), 0) },
+];
+const WORDY_FORMATS = ['text', 'json'];
+const WORDY_PREVIEW = 80;
+// Pure: (text, limits) -> the kinds whose measure exceeds its limit, in
+// WORDY_KINDS order, each { kind, value, max }.
+function measureText(text, limits) {
+  const sentences = splitSentences(text);
+  return WORDY_KINDS.map(k => ({ kind: k.kind, value: k.measure(text, sentences), max: limits[k.kind] }))
+    .filter(m => m.value > m.max);
+}
+const isHtmlPath = (p) => /\.html?$/i.test(p);
+const preview = (t) => (charCount(t) > WORDY_PREVIEW ? [...t].slice(0, WORDY_PREVIEW).join('') + '…' : t);
+
+/* Pure: (docs, opts) -> { report, errors, failure }. `docs` is collectDocs's
+   shape, possibly from several targets: a path seen twice is read once, and
+   the report runs in path order, then line, then column. An `.html`/`.htm`
+   path is read through htmlUnits, anything else through markdownUnits.
+   `limits` is keyed by flag name (`max-chars`, …), each the shell's flagValue read: a string, or null/absent for the default.
+   `errors` is the unreadable-file block for stderr ('' when none); `failure`
+   is the exit-1 message — set when anything is flagged or unreadable, null on
+   a clean run. */
+function planWordy(docs, { limits: given = {}, format = 'text' } = {}) {
+  if (!WORDY_FORMATS.includes(format))
+    throw new PlanError(`unknown --format '${format}' — valid: ${WORDY_FORMATS.join(', ')}`);
+  const limits = Object.fromEntries(WORDY_KINDS.map(k => [k.kind, parseLimit(given[k.flag] ?? null, k.flag) ?? k.max]));
+  const seen = new Set();
+  const unique = docs.filter(d => !seen.has(d.path) && seen.add(d.path))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const skipped = unique.filter(d => d.error).map(d => ({ path: d.path, reason: d.error }));
+  const readable = unique.filter(d => !d.error);
+  const items = [];
+  for (const d of readable) {
+    const units = isHtmlPath(d.path) ? htmlUnits(d.html) : markdownUnits(d.html);
+    const found = units.map(u => ({ u, kinds: measureText(u.text, limits) })).filter(x => x.kinds.length)
+      .sort((a, b) => a.u.line - b.u.line || (a.u.column || 0) - (b.u.column || 0));
+    for (const { u, kinds } of found)
+      items.push({ path: d.path, line: u.line, column: u.column, context: u.context,
+        section: u.section || null, kinds, preview: preview(u.text) });
+  }
+  const counts = Object.fromEntries(WORDY_KINDS.map(k =>
+    [k.kind, items.filter(i => i.kinds.some(x => x.kind === k.kind)).length]));
+  const files = new Set(items.map(i => i.path)).size;
+  let report;
+  if (format === 'json') {
+    report = JSON.stringify({ limits, scanned: readable.length, flagged: items.length, flagged_files: files,
+      counts, items, skipped }, null, 2) + '\n';
+  } else {
+    const limitText = WORDY_KINDS.map(k => `${k.kind} > ${limits[k.kind]} ${k.unit}`).join(', ');
+    const rows = items.map(i => `${i.path}:${i.line}  ${i.context === 'table' ? `table col ${i.column}  ` : ''}` +
+      i.kinds.map(k => `${k.kind}(${k.value})`).join(' '));
+    const summary = items.length
+      ? `${items.length} finding(s) in ${files} of ${readable.length} file(s) — ` +
+        `${WORDY_KINDS.map(k => `${k.kind} ${counts[k.kind]}`).join(', ')} (limits: ${limitText})`
+      : `no findings in ${readable.length} file(s) (limits: ${limitText})`;
+    report = (rows.length ? rows.join('\n') + '\n\n' : '') + summary + '\n';
+  }
+  const errors = skipped.length
+    ? [`${skipped.length} file(s) could not be read:`, ...skipped.map(s => `  ${s.path}: ${s.reason}`)].join('\n') : '';
+  const failure = [
+    items.length && `${items.length} finding(s) in ${files} file(s), listed above`,
+    skipped.length && `${skipped.length} file(s) could not be read, listed above`,
+  ].filter(Boolean).join('; ');
+  return { report, errors, failure: failure ? `wordy: ${failure}` : null };
+}
+
 // Pure: (html, flags) -> the `tasks` report text.
 function planTasks(html, flags) {
-  const want = flags.status && flags.status !== true ? String(flags.status).split(',') : null;
+  const want = flags.status ? String(flags.status).split(',') : null;
   const include = (st) => {
     if (!st) return false;
     if (want) return want.includes(st);
@@ -3241,7 +3449,6 @@ function planReplace(html, address, body, flags = {}) {
   const sel = matchSelection(flags);
   let replacement;
   if ('with' in flags) {
-    if (flags.with === true) throw new PlanError('--with needs a value — pass --with "" to delete the matched text');
     if ('file' in flags) throw new PlanError('use only one of --with / --file');
     replacement = flagValue(flags, 'with');
   } else {
@@ -3377,10 +3584,6 @@ function cmdMeta(file, flags) {
   const { schema, sources } = loadSchema();
   const list = (v) => (v == null ? [] : [].concat(v));
   const sets = list(flags.set), unsets = list(flags.unset);
-  // parseFlags stores a valueless flag as `true`, so dropping those would make
-  // `meta f.html --set` print the report and exit 0 — a silent no-op.
-  if ([...sets, ...unsets].some(v => v === true))
-    throw new PlanError('--set expects <key>=<value> and --unset expects a field name');
   if (flags.stamp) {
     const html = read(file);
     const { html: out, message } = planMetaStamp(html, { schema, sets, unsets });
@@ -3401,8 +3604,11 @@ function cmdMeta(file, flags) {
 /* The one filesystem boundary for a corpus: a directory, a single file, or a
    glob -> [{ path, html } | { path, error }], sorted by path so every run
    orders ties identically. No index and no cache — query reads the documents
-   (contract C6). Paths come back with forward slashes on every platform. */
-function collectDocs(target) {
+   (contract C6). Paths come back with forward slashes on every platform.
+   `accept` picks the files a DIRECTORY contributes (HTML, for query and
+   next); a named file is always taken, and a glob takes whatever it matches. */
+const HTML_FILE = (p) => /\.html$/i.test(p);
+function collectDocs(target, accept = HTML_FILE) {
   const t = String(target).replace(/\\/g, '/').replace(/\/+$/, '') || '.';
   const walk = (dir, take, out = []) => {
     let entries;
@@ -3418,7 +3624,7 @@ function collectDocs(target) {
   let paths;
   if (!hasGlobMeta(t)) {
     if (!fs.existsSync(t)) throw new PlanError(`no such file or directory '${target}'`);
-    paths = fs.statSync(t).isDirectory() ? walk(t, (p) => /\.html$/i.test(p)) : [t];
+    paths = fs.statSync(t).isDirectory() ? walk(t, accept) : [t];
   } else {
     const base = globBase(t);
     if (!fs.existsSync(base)) throw new PlanError(`no such directory '${base}' — from the target '${target}'`);
@@ -3466,6 +3672,20 @@ function cmdNext(target, flags) {
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
   if (flags.strict && skipped.length)
     throw new PlanError(`next --strict: ${skipped.length} file(s) skipped, listed above`);
+}
+
+// The files a directory contributes to `wordy`: prose and plan documents.
+const WORDY_FILE = (p) => /\.(md|markdown|txt|html?)$/i.test(p);
+// Every positional is a target. Every value flag is read through flagValue, so a
+// bare `--max-chars` or `--format` is refused rather than read as "use the default".
+function cmdWordy(targets, flags) {
+  const { report, errors, failure } = planWordy(targets.flatMap(t => collectDocs(t, WORDY_FILE)), {
+    limits: Object.fromEntries(WORDY_KINDS.map(k => [k.flag, flagValue(flags, k.flag)])),
+    format: flagValue(flags, 'format') || 'text',
+  });
+  process.stdout.write(report);
+  if (errors) process.stderr.write(errors + '\n');
+  if (failure) throw new PlanError(failure);   // → stderr + exit 1, as check --strict does
 }
 
 function cmdNew(outPath, flags) {
@@ -3584,6 +3804,7 @@ const COMMAND_FLAGS = {
   query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
                     fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
   next:           { rank: 'value', format: 'value', strict: 'bool' },
+  wordy:          { ...Object.fromEntries(WORDY_KINDS.map(k => [k.flag, 'value'])), format: 'value' },
   set:            {},
   'set-body':     { file: 'value', append: 'bool' },
   prepend:        { file: 'value', into: 'value' },
@@ -3616,8 +3837,11 @@ function assertKnownFlags(cmd, flags) {
 const NEEDS_FILE = ['new', 'list', 'check', 'tasks', 'read', 'meta', 'set', 'set-body', 'prepend', 'append',
   'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
 // The corpus commands take a <dir|glob> in the same slot, so they need their
-// own required-argument message rather than one that says <file>.
-const NEEDS_TARGET = ['query', 'next'];
+// own required-argument message rather than one that says <file>. `wordy`
+// takes one or more of them.
+const NEEDS_TARGET = ['query', 'next', 'wordy'];
+// A flag declared 'value' must be followed by a value; a bare one is refused here,
+// once, for every command, rather than read as "absent" by whichever core meets it.
 function parseFlags(argv, cmd) {
   const flags = {};
   const positional = [];
@@ -3629,6 +3853,8 @@ function parseFlags(argv, cmd) {
       if (!isBooleanFlag(cmd, key) && next !== undefined && !next.startsWith('--')) {
         flags[key] = key in flags ? [].concat(flags[key], next) : next; // repeats accumulate
         i++;
+      } else if (declaresFlag(cmd, key) && COMMAND_FLAGS[cmd][key] === 'value') {
+        throw new PlanError(`--${key} was given with no value`);
       } else {
         flags[key] = true;
       }
@@ -3655,6 +3881,8 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
                           [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                           [--format table|json|tsv|paths] [--strict]
   next         <dir|glob> [--rank <name>] [--format text|json] [--strict]
+  wordy        <file|dir|glob> [...] [--format text|json]  (detects long, dense and run-on lines; exit 1 on any)
+                          [--max-chars N] [--max-sentences N] [--max-sentence-chars N]
   set          <file> <path>=<value> [<path>=<value> ...]
   set-body     <file> <address> [--file <f>] [--append]   (body from --file or stdin)
   prepend      <file> <address> [--file <f>] [--into <sel>]
@@ -3692,11 +3920,11 @@ round-trip: read --body <addr> | edit | set-body <addr>  (byte-exact hunk edit)`
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') { process.stdout.write(USAGE + '\n'); return; }
-  const { flags, positional } = parseFlags(rest, cmd);
-  const file = positional[0];
   // Validate the command first (so an unknown command reports as such), then
   // enforce the <file> arg only for commands that take one.
   try {
+    const { flags, positional } = parseFlags(rest, cmd);
+    const file = positional[0];
     if (!Object.prototype.hasOwnProperty.call(COMMAND_FLAGS, cmd))
       throw new PlanError(`unknown command '${cmd}'\n\n${USAGE}`);
     if (flags.help) { process.stdout.write(USAGE + '\n'); return; }
@@ -3712,6 +3940,7 @@ function main() {
       case 'meta':         return cmdMeta(file, flags);
       case 'query':        return cmdQuery(file, flags);
       case 'next':         return cmdNext(file, flags);
+      case 'wordy':        return cmdWordy(positional, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
       // read as success.
@@ -3745,10 +3974,10 @@ module.exports = {
   buildSection, sectionIds, allSectionIds, walkSections, walkTags, spliceRuns, nestingProblems, LEGAL_PARENTS, INLINE_HOSTS,
   sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
-  walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
+  walkNodes, TEXT_RULES, visibleUnits, visibleText, textLines, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
-  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags,
+  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags, parseFlags,
   NEEDS_FILE, NEEDS_TARGET,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
@@ -3760,6 +3989,7 @@ module.exports = {
   QUERY_FORMATS, planQuery, skipReport,
   globToRegExp, globBase, collectDocs, flagList,
   NEXT_FORMATS, docOutline, planNext,
+  splitSentences, markdownUnits, htmlUnits, measureText, WORDY_KINDS, WORDY_FORMATS, planWordy,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
 };

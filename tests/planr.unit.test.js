@@ -270,7 +270,6 @@ describe('text-addressed matching', () => {
     expect(planr.matchSelection({ nth: '2' })).toEqual({ nth: 2, all: false });
     expect(planr.matchSelection({ all: true })).toEqual({ nth: null, all: true });
     expect(() => planr.matchSelection({ nth: '0' })).toThrow(/--nth expects a 1-based number, got "0"/);
-    expect(() => planr.matchSelection({ nth: true })).toThrow(/--nth expects a 1-based number/);
     expect(() => planr.matchSelection({ nth: '1', all: true })).toThrow(/use only one of --nth \/ --all/);
   });
   it('matchNeedle decodes entities and collapses whitespace in --match', () => {
@@ -341,6 +340,45 @@ describe('visibleUnits (the one tag-to-text rule)', () => {
     const html = '<div>x<plan-section id="k">hidden</plan-section>y</div>';
     const k = planr.findSectionById(html, 'k');
     expect(text(html, [[k.outerStart, k.outerEnd]])).toBe('x y ');
+  });
+});
+
+describe('textLines — read --text as records', () => {
+  const SRC = [
+    '<plan-section id="t" title="T">',
+    '  <p>First',
+    '     second.</p>',
+    '  <h3>Head</h3>',
+    '  <plan-file path="a.py">',
+    'x = 1',
+    '  </plan-file>',
+    '  <table><tr><td>a</td>',
+    '    <td><code>b</code> c</td></tr></table>',
+    '</plan-section>',
+  ].join('\n');
+  const at = (r) => planr.lineOf(SRC, r.at);
+
+  it('returns each read --text line with its kind and the source line it starts on', () => {
+    const recs = planr.textLines(SRC, planr.findSectionById(SRC, 't'));
+    expect(recs.map(r => [r.kind, r.text, at(r)])).toEqual([
+      ['heading', '## 1. T', 1],
+      ['text', 'First second.', 2],
+      ['heading', '### Head', 4],
+      ['code', '```a.py', 5], ['code', 'x = 1', 5], ['code', '```', 5],
+      ['row', 'a | b c', 8],
+    ]);
+    expect(recs[6].cells.map(c => [c.text, at(c)])).toEqual([['a', 8], ['b c', 9]]);
+  });
+
+  it('reads the header title as a heading and its subtitle as text', () => {
+    const html = '<plan-header title="Plan" subtitle="What it covers"></plan-header>';
+    expect(planr.textLines(html, planr.resolveNode(html, ['header'])).map(r => [r.kind, r.text]))
+      .toEqual([['heading', '# Plan'], ['text', 'What it covers']]);
+  });
+
+  it('nodeText is exactly the join of textLines', () => {
+    const el = planr.findSectionById(SRC, 't');
+    expect(planr.nodeText(SRC, el)).toBe(planr.textLines(SRC, el).map(r => r.text).join('\n') + '\n');
   });
 });
 
@@ -426,5 +464,49 @@ describe('spliceRuns', () => {
     expect(out).toBe('a<z>b<z>cc');
     expect(spans.map(s => [s.start, s.end, out.slice(s.start, s.end)])).toEqual([[1, 4, '<z>'], [5, 8, '<z>']]);
     expect(spans[0].run).toBe(runs[1]);
+  });
+});
+
+describe('splitSentences — the one sentence rule', () => {
+  const split = (t) => planr.splitSentences(t);
+
+  it('splits on . ! ? followed by whitespace and a capital', () => {
+    expect(split('One thing. Two things! Three things? Four.')).toEqual(
+      ['One thing.', 'Two things!', 'Three things?', 'Four.']);
+  });
+
+  it('splits before an opening marker: a backtick, *, (, [ or a quote', () => {
+    expect(split('Ends. `code` starts. *bold* too. (paren) too. [link] too. "quote" too.')).toEqual(
+      ['Ends.', '`code` starts.', '*bold* too.', '(paren) too.', '[link] too.', '"quote" too.']);
+  });
+
+  it('carries a closing quote, bracket or emphasis marker with the sentence it ends', () => {
+    expect(split('Wrapped (see X.) Then more.')).toEqual(['Wrapped (see X.)', 'Then more.']);
+    expect(split('**Bold.** Next one.')).toEqual(['**Bold.**', 'Next one.']);
+  });
+
+  it('does not split after e.g., i.e., vs or cf', () => {
+    expect(split('Use one, e.g. The first. Or i.e. This one. A vs. B. See cf. Other.')).toEqual(
+      ['Use one, e.g. The first.', 'Or i.e. This one.', 'A vs. B.', 'See cf. Other.']);
+  });
+
+  it('does not split inside a file name, a version or a path', () => {
+    expect(split('Run planr.js now. Then stop.')).toEqual(['Run planr.js now.', 'Then stop.']);
+    expect(split('Version 1.4.0 ships. Then 1.5.0.')).toEqual(['Version 1.4.0 ships.', 'Then 1.5.0.']);
+    expect(split('See skills/html-planning/planr.js for it. Then go.'))
+      .toEqual(['See skills/html-planning/planr.js for it.', 'Then go.']);
+  });
+
+  it('masks a URL, keeping a sentence end that follows it', () => {
+    expect(split('See https://example.com/a. B. Then go.')).toEqual(['See https://example.com/a.', 'B.', 'Then go.']);  });
+
+  it('masks a backtick span, so a ". " inside one never ends a sentence', () => {
+    expect(split('Mask `a. B` here. Then go.')).toEqual(['Mask `a. B` here.', 'Then go.']);
+    expect(split('Twice ``a. `B` c`` here.')).toEqual(['Twice ``a. `B` c`` here.']);
+  });
+
+  it('keeps lower-case continuations and returns nothing for blank text', () => {
+    expect(split('No split. lower case here.')).toEqual(['No split. lower case here.']);
+    expect(split('   ')).toEqual([]);
   });
 });

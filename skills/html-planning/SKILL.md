@@ -439,6 +439,7 @@ tr:2          the 2nd <tr>, 1-based
 | `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `label`/`tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
 | `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
 | `next` | `<dir\|glob>` | `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
+| `wordy` | `<file\|dir\|glob> …` | `--max-chars N` · `--max-sentences N` · `--max-sentence-chars N` · `--format text\|json` | Detect wordy lines — `long`, `dense`, `run-on` — in Markdown, plain text and HTML plan documents. Detects only; exits **1** when anything is flagged. See "Wordy lines" below. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
 | `prepend` | `<file> <address>` | `--file <f>` · `--into <sel>` | Insert a hunk at the **start** of the addressed body — or of a container inside it. |
@@ -851,6 +852,28 @@ Under `--format json` the `document` object carries the path, the title, every r
 - **`next_section`** — the first of those in document order, or `null`.
 
 **An empty queue is an answer, not a failure.** `next` prints `no document matches ranking '<name>'` and exits **0**, with `"document": null` in JSON, so a caller polling "is there anything to do" can tell *nothing* from *broken*.
+
+## Wordy lines
+
+`planr wordy` measures prose and reports the lines a reader will struggle with. It **detects only** — rewriting is a skill's job, and `--format json` is the work list that skill consumes.
+
+```bash
+planr wordy .claude/context docs/guide.md   # files, directories and globs, as many as you like
+planr wordy plan.html --format json         # the work list
+```
+
+| Kind | Flagged when | Limit (default) |
+|---|---|---|
+| `long` | the line has more characters than the limit | `--max-chars` (600) |
+| `dense` | it has more sentences than the limit | `--max-sentences` (5) |
+| `run-on` | its longest sentence has more characters than the limit | `--max-sentence-chars` (300) |
+
+- **A line may carry several kinds:** `notes.md:182  long(5207) dense(14) run-on(1153)`. Findings are sorted by file, then line, and followed by a summary. **Exit 1 when anything is flagged**, 0 when clean — the `check --strict` convention.
+- **What is read.** An `.html` or `.htm` file goes through the `read --text` conversion; its line number is the source line the text starts on. Anything else is read as plain text, line by line. A directory contributes its `.md`, `.markdown`, `.txt`, `.html` and `.htm` files.
+- **Exempt:** fenced code (backtick or tilde fences), YAML front-matter at the top of a Markdown file, and headings.
+- **Table cells are measured one by one** and reported as `table col N` — a cell can be compacted, never split.
+- **A sentence** ends at `.`, `!` or `?` followed by whitespace and a capital letter or an opening marker (a backtick, `*`, `(`, `[` or a quote), once backtick spans and URLs are masked. `e.g.`, `i.e.`, `vs.` and `cf.` never end one. The rule is tuned for agent-written prose.
+- **`--format json`** carries the limits, the counts and one item per finding: `path`, `line`, `column` (a table cell's, else `null`), `context` (`prose` or `table`), `section` (an HTML finding's section address, else `null`), `kinds` (each `{ kind, value, max }`) and an 80-character `preview`.
 
 ## Escaping Inside Code Components
 
