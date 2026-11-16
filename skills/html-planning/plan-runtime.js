@@ -690,12 +690,47 @@ const components = {
    plan-file / plan-diff render nothing.
 
    Registering after parsing completes fixes every component at once. */
+
+/* ── Template assets ──────────────────────────────────── */
+// A template links an on-disk file instead of inlining code:
+//   <link rel="stylesheet" data-planr-href="…">   <script data-planr-src="…"></script>
+// A path starting `~/` resolves against the `.claude` directory this runtime
+// was loaded from; any other path resolves against the page. `{page}` expands
+// to the page's file name without `.html`. Stylesheets apply in place; scripts
+// run in document order after parsing. A missing file is skipped. A URL
+// already loaded once is not loaded again.
+const _RUNTIME_SRC = document.currentScript ? document.currentScript.src : '';
+function _assetUrl(raw) {
+  const page = decodeURIComponent(location.pathname.split('/').pop()).replace(/\.html?$/i, '');
+  const p = raw.split('{page}').join(page);
+  if (!p.startsWith('~/')) return new URL(p, location.href).href;
+  const at = _RUNTIME_SRC.indexOf('/.claude/');
+  const root = at === -1 ? new URL('.claude/', location.href).href : _RUNTIME_SRC.slice(0, at + 9);
+  return new URL(p.slice(2), root).href;
+}
+function _loadAssets() {
+  const seen = new Set();
+  document.querySelectorAll('link[data-planr-href], script[data-planr-src]').forEach(el => {
+    const isLink = el.tagName === 'LINK';
+    const url = _assetUrl(el.getAttribute(isLink ? 'data-planr-href' : 'data-planr-src'));
+    if (seen.has(url)) { el.remove(); return; }
+    seen.add(url);
+    if (isLink) { el.onerror = () => el.remove(); el.href = url; return; }
+    const s = document.createElement('script');
+    s.src = url;
+    s.async = false;   // dynamic scripts run in insertion order
+    s.onerror = () => s.remove();
+    el.replaceWith(s);
+  });
+}
+
 function _boot() {
   Object.entries(components).forEach(([tag, cls]) => {
     if (!customElements.get(tag)) {
       customElements.define(tag, cls);
     }
   });
+  _loadAssets();
 
   /* ── Syntax highlighting (highlight.js) ────────────── */
   // Defer one frame to let the components transform their innerHTML first.

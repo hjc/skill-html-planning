@@ -167,15 +167,23 @@ describe('shipped docs stand alone', () => {
   // who did not clone the repo.
   // They are read by an LLM, never clicked, so a reference is a bare backtick
   // path: a relative Markdown link only repeats the path it wraps.
-  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md'];
+  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md', 'references/grammar.md'];
+  // A `#anchor` after the path must name one of the target's headings, slugged
+  // the way GitHub slugs them.
+  const slug = (h) => h.trim().toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s/g, '-');
   it('cite only references that ship, as bare paths, and never repo-only tooling', () => {
     let checked = 0;
     for (const doc of docs) {
       const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
       expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
       expect(text, doc).not.toMatch(/\]\((?!https?:|#)[^)]+\)/);
-      for (const rel of new Set([...text.matchAll(/`(references\/[\w.-]+\.md)`/g)].map(m => m[1]))) {
+      for (const cite of new Set([...text.matchAll(/`(references\/[\w.-]+\.md(?:#[\w-]+)?)`/g)].map(m => m[1]))) {
+        const [rel, anchor] = cite.split('#');
         expect(existsSync(join(SKILL_DIR, rel)), `${doc} → ${rel}`).toBe(true);
+        if (anchor) {
+          const heads = [...readFileSync(join(SKILL_DIR, rel), 'utf8').matchAll(/^#{1,6} (.+)$/gm)].map(m => slug(m[1]));
+          expect(heads, `${doc} → ${cite}`).toContain(anchor);
+        }
         checked++;
       }
     }
@@ -909,6 +917,23 @@ describe('next (wiring)', () => {
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("no document matches ranking 'triage' — 6 scanned");
       expect(JSON.parse(runAt(P, ['next', issues, '--rank', 'triage', '--format', 'json']).stdout).document).toBeNull();
+    } finally { rmTmp(root); }
+  });
+
+  it('wires --where, --has and --missing through to the ranked queue', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const all = JSON.parse(runAt(P, ['next', issues, '--format', 'json']).stdout);
+      const w = runAt(P, ['next', issues, '--where', `priority=${all.document.fields.priority.raw}`, '--format', 'json']);
+      expect(w.code, w.stderr).toBe(0);
+      expect(JSON.parse(w.stdout).document.path).toBe(all.document.path);
+      const none = runAt(P, ['next', issues, '--where', 'title~no-such-title-anywhere', '--format', 'json']);
+      expect(none.code, none.stderr).toBe(0);
+      expect(JSON.parse(none.stdout).document).toBeNull();
+      expect(runAt(P, ['next', issues, '--has', 'priority']).code).toBe(0);
+      expect(runAt(P, ['next', issues, '--missing', 'priority']).code).toBe(0);
+      expect(runAt(P, ['next', issues, '--has']).code).toBe(1);
     } finally { rmTmp(root); }
   });
 

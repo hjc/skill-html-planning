@@ -308,6 +308,14 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 
 `--format json` is the machine surface: one record per document with every resolved field and its source. An empty queue exits 0, so "nothing to do" is distinguishable from "broken".
 
+## What's new in 1.5.0
+
+**`next` takes `query`'s filters, and templates link their code**
+
+- **`planr next --where` / `--has` / `--missing`.** `next` narrows its ranking with the same filters as `query`, composed the same way: a flag on a field the ranking already filters replaces that condition, and every other condition still applies. An empty filtered queue still exits 0 with `"document": null`.
+- **Templates link on-disk code.** A template carries `<link rel="stylesheet" data-planr-href="…">` and `<script data-planr-src="…"></script>` instead of inline code; `~/` resolves against the `.claude` directory and `{page}` expands to the page's name. See `references/template-authoring.md` → Linking code.
+- **`references/grammar.md`.** Every structured argument `planr` parses (addresses, `--into` selectors, `set` and `new --set` keys, filter expressions, sort specs, rankings, template placeholders) now has its grammar in EBNF in one reference. `SKILL.md` keeps a one-line form of each and points there.
+
 ## What's new in 1.4.0
 
 **One colour system, and metadata in the header**
@@ -334,7 +342,7 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 - The field vocabulary is **data**, not built in. `planr-schema.json` beside the skill ships the core set; a repo extends or replaces it with `.claude/planr-schema.json`, in the same format.
 - `planr meta` reads a document's resolved metadata and where each value came from, and writes it with `--set` / `--unset`. An unknown field or an out-of-schema value is refused.
 - **`planr query <dir|glob>`** filters, sorts and projects a whole corpus — `--where`, `--has`, `--missing`, `--sort`, `--fields`, `--limit`, and `--format table|json|tsv|paths`. Comparisons read the order the schema declares. No index and no cache: 142 documents scan in about a quarter of a second.
-- **`planr next <dir>`** hands one document to an agent: the top-ranked path, its metadata, and the section addresses to act on it. `--format json` is the machine surface for both commands, and it carries the whole metadata record per result, not just the printed columns.
+- **`planr next <dir>`** hands one document to an agent, taking `query`'s filters: the top-ranked path, its metadata, and the section addresses to act on it. `--format json` is the machine surface for both commands, and it carries the whole metadata record per result, not just the printed columns.
 - Rankings are named `where` + `order` presets declared in the schema, so each repo defines its own queue. `--rank <name>` applies one; an explicit flag overrides it per field.
 - `planr check` reports metadata problems as warnings, and `check --strict` gates them.
 
@@ -378,7 +386,7 @@ Relative to `skills/html-planning/`:
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
 | `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure and warns on silent rendering traps (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
 | `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). A consuming repo adds its own in `.claude/planr-templates/`. |
-| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md` and `authoring-traps.md`. |
+| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md`, `authoring-traps.md` and `grammar.md` (the EBNF for every structured argument). |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |
