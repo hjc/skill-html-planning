@@ -343,3 +343,30 @@ describe('visibleUnits (the one tag-to-text rule)', () => {
     expect(text(html, [[k.outerStart, k.outerEnd]])).toBe('x y ');
   });
 });
+
+describe('globToRegExp() / globBase()', () => {
+  const m = (g, s) => planr.globToRegExp(g).test(s);
+
+  it('lets ** cross directories, including none, and keeps * and ? inside one', () => {
+    expect(m('.claude/plans/**/*.html', '.claude/plans/issues/a.html')).toBe(true);
+    expect(m('.claude/plans/**/*.html', '.claude/plans/a.html')).toBe(true);
+    expect(m('.claude/plans/**/tdds/*.html', '.claude/plans/features/x/tdds/m1.html')).toBe(true);
+    expect(m('.claude/plans/*.html', '.claude/plans/issues/a.html')).toBe(false);
+    expect(m('a/?.html', 'a/b.html')).toBe(true);
+    expect(m('a/?.html', 'a/bc.html')).toBe(false);
+  });
+
+  it('treats every other metacharacter literally', () => {
+    expect(m('a/b.html', 'a/b.html')).toBe(true);
+    expect(m('a/b.html', 'a/bXhtml')).toBe(false);   // the dot is a dot
+    expect(m('a/(x).html', 'a/(x).html')).toBe(true);
+    expect(m('a/x+y.html', 'a/x+y.html')).toBe(true);
+  });
+
+  it('bases the walk at the longest metacharacter-free prefix', () => {
+    expect(planr.globBase('.claude/plans/**/tdds/*.html')).toBe('.claude/plans');
+    expect(planr.globBase('.claude/plans/issues/*.html')).toBe('.claude/plans/issues');
+    expect(planr.globBase('*.html')).toBe('.');
+    expect(planr.globBase('a\\b\\*.html')).toBe('a/b');
+  });
+});

@@ -288,6 +288,12 @@ class PlanBadge extends HTMLElement {
 /* ── plan-table ───────────────────────────────────────── */
 class PlanTable extends HTMLElement {} // Pure CSS wrapper
 
+/* ── plan-meta / plan-field ───────────────────────────── */
+// The document's own metadata: an understated strip below the header, one chip
+// per field. Pure CSS, like plan-defs: the key renders from `key` via ::before.
+class PlanMeta extends HTMLElement {}  // CSS strip; keys render from attr(key)
+class PlanField extends HTMLElement {} // key rendered by CSS attr(key)
+
 /* ── plan-defs / plan-def ─────────────────────────────── */
 // A sub-record of name → value pairs. Pure CSS: plan-styles.css lays the pairs
 // out as table rows and renders each key from its `key` attribute via ::before.
@@ -620,6 +626,8 @@ const components = {
   'plan-phase':      PlanPhase,
   'plan-badge':      PlanBadge,
   'plan-table':      PlanTable,
+  'plan-meta':       PlanMeta,
+  'plan-field':      PlanField,
   'plan-defs':       PlanDefs,
   'plan-def':        PlanDef,
   'plan-file':       PlanFile,
