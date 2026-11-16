@@ -1,18 +1,13 @@
 {
   "fields": {
-    "title":      { "type": "string", "from": "header:title" },
-    "type":       { "type": "enum", "values": ["prd", "spec", "design", "tdd", "issue", "map", "doc"] },
-    "status":     { "type": "enum", "values": ["draft", "review", "approved", "implemented", "rejected"], "from": "header:status" },
-    "date":       { "type": "date", "from": "header:date" },
-    "owner":      { "type": "string" },
-    "area":       { "type": "list" },
-    "blocked-by": { "type": "path", "repeatable": true }
+    "title":           { "type": "string", "from": "header:title" },
+    "type":            { "type": "enum", "values": ["issue", "tdd"] },
+    "status":          { "type": "enum", "values": ["draft", "review", "approved", "implemented", "rejected"], "from": "header:status" },
+    "date":            { "type": "date", "from": "header:date" },
+    "reference-paths": { "type": "list", "label": "paths" },
+    "blocked-by":      { "type": "path", "repeatable": true, "blocks": true, "label": "blocked by" }
   },
-  "infer": [
-    { "match": "/issues/", "set": { "type": "issue" } },
-    { "match": "/tdds/", "set": { "type": "tdd" } },
-    { "match": "/prd-[^/]*\\.html$", "set": { "type": "prd" } }
-  ],
-  "defaults": { "type": "doc" },
+  "infer": [],
+  "defaults": {},
   "rankings": {}
 }

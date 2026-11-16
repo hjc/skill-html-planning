@@ -152,7 +152,7 @@ node .claude/skills/html-planning/planr.js new plan.html --title "New Plan" --te
   --set status=review
 
 # typed metadata, rendered as header chips
-node .claude/skills/html-planning/planr.js meta plan.html --set owner=hayden
+node .claude/skills/html-planning/planr.js meta plan.html --set reference-paths=server/app,client
 ```
 
 Then start adding any relevant components, open in your browser and enjoy!
@@ -225,9 +225,23 @@ That is the tour. The authoring reference ships with the skill at [`references/t
 
 ### Metadata
 
-Every document can carry a small `<plan-meta>` block of queryable facts (`type`, `status`, `owner`, `area`, …), resolved from the block itself, the header, the file's path, or a schema default — with no block at all still fully queryable. The field vocabulary is data: a shipped `planr-schema.json` plus an optional `.claude/planr-schema.json` a consuming repo adds for its own fields. Read and write it with `planr meta <file>`; see `SKILL.md`'s "Metadata" section for the full contract.
+Every document can carry a small `<plan-meta>` block of queryable facts (`type`, `status`, `reference-paths`, `blocked-by`, …), resolved from the block itself, the header, the file's path, or a schema default — with no block at all still fully queryable. The field vocabulary is data: a shipped `planr-schema.json` plus an optional `.claude/planr-schema.json` a consuming repo adds for its own fields. Read and write it with `planr meta <file>`; see `SKILL.md`'s "Metadata" section for the full contract.
 
-The fields render as chips in the header, beside the status and date. A schema enum can give each value a tone (`danger`, `warn`, `info`, `ok`, `final`, `muted`) and any field can stay out of the header with `"hidden": true`.
+The fields render as chips in the header, beside the status and date. A schema enum can give each value a tone (`danger`, `warn`, `info`, `ok`, `final`, `muted`), any field can name its chip with `"label"`, and any field can stay out of the header with `"hidden": true`.
+
+#### First-time setup
+
+The shipped core knows two document types, `issue` and `tdd`, and infers and defaults nothing. Declare your own types, path rules and defaults in `.claude/planr-schema.json`:
+
+```json
+{
+  "fields":   { "type": { "type": "enum", "values": ["prd", "spec", "tdd", "issue"] } },
+  "infer":    [{ "match": "/issues/", "set": { "type": "issue" } }, { "match": "/tdds/", "set": { "type": "tdd" } }],
+  "defaults": { "type": "spec" }
+}
+```
+
+A consumer field replaces the core one of the same name, so a redeclared `type` lists every type you use. See `SKILL.md`'s "First-time setup".
 
 ## Editing Plans Cheaply
 
@@ -286,6 +300,7 @@ Every flag is in `planr --help` and `SKILL.md`.
 planr query .claude/plans/issues --where 'status!=implemented' --sort priority
 planr query .claude/plans/issues --rank default --format json   # a schema-declared ranking, for an agent
 planr next  .claude/plans/issues --format json                  # the top document and the sections to act on
+planr query .claude/plans/issues --where blocked=false          # leave out what an open blocked-by target holds
 ```
 
 `--format json` is the machine surface: one record per document with every resolved field and its source. An empty queue exits 0, so "nothing to do" is distinguishable from "broken".
@@ -301,6 +316,10 @@ planr next  .claude/plans/issues --format json                  # the top docume
 - **`planr meta <file> --stamp`.** `planr` writes each field's tone and hidden flag onto the page, so the browser never needs the schema. `--stamp` brings an existing document in line after a schema change, and `check` warns when a stamp disagrees with the schema.
 - **Fix: `meta --set` escapes field values.** `&`, `<` and `>` in a value are written as entities, so a value can no longer become live markup; reads decode them back to the exact original, and `check` warns on a raw `<` already on disk.
 - **Free-text header chips are deprecated.** No template writes them and `check` warns on a header carrying them. They still render, so nothing breaks before a repo moves them into schema fields.
+- **A lean core schema.** `type` ships `issue` and `tdd` only, `infer` and `defaults` ship empty, `owner` is gone and `area` is renamed `reference-paths`. A repo declares its own document types and path rules — see "First-time setup". A field's `from` may view only `header:title`, `header:status` or `header:date`.
+- **Labels render.** A field's schema `label` is stamped onto its `<plan-field>` and shown in the header chip in place of the key; `meta --stamp` and `check` cover it like a tone.
+- **Blockers.** A document is blocked while a `blocked-by` target exists and is not `implemented` or `rejected`. Filter with `--where blocked=false` or a ranking's `"blocked": { "eq": false }`; `query --format json` and `next` show what holds a document. A missing target never blocks, and `check` warns on it.
+- **Unknown flags are refused.** A flag the command does not read is an error naming the valid ones, instead of being ignored. The dead `list --outline` flag is gone (listing headings is the default; `--no-outline` remains).
 
 ## What's new in 1.3.0
 

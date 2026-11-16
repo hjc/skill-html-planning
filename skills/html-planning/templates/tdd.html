@@ -25,14 +25,15 @@
          · Anti-Patterns is the tempting wrong approach and the invariant it
            violates — the section that saves the most executor time.
 
-       Declares its metadata defaults up front: type=tdd is fixed, and area
-       is fillable at scaffold time (--set area=server/app,client). Add or
+       Declares its metadata defaults up front: type=tdd is fixed, and
+       reference-paths is fillable at scaffold time
+       (--set reference-paths=server/app,client). Add or
        change other fields afterward with `planr meta`.
        ════════════════════════════════════════════════════════ -->
 
   <plan-meta>
     <plan-field key="type">tdd</plan-field>
-    <plan-field key="area">{{area:}}</plan-field>
+    <plan-field key="reference-paths">{{reference-paths:}}</plan-field>
   </plan-meta>
 
   <plan-section id="overview" title="Overview">
