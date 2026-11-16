@@ -167,15 +167,23 @@ describe('shipped docs stand alone', () => {
   // who did not clone the repo.
   // They are read by an LLM, never clicked, so a reference is a bare backtick
   // path: a relative Markdown link only repeats the path it wraps.
-  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md', 'references/schema-setup.md'];
+  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md', 'references/schema-setup.md', 'references/grammar.md'];
+  // A `#anchor` after the path must name one of the target's headings, slugged
+  // the way GitHub slugs them.
+  const slug = (h) => h.trim().toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s/g, '-');
   it('cite only references that ship, as bare paths, and never repo-only tooling', () => {
     let checked = 0;
     for (const doc of docs) {
       const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
       expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
       expect(text, doc).not.toMatch(/\]\((?!https?:|#)[^)]+\)/);
-      for (const rel of new Set([...text.matchAll(/`(references\/[\w.-]+\.md)`/g)].map(m => m[1]))) {
+      for (const cite of new Set([...text.matchAll(/`(references\/[\w.-]+\.md(?:#[\w-]+)?)`/g)].map(m => m[1]))) {
+        const [rel, anchor] = cite.split('#');
         expect(existsSync(join(SKILL_DIR, rel)), `${doc} → ${rel}`).toBe(true);
+        if (anchor) {
+          const heads = [...readFileSync(join(SKILL_DIR, rel), 'utf8').matchAll(/^#{1,6} (.+)$/gm)].map(m => slug(m[1]));
+          expect(heads, `${doc} → ${cite}`).toContain(anchor);
+        }
         checked++;
       }
     }
