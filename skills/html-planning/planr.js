@@ -793,6 +793,12 @@ function decodeEntities(s) {
   });
 }
 
+// The write half of decodeEntities for element content: & first, then the two
+// angle brackets, so a value can never open markup.
+function escapeText(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // Mirrors `_sectionNumber` in plan-runtime.js — the rendered number is derived
 // from document position, NOT stored. A `num` attribute overrides this level; a
 // DOTTED override is the complete number, so ancestors do not re-prefix it
@@ -1360,7 +1366,7 @@ function planMetaSet(html, { schema, sets = [], unsets = [] } = {}) {
     // The whole block is rebuilt, so every field — not only the ones set — is
     // stamped from the schema as it stands now.
     const body = '\n' + order.map(k =>
-      `${indent}  <plan-field key="${k}"${stampAttrs(fieldStamp(schema, k, valueOf(k)))}>${valueOf(k)}</plan-field>`,
+      `${indent}  <plan-field key="${k}"${stampAttrs(fieldStamp(schema, k, valueOf(k)))}>${escapeText(valueOf(k))}</plan-field>`,
     ).join('\n') + `\n${indent}`;
     const rebuilt = `${indent}<plan-meta>${body}</plan-meta>`;
     if (block) out = html.slice(0, lineStart(html, block.el.outerStart)) + rebuilt + html.slice(block.el.outerEnd);
@@ -1492,6 +1498,80 @@ const PLAN_TAGS = [
 // to tags whose end tag is never optional in HTML — adding <p>/<li> here would
 // false-positive on legal markup.
 const BALANCED_HTML_TAGS = ['table', 'thead', 'tbody', 'tfoot', 'tr'];
+
+/* ── nesting (backs `check`'s parent-legality rule) ───────
+   Balanced is not well-formed: a <tr> spliced into a cell's <code> balances,
+   and the browser drops it. LEGAL_PARENTS says where each table tag may open;
+   INLINE_HOSTS names the phrasing-only elements no block may open inside. The
+   block set is derived — <table>, every LEGAL_PARENTS key, and every plan-*
+   component whose TEXT_RULES kind is not inline — so a new block component is
+   covered with no edit here. <a> is not a host: HTML lets it wrap flow content.
+   Read by checkStructure, so assertIntact refuses a write that introduces a
+   problem, and by planReplace, which refuses one on any document. */
+const LEGAL_PARENTS = {
+  thead: ['table'], tbody: ['table'], tfoot: ['table'],
+  tr: ['table', 'thead', 'tbody', 'tfoot'],
+  td: ['tr'], th: ['tr'],
+};
+const INLINE_HOSTS = new Set(['code', 'span', 'strong', 'em', 'b', 'i', 's', 'u', 'small', 'sub', 'sup',
+  'mark', 'kbd', 'samp', 'var', 'abbr', 'q', 'cite', 'label',
+  // Inline plan-* components are read from TEXT_RULES, the one tag classification —
+  // never listed here, so a new inline component is a host with no edit.
+  ...Object.keys(TEXT_RULES).filter(t => t.startsWith('plan-') && TEXT_RULES[t].kind === 'inline')]);
+const NESTING_BLOCKS = new Set(['table', ...Object.keys(LEGAL_PARENTS),
+  ...Object.keys(TEXT_RULES).filter(t => t.startsWith('plan-') && TEXT_RULES[t].kind !== 'inline')]);
+// Code content: a literal tag inside one is lintCodeBodies' to report, not this rule's.
+const NESTING_OPAQUE = new Set(Object.keys(TEXT_RULES).filter(t => TEXT_RULES[t].kind === 'code'));
+// No balance contract: </td> is optional, and an inline host left open is
+// dropped when its parent closes rather than reported.
+const NESTING_SOFT = new Set(['td', 'th', 'pre', ...INLINE_HOSTS]);
+const NESTING_TRACKED = new Set([...BALANCED_HTML_TAGS, ...NESTING_SOFT]);
+/* Pure: html -> [{ index, tag, parent, text }], in document order. One problem
+   per offending element — nothing inside a reported element is checked again,
+   so a spliced row reads as one problem rather than one per cell. Each stack
+   entry carries its nearest inline host and whether checks are off below it, so
+   every tag costs O(1). */
+function nestingProblems(html) {
+  const problems = [];
+  const stack = [];   // { tag, soft, host, quiet }
+  const keep = n => { const t = n.toLowerCase(); return NESTING_TRACKED.has(t) || t.startsWith('plan-'); };
+  walkTags(html, keep, ({ name, kind, index }) => {
+    const tag = name.toLowerCase();
+    const soft = NESTING_SOFT.has(tag);
+    if (kind === 'close') {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].tag === tag) { stack.length = i; return; }
+        if (soft && !stack[i].soft) return;   // a soft close never reaches past a hard element
+      }
+      return;
+    }
+    if (tag === 'td' || tag === 'th') {        // a new cell ends an unclosed one
+      for (let i = stack.length - 1; i >= 0 && stack[i].soft; i--)
+        if (stack[i].tag === 'td' || stack[i].tag === 'th') { stack.length = i; break; }
+    }
+    const top = stack.length ? stack[stack.length - 1] : null;
+    let bad = false;
+    if (!(top && top.quiet)) {
+      const parent = top ? top.tag : null;
+      if (tag in LEGAL_PARENTS && !LEGAL_PARENTS[tag].includes(parent)) {
+        bad = true;
+        problems.push({ index, tag, parent,
+          text: `<${tag}> inside ${parent ? `<${parent}>` : 'no element'} — a <${tag}> belongs directly in ` +
+                `${LEGAL_PARENTS[tag].map(t => `<${t}>`).join(', ')}; the browser drops or moves it` });
+      } else if (top && top.host && NESTING_BLOCKS.has(tag)) {
+        bad = true;
+        problems.push({ index, tag, parent: top.host,
+          text: `<${tag}> inside inline <${top.host}> — a block element cannot sit in running text` });
+      }
+    }
+    if (kind === 'open') stack.push({
+      tag, soft,
+      host: INLINE_HOSTS.has(tag) ? tag : (top ? top.host : null),
+      quiet: bad || NESTING_OPAQUE.has(tag) || !!(top && top.quiet),
+    });
+  });
+  return problems;
+}
 
 // Top-level ids only, and SHALLOW BY DESIGN: this backs assertIntact, which
 // must flag an accidental document collapse but NOT a nested child that a
@@ -1819,6 +1899,34 @@ function assertOneElement(html, runs, raw, verb) {
     `narrow the match (${runContext(html, bad)})`);
 }
 
+// Splice `replacement` over every run, ascending, and report where each landed
+// in the OUTPUT: the one place the offsets are computed.
+function spliceRuns(html, runs, replacement) {
+  let out = '', at = 0;
+  const spans = [];
+  for (const run of [...runs].sort((a, b) => a.start - b.start)) {
+    out += html.slice(at, run.start);
+    spans.push({ run, start: out.length, end: out.length + replacement.length });
+    out += replacement;
+    at = run.end;
+  }
+  return { out: out + html.slice(at), spans };
+}
+
+// A replacement is markup spliced into a text run, so it can open a block
+// element inside the run's own parent: balanced, and dropped by the browser.
+// Refused on ANY document — assertIntact only refuses a write that turns a
+// passing document failing, and a document already failing must not get worse.
+function assertSplicedNesting(before, out, spans) {
+  for (const p of nestingProblems(out)) {
+    const hit = spans.find(s => s.start <= p.index && p.index < s.end);
+    if (!hit) continue;
+    throw new PlanError(`replace would open <${p.tag}> inside <${p.parent}> — the match sits in <${p.parent}> ` +
+      `(${runContext(before, hit.run)}), and the replacement is spliced there verbatim. To rewrite a whole row, ` +
+      'use `rm-item --match` then `append --into tbody`, or `read --body` → edit → `set-body`. Aborted; no changes written.');
+  }
+}
+
 // Remove an item element. Alone on its line(s), the whole line goes with it —
 // indentation and newline included; sharing a line, only the element does.
 function removeItem(html, el) {
@@ -1933,7 +2041,7 @@ function planList(html, flags = {}) {
    which counts literal strings and so miscounts a commented example, balanced,
    in the way that never reads as a failure. assertIntact gates every write on
    this alone: a warning never blocks a write. */
-function checkStructure(html) {
+function checkStructure(html, { nesting = true } = {}) {
   const watched = new Set(BALANCED_HTML_TAGS);
   const problems = [];
   const counts = {};
@@ -1960,6 +2068,10 @@ function checkStructure(html) {
   });
   for (const open of stack)
     problems.push({ line: lineOf(html, open.index), text: `<${open.tag}> is never closed` });
+  // Parent legality reads a balanced document only: past a break, every
+  // ancestor chain is a guess.
+  const misnested = nesting && !problems.length ? nestingProblems(html) : [];
+  for (const p of misnested) problems.push({ line: lineOf(html, p.index), text: p.text });
 
   // Ids are address segments and browser anchor targets, so a duplicate makes
   // one of the two unreachable — a silent failure `list` alone won't surface.
@@ -1984,14 +2096,17 @@ function checkStructure(html) {
       report: [
         `structure check FAILED — ${problems.length} problem(s)`,
         ...problems.map(p => `  line ${p.line}: ${p.text}`),
-        `An unescaped '<' in code content is the usual cause — escape < > & inside`,
-        `<plan-file>, <plan-diff>, <pre><code> and inline <code>.`,
+        ...(misnested.length
+          ? ['A misnested tag is usually a `replace` whose match sat inside an inline element —',
+             'rewrite the element with `read --body` → edit → `set-body`.']
+          : [`An unescaped '<' in code content is the usual cause — escape < > & inside`,
+             `<plan-file>, <plan-diff>, <pre><code> and inline <code>.`]),
       ].join('\n'),
     };
   }
   return {
     ok: true,
-    report: ['structure OK — every <plan-*> and table tag is balanced', sectionLine, `tags: ${tagLine}`].join('\n'),
+    report: ['structure OK — every <plan-*> and table tag is balanced and legally nested', sectionLine, `tags: ${tagLine}`].join('\n'),
   };
 }
 
@@ -2040,6 +2155,10 @@ function lintMeta(html, schema) {
     // outrank it. Reported instead of the value check, not as well as it.
     const owned = headerOwnedProblem(schema, f.key);
     if (owned) { out.push({ line: f.line, text: `${owned}; remove the field from <plan-meta>` }); continue; }
+    if (html.slice(f.el.innerStart, f.el.innerEnd).includes('<')) {
+      out.push({ line: f.line, text: `<plan-field key="${f.key}">: raw \`<\` in the value is live markup — rewrite it with \`planr meta <file> --set ${f.key}=…\`` });
+      continue;
+    }
     const problem = validateField(schema, f.key, f.raw);
     if (problem) { out.push({ line: f.line, text: problem }); continue; }
     // A valid value's stamp must match the schema, or the header renders what
@@ -2403,7 +2522,9 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null } = {}) 
       skipped.push({ path: doc.path, reason: 'not a plan document — no <plan-*> markup' });
       continue;
     }
-    if (!checkStructure(doc.html).ok) {
+    // Balance only: a misnested element leaves findElement — and so every
+    // metadata read — intact, and a rendering defect must not hide a document.
+    if (!checkStructure(doc.html, { nesting: false }).ok) {
       skipped.push({ path: doc.path, reason: 'structure does not balance — run `planr check` on it' });
       continue;
     }
@@ -2976,9 +3097,8 @@ function planReplace(html, address, body, flags = {}) {
     raw, sel, noun: 'text run', where, describe: r => runContext(html, r),
   });
   assertOneElement(html, picked, raw, 'replace');
-  let out = html;
-  for (const r of [...picked].sort((a, b) => b.start - a.start))
-    out = out.slice(0, r.start) + replacement + out.slice(r.end);
+  const { out, spans } = spliceRuns(html, picked, replacement);
+  assertSplicedNesting(html, out, spans);
   assertIntact(html, out, 'replace');
   return {
     html: out,
@@ -3420,7 +3540,8 @@ module.exports = {
   scanAttrs, getAttr, setAttrRaw, flagValue,
   findElement, findElements, findElementsDeep, findElementById, findSectionById,
   childSections, resolveNode, findSectionDeep, canonicalAddress, ownElements, ownHeadings, resolveContainer, textOf,
-  buildSection, sectionIds, allSectionIds, walkSections, walkTags, sectionNumber, decodeEntities,
+  buildSection, sectionIds, allSectionIds, walkSections, walkTags, spliceRuns, nestingProblems, LEGAL_PARENTS, INLINE_HOSTS,
+  sectionNumber, decodeEntities,
   trimEdgeBlank, fitBlock, childIndent, indentAt, lineOf,
   walkNodes, TEXT_RULES, visibleUnits, visibleText, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,

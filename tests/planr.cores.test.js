@@ -364,6 +364,42 @@ describe('planCheck', () => {
   });
 });
 
+describe('planCheck — parent legality', () => {
+  const SPLICED = [
+    '<plan-section id="rows" title="Rows">',
+    '  <plan-table><table><tbody>',
+    '    <tr><td><code><tr><td><code>other.html</code></td><td>replaced</td></tr></code></td><td>a note</td></tr>',
+    '  </tbody></table></plan-table>',
+    '</plan-section>',
+  ].join('\n');
+  it('fails a balanced row spliced into a cell, naming the line and the inline parent', () => {
+    const { ok, report, warnings } = planr.planCheck(SPLICED);
+    expect(ok).toBe(false);
+    expect(report).toMatch(/line 3: <tr> inside <code> — a <tr> belongs directly in <table>, <thead>, <tbody>, <tfoot>/);
+    expect(report).toContain('A misnested tag is usually a `replace` whose match sat inside an inline element');
+    expect(warnings).toEqual([]);
+  });
+  it('fails a block component inside inline code', () => {
+    const html = '<plan-section id="s">\n  <p><code><plan-callout type="info">x</plan-callout></code></p>\n</plan-section>';
+    expect(planr.planCheck(html).report)
+      .toMatch(/line 2: <plan-callout> inside inline <code> — a block element cannot sit in running text/);
+  });
+  it('says so on a sound document', () => {
+    expect(planr.planCheck(RICH).report).toContain('structure OK — every <plan-*> and table tag is balanced and legally nested');
+    expect(planr.planCheck(DEFS_DOC).ok).toBe(true);
+  });
+  it('reports nesting only once the tags balance', () => {
+    const { report } = planr.planCheck(SPLICED.replace('</plan-table>', ''));
+    expect(report).toMatch(/<plan-table> is never closed/);
+    expect(report).not.toMatch(/inside <code>/);
+    expect(report).toContain("An unescaped '<' in code content is the usual cause");
+  });
+  it('refuses a write that would nest a row in a row, on a document that passes check', () => {
+    expect(() => planr.planInsert(RICH, 'map', '<tr><td>new</td></tr>', { where: 'end', into: 'tr:1' }))
+      .toThrow(/insert would break the plan[\s\S]*<tr> inside <tr>/);
+  });
+});
+
 // A plan body placed inside <main>, below a header: the body's first line is line 3.
 const inMain = (body) => ['<plan-header title="T" status="draft"></plan-header>', '<main>', body, '</main>'].join('\n');
 
@@ -728,7 +764,7 @@ describe('planInsert', () => {
     expect(html).toContain('<ul><li>Nested list.</li></ul>');   // untouched
   });
   it('--into accepts <tag>:<n> and #<id>', () => {
-    const byNth = planr.planInsert(RICH, 'map', '<tr><td>new</td></tr>', { where: 'end', into: 'tr:1' });
+    const byNth = planr.planInsert(RICH, 'map', '<td>new</td>', { where: 'end', into: 'tr:1' });
     expect(byNth.message).toContain('→ tr:1 of 2');
     const byId = planr.planInsert(RICH, 'map', '<tbody></tbody>', { where: 'end', into: '#tickets' });
     expect(byId.message).toContain('→ #tickets');
@@ -1069,6 +1105,73 @@ describe('planReplace', () => {
     expect(() => planr.planReplace(PROSE, 'resolution', '\n', { match: 'on-call' }))
       .toThrow(/the replacement is empty — pass --with "" to delete the matched text/);
     expect(() => planr.planReplace(PROSE, 'resolution', 'x', {})).toThrow(/replace requires --match <text>/);
+  });
+});
+
+describe("planReplace — a replacement never opens a block inside its match's parent", () => {
+  const ROWS = (extra = '') => [
+    '<plan-header title="T" status="draft"></plan-header>',
+    '<main>',
+    '  <plan-section id="rows" title="Rows">',
+    '    <plan-table><table><tbody>',
+    '      <tr><td><a href="some-issue.html"><code>some-issue.html</code></a></td><td>a note</td></tr>',
+    '      <tr><td>plain cell</td><td>b</td></tr>',
+    '    </tbody></table></plan-table>',
+    extra,
+    '  </plan-section>',
+    '</main>',
+  ].join('\n');
+  const ROW = '<tr><td><code>other.html</code></td><td>replaced</td></tr>';
+
+  it("refuses a row replacing a filename inside a cell's <code>, naming the inline parent", () => {
+    expect(() => planr.planReplace(ROWS(), 'rows', ROW, { match: 'some-issue.html' }))
+      .toThrow(/^replace would open <tr> inside <code> — the match sits in <code> \(line 5: \[some-issue\.html\] a note\)[\s\S]*`rm-item --match` then `append --into tbody`[\s\S]*Aborted; no changes written\.$/);
+  });
+  it('refuses it on a document that already fails check, where assertIntact lets writes through', () => {
+    const dirty = ROWS('    <p><code><plan-callout type="info">old damage</plan-callout></code></p>');
+    expect(planr.planCheck(dirty).ok).toBe(false);
+    expect(() => planr.planReplace(dirty, 'rows', ROW, { match: 'some-issue.html' }))
+      .toThrow(/^replace would open <tr> inside <code>/);
+  });
+  it("refuses a row replacing a cell's own text, naming the cell", () => {
+    expect(() => planr.planReplace(ROWS(), 'rows', ROW, { match: 'plain cell' }))
+      .toThrow(/^replace would open <tr> inside <td> — the match sits in <td> \(line 6: /);
+  });
+  it('refuses the whole write under --all when one run of several would misnest', () => {
+    const two = ROWS('    <p>See some-issue.html for the history.</p>');
+    expect(() => planr.planReplace(two, 'rows', '<plan-callout type="info">moved</plan-callout>', { match: 'some-issue.html', all: true }))
+      .toThrow(/^replace would open <plan-callout> inside <code> — the match sits in <code> \(line 5: /);
+  });
+});
+
+describe("planReplace — a replacement never opens a block inside its match's parent (guards)", () => {
+  // Baseline-green: these pass before and after the refusal lands, and pin
+  // what it must NOT refuse.
+  const ROWS = [
+    '<plan-header title="T" status="draft"></plan-header>',
+    '<main>',
+    '  <plan-section id="rows" title="Rows">',
+    '    <plan-table><table><tbody>',
+    '      <tr><td><a href="some-issue.html"><code>some-issue.html</code></a></td><td>a note</td></tr>',
+    '    </tbody></table></plan-table>',
+    '  </plan-section>',
+    '</main>',
+  ].join('\n');
+  it('accepts plain text inside the <code>, inline markup in a cell, and a block component in a cell', () => {
+    expect(planr.planReplace(ROWS, 'rows', null, { match: 'some-issue.html', with: 'other.html' }).html)
+      .toContain('<code>other.html</code>');
+    expect(planr.planReplace(ROWS, 'rows', null, { match: 'a note', with: 'see <code>x</code>' }).html)
+      .toContain('<td>see <code>x</code></td>');
+    const defs = planr.planReplace(ROWS, 'rows', '<plan-defs><plan-def key="k">v</plan-def></plan-defs>', { match: 'a note' }).html;
+    expect(planr.planCheck(defs).ok).toBe(true);
+  });
+  it("strike and rm-item share the matcher but cannot misnest: <s> is inline, and rm-item removes a whole item", () => {
+    const struck = planr.planStrike(ROWS, 'rows', { match: 'some-issue.html' }).html;
+    expect(struck).toContain('<code><s>some-issue.html</s></code>');
+    expect(planr.planCheck(struck).ok).toBe(true);
+    const removed = planr.planRmItem(ROWS, 'rows', { match: 'some-issue.html' }).html;
+    expect(removed).not.toContain('some-issue.html');
+    expect(planr.planCheck(removed).ok).toBe(true);
   });
 });
 
@@ -1658,6 +1761,43 @@ describe('planMetaSet', () => {
     expect(() => set('<plan-header title="T"></plan-header>', ['owner=hayden']))
       .toThrow(/no <main>/);
   });
+
+  describe('field values are escaped on disk and decoded on read', () => {
+    const SRC = 'From: a <b> & c';
+    it('writes & < > as entities, so the value is never live markup', () => {
+      const { html } = set(BARE, [`owner=${SRC}`]);
+      expect(html).toContain('<plan-field key="owner">From: a &lt;b&gt; &amp; c</plan-field>');
+      expect(html).not.toContain('<b>');
+      expect(planr.planCheck(html, schema()).warnings).toEqual([]);
+    });
+
+    it('round-trips the exact original string through resolveMeta', () => {
+      const { html } = set(BARE, [`owner=${SRC}`]);
+      const rec = planr.resolveMeta(html, { schema: schema() });
+      expect(rec.fields.owner.value).toBe(SRC);
+      expect(rec.fields.owner.raw).toBe(SRC);
+    });
+
+    it('does not double-escape when a later --set rebuilds the block', () => {
+      const first = set(BARE, [`owner=${SRC}`]).html;
+      const { html } = set(first, ['type=issue']);
+      expect(html).toContain('From: a &lt;b&gt; &amp; c</plan-field>');
+      expect(planr.resolveMeta(html, { schema: schema() }).fields.owner.value).toBe(SRC);
+    });
+
+    it('keeps a literal entity-looking value literal', () => {
+      const { html } = set(BARE, ['owner=a &amp; b']);
+      expect(planr.resolveMeta(html, { schema: schema() }).fields.owner.value).toBe('a &amp; b');
+    });
+
+    it('lint warns on a raw `<` already on disk in a field value', () => {
+      const doc = ['<plan-header title="T"></plan-header>', '<main>', '  <plan-meta>',
+        '    <plan-field key="owner">a <b>x</b></plan-field>', '  </plan-meta>', '</main>'].join('\n');
+      const { ok, warnings } = planr.planCheck(doc, schema());
+      expect(ok).toBe(true);
+      expect(warnings.map(w => w.text).join('\n')).toMatch(/<plan-field key="owner">.*raw `<`/);
+    });
+  });
 });
 
 describe('planMetaSet — header-owned fields (C9)', () => {
@@ -2111,6 +2251,15 @@ describe('queryDocs', () => {
       { path: 'a/broken.html', reason: 'structure does not balance — run `planr check` on it' },
       { path: 'a/gone.html', reason: 'unreadable — ENOENT' },
     ]);
+  });
+
+  it('keeps a document whose only problem is nesting — its metadata still resolves', () => {
+    const html = QDOC({ priority: 'p0' }).replace('</plan-section>',
+      '<p><code><plan-callout type="info">x</plan-callout></code></p></plan-section>');
+    expect(planr.planCheck(html).ok).toBe(false);
+    const q = planr.queryDocs([{ path: 'a/nested.html', html }], { schema: QS });
+    expect(q.skipped).toEqual([]);
+    expect(q.matched).toBe(1);
   });
 
   it('sorts on rank, puts nulls last in BOTH directions, and is stable on a tie', () => {

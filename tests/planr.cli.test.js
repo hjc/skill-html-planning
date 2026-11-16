@@ -113,6 +113,14 @@ describe('check', () => {
     expect(bad.code).toBe(1);
     expect(bad.stderr).toContain('structure check FAILED');
   });
+  it('exits 1 on a balanced but misnested document', () => {
+    freshPlan();
+    writeFileSync(P(), readPlan().replace('</main>',
+      '  <p><code><plan-callout type="info">x</plan-callout></code></p>\n</main>'));
+    const bad = run(['check', P()]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain('<plan-callout> inside inline <code>');
+  });
 });
 
 describe('templates', () => {
@@ -426,6 +434,21 @@ describe('text-addressed writes', () => {
     expect(both.stderr).toContain('use only one of --with / --file');
     expect(run(['--help']).stdout).toContain('replace');
     expect(skill()).toContain('| `replace` |');
+  });
+  it("replace exits 1 rather than splice a row into a cell's <code>, and leaves the file untouched", () => {
+    freshPlan();
+    const rows = join(dir, 'rows.html');
+    writeFileSync(rows, '\n    <plan-table><table><tbody>\n' +
+                        '      <tr><td><code>some-issue.html</code></td><td>a note</td></tr>\n' +
+                        '    </tbody></table></plan-table>\n  ');
+    expect(run(['set-body', P(), 'overview', '--file', rows]).code).toBe(0);
+    const before = readPlan();
+    const row = join(dir, 'row.html');
+    writeFileSync(row, '<tr><td><code>other.html</code></td><td>replaced</td></tr>\n');
+    const r = run(['replace', P(), 'overview', '--match', 'some-issue.html', '--file', row]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('replace would open <tr> inside <code>');
+    expect(readPlan()).toBe(before);
   });
 });
 
@@ -910,5 +933,18 @@ describe('querying documentation', () => {
     expect(c).toContain('compileWhere');
     expect(c).toContain('queryDocs');
     expect(c).toContain('NEEDS_TARGET');
+  });
+});
+
+describe('nesting documentation', () => {
+  const doc = (f) => readFileSync(join(SKILL_DIR, f), 'utf8');
+  it('SKILL.md documents the parent-legality check and the replace refusal', () => {
+    const skill = doc('SKILL.md');
+    expect(skill).toContain('a legal parent for every balanced tag');
+    expect(skill).toContain('refuses a replacement that would open a block element inside the match');
+    expect(skill).toContain('**`replace` rewrites text inside an element, never the element.**');
+  });
+  it('the authoring-traps reference carries the row-rewrite trap', () => {
+    expect(doc('references/authoring-traps.md')).toMatch(/^## Rewriting a table row$/m);
   });
 });

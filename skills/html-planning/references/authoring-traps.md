@@ -1,6 +1,6 @@
 # Authoring traps
 
-Failure modes hit while authoring real documents with `planr`. Each one leaves `planr check` green,
+Failure modes hit while authoring real documents with `planr`. Most leave `planr check` green,
 because the markup stays balanced — the document is wrong, not broken.
 
 ## Ids carried in table rows
@@ -37,6 +37,22 @@ the rows back out and count them rather than re-reading the prose. The failure m
 duplicated row, which reads as correct and is invisible to `planr check`. Diffing the extracted name
 sets of two tables also proves a claim that they cover the same things. Whenever you are asked to
 reconcile a count, answer from an extraction.
+
+## Rewriting a table row
+
+**Rewrite a row as a row, never as a text run.** A row cited by its filename carries that filename
+in a `<code>` cell, so `replace --match "<slug>.html"` matches the cell text and splices the
+replacement there — a `<tr>` inside `<code>`, balanced, and dropped by the browser. `replace`
+refuses that splice and `check` fails on a document carrying one; the rewrite still needs the
+right command:
+
+```
+planr rm-item <file> <section> --match "<slug>.html"
+planr append  <file> <section> --into tbody --file row.html
+```
+
+`rm-item` takes the whole `<tr>` its text sits in, so the cell's `<code>` does not matter to it.
+`append` puts the row last; to keep its position, `read --body` → edit → `set-body`.
 
 ## Escaping code bodies
 
