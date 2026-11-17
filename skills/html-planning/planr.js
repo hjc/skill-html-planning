@@ -2680,6 +2680,11 @@ function findCycles(graph) {
 function cycleText(cycle) {
   return `blocker cycle: ${[...cycle, cycle[0]].join(' → ')} — each waits on the next, so none can close`;
 }
+// The field bound to a header attribute (`from: header:<attr>`), or null. The
+// field's NAME is the schema's to choose, so nothing here hardcodes one.
+function headerField(schema, attr) {
+  return Object.keys(schema.fields).find(n => schema.fields[n].from === `header:${attr}`) || null;
+}
 // A condition's field definition: the schema's own, or the derived `blocked`
 // when the schema declares a field that feeds it. ONE lookup for every place a
 // condition, a sort key or a column is named, so the derived column is
@@ -2696,7 +2701,7 @@ function conditionNames(schema) {
    shape plus the targets that hold it. `lookup(path)` returns a target's html,
    or null when there is no such file — the one thing the core cannot know. */
 function resolveBlocked(rec, { schema, lookup }) {
-  const statusKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:status') || null;
+  const statusKey = headerField(schema, 'status');
   const blockers = [];
   for (const { target } of blockerTargets(schema, rec)) {
     const p = blockerPath(rec.path, target);
@@ -2892,12 +2897,14 @@ function parseSort(schema, spec, label = '--sort') {
    matched". `problems` ([{ path, text }]) lists every scanned document, matched
    or not, that breaks a schema-declared corpus rule — a `pairs` rule — and then
    every cycle among the scanned documents' blockers, on the cycle's first path.
+   `records` is every scanned document's record, matched or not, in path order.
    Each result also carries `derived` — `{ blocked }` when the schema declares a
    `blocks` field, else `{}`. A blocker target is read from `docs` when the scan
    holds it, else through `readDoc(path)`, which returns its html or null when
    there is no such file; each target is read once per run. */
 function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc = () => null } = {}) {
   const results = [];
+  const records = [];
   const skipped = [];
   const problems = [];
   const seen = new Map(docs.map(d => [String(d.path).replace(/\\/g, '/'), d.error ? null : d.html]));
@@ -2922,6 +2929,7 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     }
     const rec = resolveMeta(doc.html, { schema, docPath: doc.path });
     rec.derived = blocking ? { blocked: resolveBlocked(rec, { schema, lookup }) } : {};
+    records.push(rec);
     for (const p of pairProblems(schema, rec)) problems.push({ path: doc.path, text: p.text });
     if (blocking) {
       graph.set(docKey(doc.path), blockerTargets(schema, rec).map(b => docKey(blockerPath(doc.path, b.target))));
@@ -2946,7 +2954,9 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     }
     return 0;
   });
-  return { results: limit === null ? results : results.slice(0, limit), skipped, problems, scanned: docs.length, matched };
+  return {
+    results: limit === null ? results : results.slice(0, limit), records, skipped, problems, scanned: docs.length, matched,
+  };
 }
 
 /* Pure: the columns to print. `path`, then every schema field at least one
@@ -3007,6 +3017,30 @@ function applyRanking(schema, name, { where = {}, sort = null } = {}) {
 
 const QUERY_FORMATS = ['table', 'json', 'tsv', 'paths'];
 
+/* Pure: the selection every corpus command shares — the CLI's filters composed
+   with a named ranking, then queryDocs. Compile the two halves SEPARATELY so
+   each condition is attributed to where it actually came from: merged under
+   one label, a bad `--where` literal read as the ranking's fault and sent the
+   reader to edit the schema. `filtered` says whether any CLI filter was given. */
+function runQuery(docs, {
+  schema, where = [], has = [], missing = [], sort = null, rank = null, limit = null, readDoc = () => null,
+} = {}) {
+  const cli = parseWhere(schema, { where, has, missing });
+  const plan = applyRanking(schema, rank, { where: cli, sort });
+  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
+  const q = queryDocs(docs, {
+    schema,
+    where: [
+      ...compileWhere(schema, cli, 'filter'),
+      ...compileWhere(schema, preset, `ranking '${rank}' where`),
+    ],
+    order: plan.sort === null ? [] : parseSort(schema, plan.sort, sort === null && rank !== null ? `ranking '${rank}' order` : '--sort'),
+    limit: parseLimit(limit),
+    readDoc,
+  });
+  return { ...q, filtered: Object.keys(cli).length > 0 };
+}
+
 
 /* Pure: ([{ path, html }], opts) -> the `query` report. `table` is the default
    and is what a human reads; `json` is what an orchestrator dispatches from and
@@ -3020,22 +3054,7 @@ function planQuery(docs, {
     throw new PlanError(`unknown --format '${format}' — valid: ${QUERY_FORMATS.join(', ')}`);
   if (format === 'paths' && fields !== null)
     throw new PlanError('--format paths prints paths only — drop --fields, or pick table, tsv or json');
-  const cli = parseWhere(schema, { where, has, missing });
-  const plan = applyRanking(schema, rank, { where: cli, sort });
-  // Compile the two halves SEPARATELY so each condition is attributed to where
-  // it actually came from. Merged under one label, a bad `--where` literal read
-  // as the ranking's fault and sent the reader to edit the schema.
-  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
-  const q = queryDocs(docs, {
-    schema,
-    where: [
-      ...compileWhere(schema, cli, 'filter'),
-      ...compileWhere(schema, preset, `ranking '${rank}' where`),
-    ],
-    order: plan.sort === null ? [] : parseSort(schema, plan.sort),
-    limit: parseLimit(limit),
-    readDoc,
-  });
+  const q = runQuery(docs, { schema, where, has, missing, sort, rank, limit, readDoc });
   const use = fields === null ? defaultFields(schema, q.results) : parseFields(schema, fields);
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
 
@@ -3134,27 +3153,14 @@ function planNext(docs, {
     `unknown ranking '${rank}' — declared: ${Object.keys(schema.rankings).join(', ') || '(none)'}` +
     (rank === 'default' ? "\nnext is driven by a schema-declared ranking: declare one named 'default', or pass --rank <name>" : ''));
   // The same filters as `query`, composed with the ranking the same way: a flag
-  // on a field the ranking filters replaces that condition, and each half is
-  // compiled under its own label so a bad literal is blamed on its real source.
-  const cli = parseWhere(schema, { where, has, missing });
-  const plan = applyRanking(schema, rank, { where: cli });
-  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
-  const q = queryDocs(docs, {
-    schema,
-    where: [
-      ...compileWhere(schema, cli, 'filter'),
-      ...compileWhere(schema, preset, `ranking '${rank}' where`),
-    ],
-    order: parseSort(schema, plan.sort, `ranking '${rank}' order`),
-    limit: 1,
-    readDoc,
-  });
+  // on a field the ranking filters replaces that condition.
+  const q = runQuery(docs, { schema, where, has, missing, rank, limit: 1, readDoc });
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
   const top = q.results[0] || null;
   const outline = top ? docOutline(docs.find(d => d.path === top.path).html) : null;
   // The headline is whichever field the schema binds to the header's title —
   // `from: header:title`, not a field NAME, so nothing here is hardcoded.
-  const titleKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:title') || null;
+  const titleKey = headerField(schema, 'title');
   const document = top ? {
     path: top.path,
     title: titleKey && top.fields[titleKey].source ? top.fields[titleKey].value : null,
@@ -3171,7 +3177,7 @@ function planNext(docs, {
   }, null, 2) + '\n');
 
   if (!document) return done(`no document matches ranking '${rank}'` +
-    (Object.keys(cli).length ? ' and the given filters' : '') + ` — ${q.scanned} scanned\n`);
+    (q.filtered ? ' and the given filters' : '') + ` — ${q.scanned} scanned\n`);
   const set = Object.entries(top.fields).filter(([k, f]) => f.source && k !== titleKey);
   const kw = Math.max(...set.map(([k]) => k.length));
   const vw = Math.max(...set.map(([, f]) => f.raw.length));
@@ -3193,6 +3199,122 @@ function planNext(docs, {
     out.push('', `no open sections — ${document.sections.length} section(s), none carrying an unfinished status`);
   }
   return done(out.join('\n') + '\n');
+}
+
+/* ── index: a corpus written into a document ──────────────
+   `planr index` renders query's selection as a <plan-table> inside one section
+   of another document, so a page opened from file:// — where fetch is blocked
+   — carries the rolled-up view in its own markup. The table carries
+   `data-planr-index`, naming its source relative to the document; a re-run
+   replaces exactly that table, in place, and leaves the section's prose alone.
+   Every href is relative to the document written into. */
+const INDEX_ATTR = 'data-planr-index';
+// Pure: the relative href from the document at `fromDoc` to `to`. Both are
+// written the same way — both absolute, or both relative to one directory — so
+// no working directory is consulted.
+function relativeHref(fromDoc, to) {
+  const a = docKey(fromDoc).split('/').slice(0, -1);
+  const b = docKey(to).split('/');
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return [...a.slice(i).map(() => '..'), ...b.slice(i)].join('/') || '.';
+}
+// escapeText plus the double quote, for a value written into an attribute.
+function escapeAttr(s) { return escapeText(s).replace(/"/g, '&quot;'); }
+// A column's header: the field's schema label, else its name.
+function indexHeading(schema, name) {
+  const def = name === 'path' ? null : conditionDef(schema, name);
+  return escapeText(def && def.label ? def.label : name);
+}
+// The default columns: the title, then every other field some matched document
+// resolves, in schema order. `path` stands in for the title when the schema
+// binds no field to it.
+function indexColumns(schema, results, titleKey) {
+  const rest = defaultFields(schema, results).filter(c => c !== 'path' && c !== titleKey);
+  return [titleKey || 'path', ...rest];
+}
+// One cell. The title and the path link to the document. A `path` field's
+// value is relative to the document carrying it — as an href is relative to
+// the file that carries it, and as blockerPath resolves a blocker — so each
+// item links to its target, labelled with the target's title when the scan
+// holds it, else with the value as written. Everything else is query's own
+// cell text, escaped. An href's segments are percent-encoded, so a `#` or `%`
+// in a file name stays part of the path.
+function indexCell(rec, name, { schema, docPath, titleKey, titles }) {
+  const href = (to) => relativeHref(docPath, to).split('/').map(encodeURIComponent).join('/');
+  const link = (to, inner) => `<a href="${escapeAttr(href(to))}">${inner}</a>`;
+  if (name === 'path') return link(rec.path, `<code>${escapeText(relativeHref(docPath, rec.path))}</code>`);
+  const f = recField(rec, name);
+  if (f.source === null) return '-';
+  if (name === titleKey) return link(rec.path, escapeText(f.value));
+  if (schema.fields[name] && schema.fields[name].type === 'path')
+    return (Array.isArray(f.value) ? f.value : [f.value]).map((t) => {
+      const p = docKey(blockerPath(rec.path, t));
+      return link(p, titles.has(p) ? escapeText(titles.get(p)) : `<code>${escapeText(t)}</code>`);
+    }).join(', ');
+  return escapeText(cellText(rec, name, '-'));
+}
+// The table's lines, unindented: the caller indents every line after the first
+// to sit where the table sits.
+function indexTableLines(cols, rows, source) {
+  const cells = (tag, xs) => xs.map(x => `<${tag}>${x}</${tag}>`).join('');
+  return [
+    `<plan-table ${INDEX_ATTR}="${escapeAttr(source)}">`,
+    '  <table>',
+    `    <thead><tr>${cells('th', cols)}</tr></thead>`,
+    '    <tbody>',
+    ...(rows.length ? rows.map(r => `      <tr>${cells('td', r)}</tr>`)
+      : [`      <tr><td colspan="${cols.length}">No documents match.</td></tr>`]),
+    '    </tbody>',
+    '  </table>',
+    '</plan-table>',
+  ];
+}
+
+/* Pure: (html, docs, opts) -> { html, message, skipped, problems }. `docPath`
+   is the document written into, `target` the scanned directory or glob; both
+   in the same form as each doc's path. The document itself is never one of its
+   own rows. */
+function planIndex(html, docs, {
+  schema, address, docPath, target, where = [], has = [], missing = [], sort = null,
+  fields = null, limit = null, rank = null, readDoc = () => null,
+} = {}) {
+  if (!address) throw new PlanError('index requires an address — the section the table is written into');
+  const node = resolveNode(html, String(address).split('.'));
+  if (node.tag === 'plan-header')
+    throw new PlanError('the header holds no body — index into a section');
+  const self = docKey(docPath);
+  const q = runQuery(docs.filter(d => docKey(d.path) !== self), { schema, where, has, missing, sort, rank, limit, readDoc });
+  const titleKey = headerField(schema, 'title');
+  const titles = new Map(titleKey ? q.records.filter(r => r.fields[titleKey].source !== null)
+    .map(r => [docKey(r.path), r.fields[titleKey].value]) : []);
+  const cols = fields === null ? indexColumns(schema, q.results, titleKey) : parseFields(schema, fields);
+  const ctx = { schema, docPath, titleKey, titles };
+  const lines = indexTableLines(cols.map(c => indexHeading(schema, c)),
+    q.results.map(r => cols.map(c => indexCell(r, c, ctx))), relativeHref(docPath, target));
+
+  const tables = ownElements(html, node, 'plan-table').filter(t => getAttr(t.attrsRaw, INDEX_ATTR) !== undefined);
+  if (tables.length > 1) throw new PlanError(`'${address}' holds ${tables.length} generated tables ` +
+    `(lines ${tables.map(t => lineOf(html, t.outerStart)).join(', ')}) — remove all but one, then re-run`);
+  let out;
+  if (tables.length) {
+    const el = tables[0];
+    const indent = indentAt(html, el.outerStart);
+    out = html.slice(0, el.outerStart) + lines.map((l, i) => (i ? indent + l : l)).join('\n') + html.slice(el.outerEnd);
+  } else {
+    // Last in the section's body. A body on one line gets the table on lines of
+    // its own, and the closing tag back at the section's indent.
+    const indent = childIndent(html, node);
+    const block = lines.map(l => indent + l).join('\n');
+    out = html.slice(node.innerStart, node.innerEnd).includes('\n')
+      ? spliceBefore(html, node.innerEnd, block)
+      : html.slice(0, node.innerEnd) + '\n' + block + '\n' + indentAt(html, node.outerStart) + html.slice(node.innerEnd);
+  }
+  assertIntact(html, out, 'index');
+  const n = `${q.results.length} document(s)`;
+  const message = out === html ? `index in '${address}' is current — ${n}`
+    : `${tables.length ? 'rewrote' : 'wrote'} the index in '${address}' — ${n}`;
+  return { html: out, message, skipped: q.skipped, problems: q.problems };
 }
 
 /* ── wordy: the sentence rule ─────────────────────────────
@@ -4278,7 +4400,8 @@ module.exports = {
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport, problemReport, strictFailure,
   globToRegExp, globBase, collectDocs, flagList,
-  NEXT_FORMATS, docOutline, planNext,
+  NEXT_FORMATS, docOutline, planNext, runQuery,
+  INDEX_ATTR, relativeHref, planIndex,
   splitSentences, markdownUnits, htmlUnits, measureText, WORDY_KINDS, WORDY_FORMATS, planWordy,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
