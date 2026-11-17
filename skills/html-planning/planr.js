@@ -1048,7 +1048,7 @@ function resolveConsumerSchemaPath(invoked = process.argv[1] || __filename) {
   return root ? `${root}/${CONSUMER_SCHEMA_FILENAME}` : null;
 }
 const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
-const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden', 'blocks'];
+const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden', 'blocks', 'pairs'];
 // Column names planr owns. Neither is a schema field nor a <plan-field>: `path`
 // is the document's own path, and `blocked` is derived from every field declared
 // `blocks` (see "blockers"). A field may not take either name.
@@ -1133,10 +1133,32 @@ function parseSchema(data, origin) {
     // A header-owned field never sits in <plan-meta>: the header draws it.
     if (def.from !== undefined && (def.tones !== undefined || def.hidden !== undefined))
       schemaFail(origin, `field '${name}': \`tones\` and \`hidden\` do not apply to a header field — the header renders it in its own chip`);
+    // `pairs` ties each value of this field to the values another field may
+    // hold beside it: { "<other>": { "<value>" | "*": ["<allowed>", …] } }, `*`
+    // standing for every value not named. The SHAPE is checked here; the other
+    // field and its values are cross-references, checked after the merge.
+    if (def.pairs !== undefined) {
+      if (def.type !== 'enum' || def.repeatable === true)
+        schemaFail(origin, `field '${name}': \`pairs\` needs a single-valued enum — each value pairs with its own rule`);
+      if (!isPlainObject(def.pairs) || !Object.keys(def.pairs).length)
+        schemaFail(origin, `field '${name}': \`pairs\` must be an object of field → { value: [allowed, …] }`);
+      for (const [other, rule] of Object.entries(def.pairs)) {
+        if (!isPlainObject(rule) || !Object.keys(rule).length)
+          schemaFail(origin, `field '${name}': \`pairs.${other}\` must be an object of value → [allowed, …]`);
+        for (const [v, allowed] of Object.entries(rule)) {
+          if (v !== '*' && !def.values.includes(v))
+            schemaFail(origin, `field '${name}': \`pairs.${other}\` names '${v}', which is not a declared value — declared: ${def.values.join(', ')}, or * for every other value`);
+          if (!Array.isArray(allowed) || !allowed.length || allowed.some(a => typeof a !== 'string' || !a))
+            schemaFail(origin, `field '${name}': \`pairs.${other}.${v}\` must be a non-empty array of values`);
+        }
+      }
+    }
     // `list` IS `string` + repeatable; normalising here gives one code path for
     // splitting, validating and normalising a multi-valued field.
     fields[name] = {
       ...def, ...(def.tones ? { tones: { ...def.tones } } : {}),
+      ...(def.pairs ? { pairs: Object.fromEntries(Object.entries(def.pairs).map(([o, r]) =>
+        [o, Object.fromEntries(Object.entries(r).map(([v, a]) => [v, [...a]]))])) } : {}),
       repeatable: def.type === 'list' || def.repeatable === true, origin,
     };
   }
@@ -1211,6 +1233,21 @@ function validateSchemaRefs(schema) {
       need(rule.origin, `infer rule /${rule.match}/`, name);
       const problem = validateField(schema, name, String(value));
       if (problem) schemaFail(rule.origin, `infer rule /${rule.match}/: ${problem}`);
+    }
+  // A pairing names another field, which must be a single-valued enum holding
+  // every value the rule allows — checked on the MERGE, because a consumer may
+  // pair its own field with a core one, or replace the core field it names.
+  for (const [name, def] of Object.entries(schema.fields))
+    for (const [other, rule] of Object.entries(def.pairs || {})) {
+      const odef = schema.fields[other];
+      if (!odef) schemaFail(def.origin, `field '${name}': \`pairs\` names unknown field '${other}' — declared: ${known.join(', ')}`);
+      if (other === name) schemaFail(def.origin, `field '${name}': \`pairs\` names the field itself — pair it with another field`);
+      if (odef.type !== 'enum' || odef.repeatable)
+        schemaFail(def.origin, `field '${name}': \`pairs\` names '${other}', which is not a single-valued enum`);
+      for (const [v, allowed] of Object.entries(rule))
+        for (const a of allowed)
+          if (!odef.values.includes(a))
+            schemaFail(def.origin, `field '${name}': \`pairs.${other}.${v}\` names '${a}', which is not a declared value of '${other}' — declared: ${odef.values.join(', ')}`);
     }
   // A ranking is validated by the very functions the query runs it through, so
   // a ranking that LOADS is a ranking `query --rank` can execute.

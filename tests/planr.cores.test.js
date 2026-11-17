@@ -3360,3 +3360,53 @@ describe('planWordy', () => {
     expect(failure).toBe('wordy: 1 file(s) could not be read, listed above');
   });
 });
+
+describe('pairs — a field value names the values another field may hold', () => {
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+  const STATUS = { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' };
+  const RULE = { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } };
+  const STAGE = (extra = {}) => ({ type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'], ...extra });
+  const M = (fields) => planr.mergeSchemas(S({ fields }));
+
+  it('parseSchema keeps a pairing on a single-valued enum, as its own copy', () => {
+    const pairs = { status: { shipped: ['implemented'], '*': ['draft'] } };
+    const s = S({ fields: { stage: STAGE({ pairs }) } });
+    expect(s.fields.stage.pairs).toEqual(pairs);
+    pairs.status.shipped.push('rejected');
+    expect(s.fields.stage.pairs.status.shipped).toEqual(['implemented']);
+  });
+
+  it('parseSchema refuses a malformed pairing, naming the origin file', () => {
+    expect(() => S({ fields: { stage: { type: 'string', pairs: RULE } } }))
+      .toThrow("schema probe.json: field 'stage': `pairs` needs a single-valued enum — each value pairs with its own rule");
+    expect(() => S({ fields: { stage: STAGE({ repeatable: true, pairs: RULE }) } }))
+      .toThrow("field 'stage': `pairs` needs a single-valued enum");
+    expect(() => S({ fields: { stage: STAGE({ pairs: {} }) } }))
+      .toThrow("field 'stage': `pairs` must be an object of field → { value: [allowed, …] }");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: ['implemented'] } }) } }))
+      .toThrow("field 'stage': `pairs.status` must be an object of value → [allowed, …]");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: { launched: ['implemented'] } } }) } }))
+      .toThrow("field 'stage': `pairs.status` names 'launched', which is not a declared value — declared: idea, active, shipped, dropped, or * for every other value");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: { shipped: [] } } }) } }))
+      .toThrow("field 'stage': `pairs.status.shipped` must be a non-empty array of values");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: { shipped: 'implemented' } } }) } }))
+      .toThrow("field 'stage': `pairs.status.shipped` must be a non-empty array of values");
+  });
+
+  it('mergeSchemas refuses a pairing with an unknown field, itself, a non-enum or an undeclared value', () => {
+    expect(() => M({ stage: STAGE({ pairs: RULE }) }))
+      .toThrow("schema probe.json: field 'stage': `pairs` names unknown field 'status' — declared: stage");
+    expect(() => M({ stage: STAGE({ pairs: { stage: { shipped: ['idea'] } } }) }))
+      .toThrow("field 'stage': `pairs` names the field itself — pair it with another field");
+    expect(() => M({ stage: STAGE({ pairs: { owner: { shipped: ['x'] } } }), owner: { type: 'string' } }))
+      .toThrow("field 'stage': `pairs` names 'owner', which is not a single-valued enum");
+    expect(() => M({ stage: STAGE({ pairs: { status: { shipped: ['done'] } } }), status: STATUS }))
+      .toThrow("field 'stage': `pairs.status.shipped` names 'done', which is not a declared value of 'status' — declared: draft, review, approved, implemented, rejected");
+  });
+
+  it('a consumer field pairs with a core field across the merge', () => {
+    const core = S({ fields: { status: STATUS } });
+    const consumer = planr.parseSchema({ fields: { stage: STAGE({ pairs: RULE }) } }, 'consumer.json');
+    expect(planr.mergeSchemas(core, consumer).fields.stage.pairs).toEqual(RULE);
+  });
+});
