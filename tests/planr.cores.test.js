@@ -3455,3 +3455,58 @@ describe('pairs — check warns when a pairing does not hold', () => {
       .toEqual([[0, "stage 'shipped' pairs with status implemented — status is 'draft'"]]);
   });
 });
+
+describe('pairs — a corpus scan reports every document that breaks one', () => {
+  let PS;
+  beforeAll(() => {
+    PS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:  { type: 'string', from: 'header:title' },
+        status: { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' },
+        stage:  { type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'],
+                  pairs: { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } } },
+      },
+      rankings: { default: { where: { stage: { in: ['active'] } }, order: [] } },
+    }, 'probe.json'));
+  });
+  const CORPUS = () => [
+    { path: 'p/a.html', html: QDOC({ stage: 'active' }, 'title="A" status="review"') },
+    { path: 'p/b.html', html: QDOC({ stage: 'shipped' }, 'title="B" status="draft"') },
+    { path: 'p/c.html', html: QDOC({ stage: 'dropped' }, 'title="C" status="rejected"') },
+  ];
+  const B_PROBLEM = { path: 'p/b.html', text: "stage 'shipped' pairs with status implemented — status is 'draft'" };
+
+  it('queryDocs lists the problem whether or not the document matches the filter', () => {
+    const q = planr.queryDocs(CORPUS(), { schema: PS, where: planr.compileWhere(PS, { stage: { in: ['active'] } }, 'filter') });
+    expect(q.results.map(r => r.path)).toEqual(['p/a.html']);
+    expect(q.problems).toEqual([B_PROBLEM]);
+    expect(planr.queryDocs(CORPUS().slice(0, 1), { schema: PS }).problems).toEqual([]);
+  });
+
+  it('query and next carry the problems on the returned object and in JSON, never in the text report', () => {
+    const q = planr.planQuery(CORPUS(), { schema: PS, fields: 'path' });
+    expect(q.problems).toEqual([B_PROBLEM]);
+    expect(q.report).not.toContain('pairs with');
+    expect(JSON.parse(planr.planQuery(CORPUS(), { schema: PS, format: 'json' }).report).problems).toEqual([B_PROBLEM]);
+    const n = planr.planNext(CORPUS(), { schema: PS });
+    expect(n.problems).toEqual([B_PROBLEM]);
+    expect(JSON.parse(planr.planNext(CORPUS(), { schema: PS, format: 'json' }).report).problems).toEqual([B_PROBLEM]);
+  });
+
+  it('problemReport shapes the stderr block like skipReport, and is empty for none', () => {
+    expect(planr.problemReport([B_PROBLEM])).toBe([
+      '1 problem(s) — the corpus breaks a schema rule:',
+      "  p/b.html: stage 'shipped' pairs with status implemented — status is 'draft'",
+    ].join('\n'));
+    expect(planr.problemReport([])).toBe('');
+  });
+
+  it('strictFailure names what --strict refuses, and nothing on a clean scan', () => {
+    const skip = [{ path: 'x.html', reason: 'r' }];
+    expect(planr.strictFailure('query', skip, [])).toBe('query --strict: 1 file(s) skipped, listed above');
+    expect(planr.strictFailure('next', [], [B_PROBLEM])).toBe('next --strict: 1 problem(s), listed above');
+    expect(planr.strictFailure('query', skip, [B_PROBLEM, B_PROBLEM]))
+      .toBe('query --strict: 1 file(s) skipped, 2 problem(s), listed above');
+    expect(planr.strictFailure('query', [], [])).toBeNull();
+  });
+});

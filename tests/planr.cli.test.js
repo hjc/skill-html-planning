@@ -1199,3 +1199,52 @@ describe('a value flag given with no value', () => {
     expect(run(['tasks', P(), '--all']).code).toBe(0);
   });
 });
+
+// ── corpus rules: pairs and blocker cycles ────────────────
+// A staged skill plus a consumer schema declaring a `pairs` rule and a
+// blocking `depends-on`, and two documents under <root>/.claude/plans/projects.
+const PAIRS_SCHEMA = {
+  fields: {
+    stage: { type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'],
+             pairs: { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } } },
+    'depends-on': { type: 'path', repeatable: true, blocks: true, label: 'depends on' },
+  },
+  rankings: { default: { where: { stage: { in: ['active'] } }, order: ['title'] } },
+};
+function stageProjects(root) {
+  const staged = stageSkill(root, 'skills/html-planning');
+  writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify(PAIRS_SCHEMA));
+  const dir = join(root, '.claude', 'plans', 'projects');
+  mkdirSync(dir, { recursive: true });
+  const make = (name, title, sets) => {
+    const out = join(dir, name);
+    expect(runAt(staged, ['new', out, '--title', title]).code, name).toBe(0);
+    expect(runAt(staged, ['meta', out, ...sets.flatMap(s => ['--set', s])]).code, name).toBe(0);
+    return out;
+  };
+  make('alpha.html', 'Alpha', ['stage=active']);
+  make('beta.html', 'Beta', ['stage=idea']);
+  return { planr: staged, dir };
+}
+
+describe('corpus problems (wiring)', () => {
+  it('query and next print a broken pairing on stderr, exit 0, and --strict makes it exit 1', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=shipped']).code).toBe(0);
+      const q = runAt(P, ['query', dir, '--format', 'paths']);
+      expect(q.code, q.stderr).toBe(0);
+      expect(q.stdout.trim().split('\n')).toHaveLength(2);
+      expect(q.stderr).toContain('1 problem(s) — the corpus breaks a schema rule:');
+      expect(q.stderr).toMatch(/beta\.html: stage 'shipped' pairs with status implemented — status is 'draft'/);
+      const strict = runAt(P, ['query', dir, '--strict']);
+      expect(strict.code).toBe(1);
+      expect(strict.stderr).toContain('query --strict: 1 problem(s), listed above');
+      expect(runAt(P, ['next', dir, '--strict']).code).toBe(1);
+      expect(runAt(P, ['check', join(dir, 'beta.html'), '--strict']).code).toBe(1);
+      expect(runAt(P, ['set', join(dir, 'beta.html'), 'header.status=implemented']).code).toBe(0);
+      expect(runAt(P, ['query', dir, '--strict']).code).toBe(0);
+    } finally { rmTmp(root); }
+  });
+});
