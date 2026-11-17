@@ -1227,3 +1227,22 @@ describe('corpus problems (wiring)', () => {
     } finally { rmTmp(root); }
   });
 });
+
+describe('blocker cycles (wiring)', () => {
+  it('query --strict and check --strict refuse a cycle across depends-on', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      expect(runAt(P, ['meta', join(dir, 'alpha.html'), '--set', 'depends-on=beta.html']).code).toBe(0);
+      expect(runAt(P, ['query', dir, '--strict']).code).toBe(0);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'depends-on=alpha.html']).code).toBe(0);
+      const q = runAt(P, ['query', dir, '--strict']);
+      expect(q.code).toBe(1);
+      expect(q.stderr).toMatch(/blocker cycle: \S*alpha\.html → \S*beta\.html → \S*alpha\.html/);
+      const c = runAt(P, ['check', join(dir, 'beta.html')]);
+      expect(c.code, c.stderr).toBe(0);
+      expect(c.stdout).toContain('blocker cycle:');
+      expect(runAt(P, ['check', join(dir, 'beta.html'), '--strict']).code).toBe(1);
+    } finally { rmTmp(root); }
+  });
+});
