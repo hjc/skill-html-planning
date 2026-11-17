@@ -3577,3 +3577,169 @@ describe('blocker cycles', () => {
       'blocker cycle: q/a.html → q/a.html — each waits on the next, so none can close']]);
   });
 });
+
+describe('planIndex — a corpus written into a section as a table', () => {
+  let IS;
+  beforeAll(() => {
+    IS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:  { type: 'string', from: 'header:title' },
+        status: { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' },
+        stage:  { type: 'enum', values: ['idea', 'active', 'shipped'],
+                  pairs: { status: { shipped: ['implemented'], '*': ['draft', 'review', 'approved'] } } },
+        'depends-on': { type: 'path', repeatable: true, blocks: true, label: 'depends on' },
+        map:    { type: 'path' },
+      },
+      rankings: { open: { where: { stage: { ne: ['shipped'] } }, order: ['title'] } },
+    }, 'probe.json'));
+  });
+  const PDOC = (title, status, meta) => QDOC(meta, `title="${title}" status="${status}"`);
+  const DOCS = () => [
+    { path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { stage: 'active', 'depends-on': 'b.html' }) },
+    { path: 'r/projects/b.html', html: PDOC('Beta &amp; Co', 'draft', { stage: 'idea' }) },
+    { path: 'r/projects/c.html', html: PDOC('Gamma', 'implemented', { stage: 'shipped' }) },
+  ];
+  const INDEX = [
+    '<plan-header title="Roadmap" status="draft"></plan-header>',
+    '<main>',
+    '  <plan-section id="projects" title="Projects">',
+    '    <p>Prose stays.</p>',
+    '  </plan-section>',
+    '  <plan-section id="other" title="Other"></plan-section>',
+    '</main>',
+  ].join('\n');
+  const X = (html, opts) => planr.planIndex(html, DOCS(), {
+    schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', ...opts });
+  const TABLE = [
+    '    <plan-table data-planr-index="projects">',
+    '      <table>',
+    '        <thead><tr><th>title</th><th>stage</th><th>depends on</th></tr></thead>',
+    '        <tbody>',
+    '          <tr><td><a href="projects/a.html">Alpha</a></td><td>active</td><td><a href="projects/b.html">Beta &amp; Co</a></td></tr>',
+    '          <tr><td><a href="projects/b.html">Beta &amp; Co</a></td><td>idea</td><td>-</td></tr>',
+    '          <tr><td><a href="projects/c.html">Gamma</a></td><td>shipped</td><td>-</td></tr>',
+    '        </tbody>',
+    '      </table>',
+    '    </plan-table>',
+  ];
+
+  it('relativeHref links from a document to a file, both written the same way', () => {
+    expect(planr.relativeHref('r/index.html', 'r/projects/a.html')).toBe('projects/a.html');
+    expect(planr.relativeHref('r/sub/index.html', 'r/projects/a.html')).toBe('../projects/a.html');
+    expect(planr.relativeHref('D:/repo/docs/index.html', 'D:/repo/docs/a.html')).toBe('a.html');
+    expect(planr.relativeHref('D:\\repo\\docs\\index.html', 'D:/repo/docs/projects')).toBe('projects');
+    expect(planr.relativeHref('r/index.html', 'r')).toBe('.');
+    expect(planr.relativeHref('d:/repo/docs/index.html', 'D:/repo/docs/a.html')).toBe('a.html');
+  });
+
+  it('writes the table last in the section, after its prose, every link relative to the document', () => {
+    const r = X(INDEX, { fields: 'title,stage,depends-on', sort: 'title' });
+    expect(r.html).toBe([
+      '<plan-header title="Roadmap" status="draft"></plan-header>',
+      '<main>',
+      '  <plan-section id="projects" title="Projects">',
+      '    <p>Prose stays.</p>',
+      ...TABLE,
+      '  </plan-section>',
+      '  <plan-section id="other" title="Other"></plan-section>',
+      '</main>',
+    ].join('\n'));
+    expect(r.message).toBe("wrote the index in 'projects' — 3 document(s)");
+    expect(planr.planCheck(r.html).ok).toBe(true);
+  });
+
+  it('is idempotent, and a re-run replaces only its own table, where it now sits', () => {
+    const opts = { fields: 'title,stage,depends-on', sort: 'title' };
+    const once = X(INDEX, opts).html;
+    const again = X(once, opts);
+    expect(again.html).toBe(once);
+    expect(again.message).toBe("index in 'projects' is current — 3 document(s)");
+    const edited = once.replace('    <p>Prose stays.</p>\n', '')
+      .replace('    </plan-table>\n', '    </plan-table>\n    <p>Moved below.</p>\n');
+    const narrowed = X(edited, { ...opts, where: ['stage=idea'] });
+    expect(narrowed.message).toBe("rewrote the index in 'projects' — 1 document(s)");
+    expect(narrowed.html).toContain('</plan-table>\n    <p>Moved below.</p>\n  </plan-section>');
+    expect(narrowed.html).not.toContain('Alpha');
+    expect(narrowed.html.match(/data-planr-index/g)).toHaveLength(1);
+  });
+
+  it('defaults to the title, then every field a matched document resolves', () => {
+    const r = X(INDEX, { rank: 'open' });
+    expect(r.html).toContain('<thead><tr><th>title</th><th>status</th><th>stage</th><th>depends on</th></tr></thead>');
+    expect(r.html).not.toContain('Gamma');
+    expect(r.html.indexOf('Alpha')).toBeLessThan(r.html.indexOf('Beta'));
+  });
+
+  it('links a path column as code, and leads with it when the schema binds no title', () => {
+    const r = X(INDEX, { fields: 'path,stage', where: ['stage=idea'] });
+    expect(r.html).toContain('<tr><td><a href="projects/b.html"><code>projects/b.html</code></a></td><td>idea</td></tr>');
+    const bare = planr.mergeSchemas(planr.parseSchema(
+      { fields: { stage: { type: 'enum', values: ['idea', 'active', 'shipped'] } } }, 'bare.json'));
+    const b = planr.planIndex(INDEX, DOCS(), { schema: bare, address: 'projects', docPath: 'r/index.html', target: 'r/projects' });
+    expect(b.html).toContain('<thead><tr><th>path</th><th>stage</th></tr></thead>');
+  });
+
+  it('links every path field relative to the document written into, not only a blocking one', () => {
+    const docs = [
+      { path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { map: '../../plans/x/map.html' }) },
+      { path: 'r/projects/b.html', html: PDOC('Beta', 'draft', { map: 'a.html' }) },
+    ];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,map' });
+    expect(r.html).toContain('<td><a href="../plans/x/map.html"><code>../../plans/x/map.html</code></a></td>');
+    expect(r.html).toContain('<td><a href="projects/a.html">Alpha</a></td></tr>');
+  });
+
+  it('percent-encodes each href segment, and leaves the text and the marker as written', () => {
+    const docs = [{ path: 'r/pro jects/c#1 100%.html', html: PDOC('Odd', 'draft', {}) }];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/pro jects', fields: 'title,path' });
+    expect(r.html).toContain('<a href="pro%20jects/c%231%20100%25.html">Odd</a>');
+    expect(r.html).toContain('<code>pro jects/c#1 100%.html</code>');
+    expect(r.html).toContain('<plan-table data-planr-index="pro jects">');
+  });
+
+  it('labels a blocker target outside the scan with the target as written', () => {
+    const docs = [{ path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { 'depends-on': '../elsewhere/x.html' }) }];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,depends-on' });
+    expect(r.html).toContain('<td><a href="elsewhere/x.html"><code>../elsewhere/x.html</code></a></td>');
+  });
+
+  it('never lists the document it writes into, and says so when nothing matches', () => {
+    const docs = [...DOCS(), { path: 'r/index.html', html: INDEX }];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r', fields: 'title' });
+    expect(r.html).not.toContain('Roadmap</a>');
+    expect(r.html).toContain('<plan-table data-planr-index=".">');
+    const none = X(INDEX, { fields: 'title,stage', where: ['stage=shipped', 'status=draft'] });
+    expect(none.html).toContain('<tr><td colspan="2">No documents match.</td></tr>');
+  });
+
+  it('puts the table on lines of its own in a section written on one line', () => {
+    const r = X(INDEX, { address: 'other', fields: 'title', where: ['stage=idea'] });
+    expect(r.html).toContain('  <plan-section id="other" title="Other">\n    <plan-table data-planr-index="projects">');
+    expect(r.html).toContain('    </plan-table>\n  </plan-section>\n</main>');
+    expect(planr.planCheck(r.html).ok).toBe(true);
+  });
+
+  it('hands back the skipped files and the corpus problems', () => {
+    const docs = [...DOCS(), { path: 'r/projects/bad.html', html: PDOC('Bad', 'draft', { stage: 'shipped' }) },
+      { path: 'r/projects/mock.html', html: '<html></html>' }];
+    const r = planr.planIndex(INDEX, docs, { schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects' });
+    expect(r.skipped).toEqual([{ path: 'r/projects/mock.html', reason: 'not a plan document — no <plan-*> markup' }]);
+    expect(r.problems).toEqual([
+      { path: 'r/projects/bad.html', text: "stage 'shipped' pairs with status implemented — status is 'draft'" }]);
+  });
+
+  it('refuses no address, the header, an unknown section and two generated tables', () => {
+    expect(() => X(INDEX, { address: null })).toThrow('index requires an address — the section the table is written into');
+    expect(() => X(INDEX, { address: 'header' })).toThrow('the header holds no body — index into a section');
+    expect(() => X(INDEX, { address: 'nope' })).toThrow("section 'nope' not found");
+    const once = X(INDEX, { fields: 'title' }).html;
+    const twice = once.replace('  </plan-section>\n  <plan-section id="other"',
+      '    <plan-table data-planr-index="x"><table></table></plan-table>\n  </plan-section>\n  <plan-section id="other"');
+    expect(() => X(twice, { fields: 'title' }))
+      .toThrow("'projects' holds 2 generated tables (lines 5, 15) — remove all but one, then re-run");
+  });
+});
