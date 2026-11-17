@@ -1289,6 +1289,20 @@ describe('index (wiring)', () => {
     } finally { rmTmp(root); }
   });
 
+  it('prints skipped files and problems as given, the way query does, not as absolute paths', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const plans = join(root, '.claude', 'plans');
+      expect(runAt(P, ['new', join(plans, 'index.html'), '--title', 'Roadmap']).code).toBe(0);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=shipped']).code).toBe(0);
+      const r = runAt(P, ['index', 'projects', 'index.html', 'overview'], { cwd: plans });
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stderr).toMatch(/^ {2}projects\/beta\.html: stage 'shipped' pairs with status implemented/m);
+      expect(r.stderr).not.toContain(root.replace(/\\/g, '/'));
+    } finally { rmTmp(root); }
+  });
+
   it('--check writes nothing, and exits 1 naming a missing or a stale table', () => {
     const root = mkTmp();
     try {
