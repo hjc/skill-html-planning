@@ -1344,3 +1344,27 @@ describe('index (wiring)', () => {
     expect(f.stderr).toContain('index does not take --format');
   });
 });
+
+describe('index, pairs and cycles documentation', () => {
+  const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  const repoFile = (f) => readFileSync(join(SKILL_DIR, '..', '..', f), 'utf8');
+
+  it('SKILL.md carries the index command, the pairs key and the corpus problems', () => {
+    const s = skill();
+    for (const t of ['| `index` |', 'planr index <dir|glob> <file> <address>', '### Generated indexes', 'data-planr-index',
+      '| `.pairs` |', '### Pairs', '"pairs"', '**A cycle is a problem.**', '`problems`', 'a `pairs` rule the document breaks'])
+      expect(s, t).toContain(t);
+  });
+
+  it('the README lists index and carries the 1.5.0 notes', () => {
+    const r = repoFile('README.md');
+    for (const t of ["## What's new in 1.5.0", '`index <dir\\|glob> <file> <address>`', 'planr index', '`pairs`', 'Blocker cycles'])
+      expect(r, t).toContain(t);
+  });
+
+  it('the repo CLAUDE.md records the selection path, the pairing rule, the cycle algorithm and the index marker', () => {
+    const c = repoFile('CLAUDE.md');
+    for (const t of ['runQuery', 'pairProblems', 'findCycles', 'lintCycles', 'strictFailure', 'INDEX_ATTR', 'relativeHref'])
+      expect(c, t).toContain(t);
+  });
+});
