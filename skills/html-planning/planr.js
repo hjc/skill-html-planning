@@ -3236,11 +3236,19 @@ function indexColumns(schema, results, titleKey) {
 // One cell. The title and the path link to the document. A `path` field's
 // value is relative to the document carrying it — as an href is relative to
 // the file that carries it, and as blockerPath resolves a blocker — so each
-// item links to its target, labelled with the target's title when the scan
-// holds it, else with the value as written. Everything else is query's own
+// item links to its target, labelled with the target's title: from the scan,
+// else read through `readDoc`, else the path the link goes to, so the text
+// and the href agree. Everything else is query's own
 // cell text, escaped. An href's segments are percent-encoded, so a `#` or `%`
 // in a file name stays part of the path.
-function indexCell(rec, name, { schema, docPath, titleKey, titles }) {
+function indexCell(rec, name, { schema, docPath, titleKey, titles, readDoc }) {
+  const titleOf = (p) => {
+    if (titles.has(p)) return titles.get(p);
+    const html = titleKey ? readDoc(p) : null;
+    if (html === null) return null;
+    const f = resolveMeta(html, { schema, docPath: p }).fields[titleKey];
+    return f.source === null ? null : f.value;
+  };
   const href = (to) => relativeHref(docPath, to).split('/').map(encodeURIComponent).join('/');
   const link = (to, inner) => `<a href="${escapeAttr(href(to))}">${inner}</a>`;
   if (name === 'path') return link(rec.path, `<code>${escapeText(relativeHref(docPath, rec.path))}</code>`);
@@ -3250,7 +3258,8 @@ function indexCell(rec, name, { schema, docPath, titleKey, titles }) {
   if (schema.fields[name] && schema.fields[name].type === 'path')
     return (Array.isArray(f.value) ? f.value : [f.value]).map((t) => {
       const p = docKey(blockerPath(rec.path, t));
-      return link(p, titles.has(p) ? escapeText(titles.get(p)) : `<code>${escapeText(t)}</code>`);
+      const title = titleOf(p);
+      return link(p, title !== null ? escapeText(title) : `<code>${escapeText(relativeHref(docPath, p))}</code>`);
     }).join(', ');
   return escapeText(cellText(rec, name, '-'));
 }
@@ -3290,7 +3299,7 @@ function planIndex(html, docs, {
   const titles = new Map(titleKey ? q.records.filter(r => r.fields[titleKey].source !== null)
     .map(r => [docKey(r.path), r.fields[titleKey].value]) : []);
   const cols = fields === null ? indexColumns(schema, q.results, titleKey) : parseFields(schema, fields);
-  const ctx = { schema, docPath, titleKey, titles };
+  const ctx = { schema, docPath, titleKey, titles, readDoc };
   const lines = indexTableLines(cols.map(c => indexHeading(schema, c)),
     q.results.map(r => cols.map(c => indexCell(r, c, ctx))), relativeHref(docPath, target));
 
@@ -4075,13 +4084,18 @@ function cmdIndex(target, file, address, flags) {
   const { schema } = loadSchema();
   const abs = (p) => path.resolve(String(p)).replace(/\\/g, '/');
   const before = read(file);
-  const { html, message, existed, skipped, problems } = planIndex(before,
-    collectDocs(target).map(d => ({ ...d, path: abs(d.path) })), {
-      schema, address, docPath: abs(file), target: abs(target),
-      where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
-      sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'), limit: flagValue(flags, 'limit'),
-      rank: flagValue(flags, 'rank'), readDoc: readBlocker,
-    });
+  const given = collectDocs(target);
+  const shown = new Map(given.map(d => [abs(d.path), d.path]));
+  const asGiven = (text) => [...shown].reduce((t, [a, g]) => t.split(a).join(g), text);
+  const out = planIndex(before, given.map(d => ({ ...d, path: abs(d.path) })), {
+    schema, address, docPath: abs(file), target: abs(target),
+    where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
+    sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'), limit: flagValue(flags, 'limit'),
+    rank: flagValue(flags, 'rank'), readDoc: readBlocker,
+  });
+  const { html, message, existed } = out;
+  const skipped = out.skipped.map(x => ({ ...x, path: asGiven(x.path) }));
+  const problems = out.problems.map(x => ({ ...x, path: asGiven(x.path), text: asGiven(x.text) }));
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
   if (problems.length) process.stderr.write(problemReport(problems) + '\n');
   const failure = flags.strict ? strictFailure('index', skipped, problems) : null;

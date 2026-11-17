@@ -120,7 +120,8 @@ When adding a command: write the pure `plan*` core (throwing `PlanError`), add a
 - **`index` replaces only its own table.** The table it writes carries `INDEX_ATTR` (`data-planr-index`); a re-run
   finds the section's OWN marked table (`ownElements`) and replaces it in place, refusing two. `relativeHref` is pure
   and reads no working directory, which is why `cmdIndex` resolves the corpus, the document and the target to
-  absolute forward-slash paths before calling the core.
+  absolute forward-slash paths before calling the core, and maps skipped files and problems back to the paths as given.
+  `--check` and the no-op write share ONE notion of "current" (`html === before`); keep them on that one test.
 - **No index, no cache.** `query` reads the documents. (`planr index` writes a table INTO a document for a reader; it
   is not a cache anything reads back.) Measured on a 142-document, 8 MB corpus: ~230 ms wall clock,
   ~70 ms of which is Node's own startup. Re-measure before proposing one.

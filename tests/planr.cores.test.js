@@ -3686,7 +3686,7 @@ describe('planIndex — a corpus written into a section as a table', () => {
     ];
     const r = planr.planIndex(INDEX, docs, {
       schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,map' });
-    expect(r.html).toContain('<td><a href="../plans/x/map.html"><code>../../plans/x/map.html</code></a></td>');
+    expect(r.html).toContain('<td><a href="../plans/x/map.html"><code>../plans/x/map.html</code></a></td>');
     expect(r.html).toContain('<td><a href="projects/a.html">Alpha</a></td></tr>');
   });
 
@@ -3699,11 +3699,15 @@ describe('planIndex — a corpus written into a section as a table', () => {
     expect(r.html).toContain('<plan-table data-planr-index="pro jects">');
   });
 
-  it('labels a blocker target outside the scan with the target as written', () => {
+  it('labels a path target outside the scan with its title, else with the path the link goes to', () => {
     const docs = [{ path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { 'depends-on': '../elsewhere/x.html' }) }];
-    const r = planr.planIndex(INDEX, docs, {
-      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,depends-on' });
-    expect(r.html).toContain('<td><a href="elsewhere/x.html"><code>../elsewhere/x.html</code></a></td>');
+    const opts = { schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,depends-on' };
+    const unread = planr.planIndex(INDEX, docs, opts);
+    expect(unread.html).toContain('<td><a href="elsewhere/x.html"><code>elsewhere/x.html</code></a></td>');
+    const asked = [];
+    const read = planr.planIndex(INDEX, docs, { ...opts, readDoc: (p) => { asked.push(p); return PDOC('Elsewhere &amp; X', 'draft', {}); } });
+    expect(read.html).toContain('<td><a href="elsewhere/x.html">Elsewhere &amp; X</a></td>');
+    expect(asked).toContain('r/elsewhere/x.html');
   });
 
   it('never lists the document it writes into, and says so when nothing matches', () => {
