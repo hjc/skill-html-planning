@@ -3510,3 +3510,70 @@ describe('pairs — a corpus scan reports every document that breaks one', () =>
     expect(planr.strictFailure('query', [], [])).toBeNull();
   });
 });
+
+describe('blocker cycles', () => {
+  let CS;
+  beforeAll(() => {
+    CS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        status: { type: 'enum', values: ['draft', 'implemented', 'rejected'], from: 'header:status' },
+        'depends-on': { type: 'path', repeatable: true, blocks: true },
+      },
+    }, 'probe.json'));
+  });
+  const G = (o) => new Map(Object.entries(o));
+  const CDOC = (deps) => QDOC(deps ? { 'depends-on': deps } : {});
+
+  it('findCycles returns each cycle once, rotated to its smallest path', () => {
+    expect(planr.findCycles(G({ 'b.html': ['a.html'], 'a.html': ['b.html'] }))).toEqual([['a.html', 'b.html']]);
+    expect(planr.findCycles(G({ 'c.html': ['a.html'], 'a.html': ['b.html'], 'b.html': ['c.html'] })))
+      .toEqual([['a.html', 'b.html', 'c.html']]);
+    expect(planr.findCycles(G({ 'a.html': ['a.html'] }))).toEqual([['a.html']]);
+  });
+
+  it('findCycles treats a target outside the map as a leaf, and finds both cycles of a tangle', () => {
+    expect(planr.findCycles(G({ 'a.html': ['b.html', 'gone.html'], 'b.html': [] }))).toEqual([]);
+    expect(planr.findCycles(G({ 'a.html': ['b.html'], 'b.html': ['a.html', 'c.html'], 'c.html': ['b.html'] })))
+      .toEqual([['a.html', 'b.html'], ['b.html', 'c.html']]);
+  });
+
+  it('queryDocs reports a cycle among the scanned documents, on the first path of the cycle', () => {
+    const q = planr.queryDocs([
+      { path: 'p/a.html', html: CDOC('b.html') },
+      { path: 'p/b.html', html: CDOC('a.html') },
+      { path: 'p/c.html', html: CDOC('a.html') },
+    ], { schema: CS });
+    expect(q.problems).toEqual([{ path: 'p/a.html',
+      text: 'blocker cycle: p/a.html → p/b.html → p/a.html — each waits on the next, so none can close' }]);
+    expect(planr.queryDocs([{ path: 'p/a.html', html: CDOC('b.html') }, { path: 'p/b.html', html: CDOC() }],
+      { schema: CS }).problems).toEqual([]);
+  });
+
+  it('queryDocs names a cycle by the paths the scan gave, and matches a drive letter in either case', () => {
+    const dotted = planr.queryDocs([
+      { path: './p/a.html', html: CDOC('b.html') },
+      { path: './p/b.html', html: CDOC('a.html') },
+    ], { schema: CS });
+    expect(dotted.problems).toEqual([{ path: './p/a.html',
+      text: 'blocker cycle: ./p/a.html → ./p/b.html → ./p/a.html — each waits on the next, so none can close' }]);
+    const drives = planr.queryDocs([
+      { path: 'd:/r/a.html', html: CDOC('b.html') },
+      { path: 'D:/r/b.html', html: CDOC('a.html') },
+    ], { schema: CS });
+    expect(drives.problems.map(p => p.text)).toEqual([
+      'blocker cycle: d:/r/a.html → D:/r/b.html → d:/r/a.html — each waits on the next, so none can close']);
+  });
+
+  it('check warns on a cycle through the document, followed through readDoc', () => {
+    const disk = { 'q/b.html': CDOC('c.html'), 'q/c.html': CDOC('a.html'), 'q/d.html': CDOC('b.html') };
+    const readDoc = (p) => disk[p] ?? null;
+    const warn = (docPath, html) => planr.planCheck(html, CS, { docPath, readDoc }).warnings
+      .filter(w => w.text.startsWith('blocker cycle')).map(w => [w.line, w.text]);
+    expect(warn('q/a.html', CDOC('b.html'))).toEqual([[4,
+      'blocker cycle: q/a.html → q/b.html → q/c.html → q/a.html — each waits on the next, so none can close']]);
+    // d waits on the cycle without being in it: the cycle is not d's to report.
+    expect(warn('q/d.html', disk['q/d.html'])).toEqual([]);
+    expect(warn('q/a.html', CDOC('a.html'))).toEqual([[4,
+      'blocker cycle: q/a.html → q/a.html — each waits on the next, so none can close']]);
+  });
+});

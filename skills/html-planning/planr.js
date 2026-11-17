@@ -2369,6 +2369,33 @@ function lintBlockers(html, schema, { docPath = null, readDoc = null } = {}) {
   return out;
 }
 
+/* A cycle through this document, followed from it through `readDoc` — the same
+   reader lintBlockers takes, so the two agree on what exists. The graph is
+   every document the walk reaches; findCycles is the one algorithm, and only a
+   cycle that passes through this document is this document's to report. Its
+   line is the first blocking field's <plan-field>, else 0. */
+function lintCycles(html, schema, { docPath = null, readDoc = null } = {}) {
+  if (!schema || !docPath || !readDoc || !blockerFields(schema).length) return [];
+  const self = docKey(docPath);
+  const graph = new Map();
+  const queued = new Set([self]);
+  const queue = [[self, html]];
+  while (queue.length) {
+    const [p, doc] = queue.shift();
+    const edges = blockerTargets(schema, resolveMeta(doc, { schema, docPath: p })).map(b => docKey(blockerPath(p, b.target)));
+    graph.set(p, edges);
+    for (const t of edges) {
+      if (queued.has(t)) continue;
+      queued.add(t);
+      const next = readDoc(t);
+      if (next !== null) queue.push([t, next]);
+    }
+  }
+  const block = readMetaBlock(html);
+  const tag = block ? block.fields.find(f => blockerFields(schema).includes(f.key)) : null;
+  return findCycles(graph).filter(c => c.includes(self)).map(c => ({ line: tag ? tag.line : 0, text: cycleText(c) }));
+}
+
 /* ── pairs ────────────────────────────────────────────────
    A field declaring `pairs` ties each of its values to the values another field
    may hold beside it. ONE rule with two callers: lintPairs (`check`, one
@@ -2415,6 +2442,7 @@ function lintPlan(html, schema = null, ctx = {}) {
     ...lintMeta(html, schema),
     ...lintBlockers(html, schema, ctx),
     ...lintPairs(html, schema, ctx),
+    ...lintCycles(html, schema, ctx),
     ...lintScaffoldBanner(html),
     ...lintCodeBodies(html),
     ...lintSectionRefs(html),
@@ -2611,6 +2639,46 @@ function blockerTargets(schema, rec) {
     if (f.source === null) return [];
     return (Array.isArray(f.value) ? f.value : [f.value]).map(t => ({ field: name, target: t }));
   });
+}
+// A document path in one comparable form: forward slashes, normalised, and a
+// Windows drive letter upper-cased. The key of the blocker graph, so
+// `./a/b.html` and `a/b.html` are one node, and `d:/x` and `D:/x` are too.
+function docKey(p) {
+  return path.posix.normalize(String(p).replace(/\\/g, '/')).replace(/^([a-z]):/, (m, d) => `${d.toUpperCase()}:`);
+}
+
+/* Pure: Map(path -> [target path]) -> the cycles in the blocker graph, each the
+   paths around it, rotated to start at its smallest path, listed once and in
+   order. A document naming itself is a cycle of one; a target with no entry in
+   the map is a leaf. A depth-first walk reports every back edge it meets, so a
+   tangle of cycles yields at least one of them. ONE algorithm behind
+   queryDocs' corpus problems and check's lintCycles — the two differ only in
+   which documents they put in the map. */
+function findCycles(graph) {
+  const found = new Map();
+  const state = new Map();
+  const stack = [];
+  const visit = (p) => {
+    state.set(p, 'open');
+    stack.push(p);
+    for (const t of graph.get(p)) {
+      if (!graph.has(t)) continue;
+      if (state.get(t) === 'open') {
+        const loop = stack.slice(stack.indexOf(t));
+        const k = loop.indexOf([...loop].sort()[0]);
+        const canon = [...loop.slice(k), ...loop.slice(0, k)];
+        found.set(canon.join('\u0000'), canon);
+      } else if (!state.has(t)) visit(t);
+    }
+    stack.pop();
+    state.set(p, 'done');
+  };
+  for (const p of [...graph.keys()].sort()) if (!state.has(p)) visit(p);
+  return [...found.values()].sort((a, b) => cmpRank(a.join('\u0000'), b.join('\u0000')));
+}
+// One wording for a cycle, wherever it is reported.
+function cycleText(cycle) {
+  return `blocker cycle: ${[...cycle, cycle[0]].join(' → ')} — each waits on the next, so none can close`;
 }
 // A condition's field definition: the schema's own, or the derived `blocked`
 // when the schema declares a field that feeds it. ONE lookup for every place a
@@ -2822,7 +2890,8 @@ function parseSort(schema, spec, label = '--sort') {
    document, or does not balance is reported in `skipped` rather than dropped —
    the corpus is other people's files, and a silent omission reads as "nothing
    matched". `problems` ([{ path, text }]) lists every scanned document, matched
-   or not, that breaks a schema-declared corpus rule: a `pairs` rule.
+   or not, that breaks a schema-declared corpus rule — a `pairs` rule — and then
+   every cycle among the scanned documents' blockers, on the cycle's first path.
    Each result also carries `derived` — `{ blocked }` when the schema declares a
    `blocks` field, else `{}`. A blocker target is read from `docs` when the scan
    holds it, else through `readDoc(path)`, which returns its html or null when
@@ -2837,6 +2906,8 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     return seen.get(p);
   };
   const blocking = blockerFields(schema).length > 0;
+  const graph = new Map();
+  const given = new Map();          // docKey -> the path as the scan gave it
   for (const doc of docs) {
     if (doc.error) { skipped.push({ path: doc.path, reason: doc.error }); continue; }
     if (!/<plan-[a-z]/i.test(doc.html)) {
@@ -2852,8 +2923,15 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     const rec = resolveMeta(doc.html, { schema, docPath: doc.path });
     rec.derived = blocking ? { blocked: resolveBlocked(rec, { schema, lookup }) } : {};
     for (const p of pairProblems(schema, rec)) problems.push({ path: doc.path, text: p.text });
+    if (blocking) {
+      graph.set(docKey(doc.path), blockerTargets(schema, rec).map(b => docKey(blockerPath(doc.path, b.target))));
+      given.set(docKey(doc.path), doc.path);
+    }
     if (matchWhere(rec, where)) results.push(rec);
   }
+  // Named by each document's path as the scan gave it, like every other problem.
+  for (const cycle of findCycles(graph).map(c => c.map(k => given.get(k))))
+    problems.push({ path: cycle[0], text: cycleText(cycle) });
   const matched = results.length;
   // Stable by construction: the shell hands documents over in sorted path
   // order and Array#sort is stable, so ties keep that order on every platform.
@@ -4195,7 +4273,7 @@ module.exports = {
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
-  blockerPath, blockerFields, resolveBlocked, lintBlockers, pairProblems, lintPairs,
+  blockerPath, blockerFields, resolveBlocked, lintBlockers, pairProblems, lintPairs, findCycles, lintCycles,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport, problemReport, strictFailure,
