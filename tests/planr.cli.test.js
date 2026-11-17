@@ -1246,3 +1246,80 @@ describe('blocker cycles (wiring)', () => {
     } finally { rmTmp(root); }
   });
 });
+
+describe('index (wiring)', () => {
+  it('writes a linked table into a section of a real document, and a re-run changes nothing', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const index = join(root, '.claude', 'plans', 'index.html');
+      expect(runAt(P, ['new', index, '--title', 'Roadmap']).code).toBe(0);
+      // From another working directory: every href is relative to the document.
+      const r = runAt(P, ['index', dir, index, 'overview', '--fields', 'title,stage', '--sort', 'title'], { cwd: SKILL_DIR });
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toBe("wrote the index in 'overview' — 2 document(s)\n");
+      const once = readFileSync(index, 'utf8');
+      expect(once).toContain('<plan-table data-planr-index="projects">');
+      expect(once).toContain('<tr><td><a href="projects/alpha.html">Alpha</a></td><td>active</td></tr>');
+      expect(once).toContain('<p>Replace with plan content.</p>');
+      expect(runAt(P, ['check', index, '--strict']).code).toBe(0);
+      const again = runAt(P, ['index', dir, index, 'overview', '--fields', 'title,stage', '--sort', 'title']);
+      expect(again.stdout).toBe("index in 'overview' is current — 2 document(s)\n");
+      expect(readFileSync(index, 'utf8')).toBe(once);
+    } finally { rmTmp(root); }
+  });
+
+  it('prints the corpus problems, and with --strict writes nothing and exits 1', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const index = join(root, '.claude', 'plans', 'index.html');
+      expect(runAt(P, ['new', index, '--title', 'Roadmap']).code).toBe(0);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=shipped']).code).toBe(0);
+      const before = readFileSync(index, 'utf8');
+      const strict = runAt(P, ['index', dir, index, 'overview', '--strict']);
+      expect(strict.code).toBe(1);
+      expect(strict.stderr).toContain("stage 'shipped' pairs with status implemented");
+      expect(strict.stderr).toContain('index --strict: 1 problem(s), listed above — nothing written');
+      expect(readFileSync(index, 'utf8')).toBe(before);
+      const loose = runAt(P, ['index', dir, index, 'overview']);
+      expect(loose.code, loose.stderr).toBe(0);
+      expect(loose.stderr).toContain('1 problem(s) — the corpus breaks a schema rule:');
+      expect(readFileSync(index, 'utf8')).toContain('data-planr-index');
+    } finally { rmTmp(root); }
+  });
+
+  it('--check writes nothing, and exits 1 naming a missing or a stale table', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const index = join(root, '.claude', 'plans', 'index.html');
+      expect(runAt(P, ['new', index, '--title', 'Roadmap']).code).toBe(0);
+      const args = ['index', dir, index, 'overview', '--fields', 'title,stage'];
+      const before = readFileSync(index, 'utf8');
+      const stale = runAt(P, [...args, '--check']);
+      expect(stale.code).toBe(1);
+      expect(stale.stderr).toContain("index --check: 'overview' of");
+      expect(stale.stderr).toContain('has no generated index — run the same command without --check to write it');
+      expect(readFileSync(index, 'utf8')).toBe(before);
+      expect(runAt(P, args).code).toBe(0);
+      const current = runAt(P, [...args, '--check']);
+      expect(current.code, current.stderr).toBe(0);
+      expect(current.stdout).toBe("index in 'overview' is current — 2 document(s)\n");
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=active']).code).toBe(0);
+      const drift = runAt(P, [...args, '--check']);
+      expect(drift.code).toBe(1);
+      expect(drift.stderr).toContain("index --check: the index in 'overview' of");
+      expect(drift.stderr).toContain('is stale — run the same command without --check to rewrite it');
+    } finally { rmTmp(root); }
+  });
+
+  it('refuses a missing or extra argument and a flag it does not read', () => {
+    expect(run(['index']).stderr).toContain("'index' requires a <dir|glob> argument");
+    expect(run(['index', 'a', 'b.html']).stderr).toContain("'index' takes <dir|glob> <file> <address> — got 2 argument(s)");
+    expect(run(['index', 'a', 'b.html', 'c', 'd']).stderr).toContain('got 4 argument(s)');
+    const f = run(['index', 'a', 'b.html', 'c', '--format', 'json']);
+    expect(f.code).toBe(1);
+    expect(f.stderr).toContain('index does not take --format');
+  });
+});

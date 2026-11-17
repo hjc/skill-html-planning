@@ -3271,7 +3271,8 @@ function indexTableLines(cols, rows, source) {
   ];
 }
 
-/* Pure: (html, docs, opts) -> { html, message, skipped, problems }. `docPath`
+/* Pure: (html, docs, opts) -> { html, message, existed, skipped, problems }.
+   `existed` says whether the section already held a generated table. `docPath`
    is the document written into, `target` the scanned directory or glob; both
    in the same form as each doc's path. The document itself is never one of its
    own rows. */
@@ -3314,7 +3315,7 @@ function planIndex(html, docs, {
   const n = `${q.results.length} document(s)`;
   const message = out === html ? `index in '${address}' is current — ${n}`
     : `${tables.length ? 'rewrote' : 'wrote'} the index in '${address}' — ${n}`;
-  return { html: out, message, skipped: q.skipped, problems: q.problems };
+  return { html: out, message, existed: tables.length > 0, skipped: q.skipped, problems: q.problems };
 }
 
 /* ── wordy: the sentence rule ─────────────────────────────
@@ -4064,6 +4065,38 @@ function cmdNext(target, flags) {
   if (failure) throw new PlanError(failure);
 }
 
+// `index` writes query's selection into a section of <file>. Both the corpus and
+// the document are resolved to absolute, forward-slash paths, so every href the
+// core computes is relative to the document whatever directory planr ran from.
+// With --strict a skipped file or a corpus problem writes nothing. With --check
+// nothing is ever written: the run fails when the document's table is not the
+// one a write would produce, so a checker can assert the index is current.
+function cmdIndex(target, file, address, flags) {
+  const { schema } = loadSchema();
+  const abs = (p) => path.resolve(String(p)).replace(/\\/g, '/');
+  const before = read(file);
+  const { html, message, existed, skipped, problems } = planIndex(before,
+    collectDocs(target).map(d => ({ ...d, path: abs(d.path) })), {
+      schema, address, docPath: abs(file), target: abs(target),
+      where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
+      sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'), limit: flagValue(flags, 'limit'),
+      rank: flagValue(flags, 'rank'), readDoc: readBlocker,
+    });
+  if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
+  if (problems.length) process.stderr.write(problemReport(problems) + '\n');
+  const failure = flags.strict ? strictFailure('index', skipped, problems) : null;
+  if (failure) throw new PlanError(`${failure} — nothing written`);
+  if (flags.check) {
+    if (html !== before) throw new PlanError(existed
+      ? `index --check: the index in '${address}' of ${file} is stale — run the same command without --check to rewrite it`
+      : `index --check: '${address}' of ${file} has no generated index — run the same command without --check to write it`);
+    process.stdout.write(message + '\n');
+    return;
+  }
+  if (html !== before) write(file, html);
+  process.stdout.write(message + '\n');
+}
+
 // The files a directory contributes to `wordy`: prose and plan documents.
 const WORDY_FILE = (p) => /\.(md|markdown|txt|html?)$/i.test(p);
 // Every positional is a target. Every value flag is read through flagValue, so a
@@ -4212,6 +4245,8 @@ const COMMAND_FLAGS = {
   query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
                     fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
   next:           { where: 'value', has: 'value', missing: 'value', rank: 'value', format: 'value', strict: 'bool' },
+  index:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
+                    fields: 'value', limit: 'value', strict: 'bool', check: 'bool' },
   wordy:          { ...Object.fromEntries(WORDY_KINDS.map(k => [k.flag, 'value'])), format: 'value' },
   set:            {},
   'set-body':     { file: 'value', append: 'bool' },
@@ -4246,8 +4281,8 @@ const NEEDS_FILE = ['new', 'list', 'check', 'loader', 'tasks', 'read', 'meta', '
   'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
 // The corpus commands take a <dir|glob> in the same slot, so they need their
 // own required-argument message rather than one that says <file>. `wordy`
-// takes one or more of them.
-const NEEDS_TARGET = ['query', 'next', 'wordy'];
+// takes one or more of them; `index` takes a <file> and an <address> after it.
+const NEEDS_TARGET = ['query', 'next', 'wordy', 'index'];
 // A flag declared 'value' must be followed by a value; a bare one is refused here,
 // once, for every command, rather than read as "absent" by whichever core meets it.
 function parseFlags(argv, cmd) {
@@ -4291,6 +4326,10 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
                           [--format table|json|tsv|paths] [--strict]
   next         <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                           [--format text|json] [--strict]
+  index        <dir|glob> <file> <address> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
+                          [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N] [--strict] [--check]
+                          (write the matching documents as a linked table into that section; re-runs replace it;
+                          --check writes nothing and exits 1 when the table is missing or stale)
   wordy        <file|dir|glob> [...] [--format text|json]  (detects long, dense and run-on lines; exit 1 on any)
                           [--max-chars N] [--max-sentences N] [--max-sentence-chars N]
   set          <file> <path>=<value> [<path>=<value> ...]
@@ -4341,6 +4380,9 @@ function main() {
     assertKnownFlags(cmd, flags);
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
     if (NEEDS_TARGET.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <dir|glob> argument`);
+    // Three positionals, and a fourth would be dropped in silence.
+    if (cmd === 'index' && positional.length !== 3)
+      throw new PlanError(`'index' takes <dir|glob> <file> <address> — got ${positional.length} argument(s)`);
     switch (cmd) {
       case 'new':          return cmdNew(file, flags);
       case 'templates':    return cmdTemplates(positional[0]);
@@ -4351,6 +4393,7 @@ function main() {
       case 'meta':         return cmdMeta(file, flags);
       case 'query':        return cmdQuery(file, flags);
       case 'next':         return cmdNext(file, flags);
+      case 'index':        return cmdIndex(file, positional[1], positional[2], flags);
       case 'wordy':        return cmdWordy(positional, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
