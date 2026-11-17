@@ -3410,3 +3410,48 @@ describe('pairs — a field value names the values another field may hold', () =
     expect(planr.mergeSchemas(core, consumer).fields.stage.pairs).toEqual(RULE);
   });
 });
+
+describe('pairs — check warns when a pairing does not hold', () => {
+  let PS;
+  beforeAll(() => {
+    PS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:  { type: 'string', from: 'header:title' },
+        status: { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' },
+        stage:  { type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'],
+                  pairs: { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } } },
+      },
+      infer: [{ match: '/done/', set: { stage: 'shipped' } }],
+    }, 'probe.json'));
+  });
+  const warn = (html, ctx) => planr.planCheck(html, PS, ctx).warnings.map(w => [w.line, w.text]);
+
+  it('pairProblems reads the resolved record, value by value', () => {
+    const rec = (meta, attrs) => planr.resolveMeta(QDOC(meta, attrs), { schema: PS });
+    expect(planr.pairProblems(PS, rec({ stage: 'shipped' }, 'title="T" status="implemented"'))).toEqual([]);
+    expect(planr.pairProblems(PS, rec({ stage: 'active' }, 'title="T" status="approved"'))).toEqual([]);
+    expect(planr.pairProblems(PS, rec({ stage: 'dropped' }, 'title="T" status="draft"'))).toEqual([
+      { field: 'stage', text: "stage 'dropped' pairs with status rejected — status is 'draft'" }]);
+    expect(planr.pairProblems(PS, rec({ stage: 'idea' }, 'title="T" status="implemented"'))).toEqual([
+      { field: 'stage', text: "stage 'idea' pairs with status draft or review or approved — status is 'implemented'" }]);
+    // A value the enum does not declare never resolves, so it is lintMeta's problem, not a pairing.
+    expect(planr.pairProblems(PS, rec({ stage: 'bogus' }, 'title="T" status="implemented"'))).toEqual([]);
+  });
+
+  it('warns on the declaring field\'s line when the block carries it', () => {
+    expect(warn(QDOC({ stage: 'shipped' }, 'title="T" status="draft"')))
+      .toEqual([[4, "stage 'shipped' pairs with status implemented — status is 'draft'"]]);
+    expect(warn(QDOC({ stage: 'shipped' }, 'title="T" status="implemented"'))).toEqual([]);
+  });
+
+  it('names an unset paired field, and says nothing when the declaring field is unset', () => {
+    expect(warn(QDOC({ stage: 'active' }, 'title="T"')))
+      .toEqual([[4, "stage 'active' pairs with status draft or review or approved — status is unset"]]);
+    expect(warn(QDOC({}, 'title="T" status="implemented"'))).toEqual([]);
+  });
+
+  it('holds a value a path rule supplies to the same rule, on line 0', () => {
+    expect(warn(QDOC({}, 'title="T" status="draft"'), { docPath: 'plans/done/a.html' }))
+      .toEqual([[0, "stage 'shipped' pairs with status implemented — status is 'draft'"]]);
+  });
+});

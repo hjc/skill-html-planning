@@ -2369,6 +2369,44 @@ function lintBlockers(html, schema, { docPath = null, readDoc = null } = {}) {
   return out;
 }
 
+/* ── pairs ────────────────────────────────────────────────
+   A field declaring `pairs` ties each of its values to the values another field
+   may hold beside it. ONE rule with two callers: lintPairs (`check`, one
+   document) and queryDocs (a corpus scan's `problems`). Read off the resolved
+   record, so a value from the header, a path rule or a default is held to it
+   exactly as a <plan-meta> one is. An unset declaring field claims nothing; an
+   unset paired field breaks the rule, which names the values it must hold.
+   Returns [{ field, text }]. */
+function pairProblems(schema, rec) {
+  const out = [];
+  for (const [name, def] of Object.entries(schema.fields)) {
+    if (!def.pairs) continue;
+    const f = rec.fields[name];
+    if (f.source === null) continue;
+    for (const [other, rule] of Object.entries(def.pairs)) {
+      const allowed = Object.prototype.hasOwnProperty.call(rule, f.value) ? rule[f.value] : rule['*'];
+      if (!allowed) continue;
+      const got = rec.fields[other];
+      if (got.source !== null && allowed.includes(got.value)) continue;
+      out.push({ field: name, text: `${name} '${f.value}' pairs with ${other} ${allowed.join(' or ')} — ` +
+        `${other} is ${got.source === null ? 'unset' : `'${got.value}'`}` });
+    }
+  }
+  return out;
+}
+// The check half: each broken pairing, on the declaring field's <plan-field>
+// line when the block carries it, else line 0 (a header, path or default value
+// has no tag of its own to point at).
+function lintPairs(html, schema, { docPath = null } = {}) {
+  if (!schema) return [];
+  const rec = resolveMeta(html, { schema, docPath });
+  const block = readMetaBlock(html);
+  return pairProblems(schema, rec).map((p) => {
+    const tag = block && rec.fields[p.field].source === 'meta' ? block.fields.find(f => f.key === p.field) : null;
+    return { line: tag ? tag.line : 0, text: p.text };
+  });
+}
+
 /* ── check warnings ───────────────────────────────────────
    Each lint returns [{ line, text }] for markup that passes the structure
    check and still renders something other than what the author wrote. */
@@ -2376,6 +2414,7 @@ function lintPlan(html, schema = null, ctx = {}) {
   return [
     ...lintMeta(html, schema),
     ...lintBlockers(html, schema, ctx),
+    ...lintPairs(html, schema, ctx),
     ...lintScaffoldBanner(html),
     ...lintCodeBodies(html),
     ...lintSectionRefs(html),
@@ -4130,7 +4169,7 @@ module.exports = {
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
-  blockerPath, blockerFields, resolveBlocked, lintBlockers,
+  blockerPath, blockerFields, resolveBlocked, lintBlockers, pairProblems, lintPairs,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
   QUERY_FORMATS, planQuery, skipReport,
