@@ -2817,10 +2817,12 @@ function parseSort(schema, spec, label = '--sort') {
 }
 
 /* Pure: ([{ path, html } | { path, error }], opts) -> { results, skipped,
-   scanned, matched }. `results` is sorted and limited; `matched` is the count
-   BEFORE the limit. A file that cannot be read, is not a plan document, or does
-   not balance is reported in `skipped` rather than dropped — the corpus is
-   other people's files, and a silent omission reads as "nothing matched".
+   problems, scanned, matched }. `results` is sorted and limited; `matched` is
+   the count BEFORE the limit. A file that cannot be read, is not a plan
+   document, or does not balance is reported in `skipped` rather than dropped —
+   the corpus is other people's files, and a silent omission reads as "nothing
+   matched". `problems` ([{ path, text }]) lists every scanned document, matched
+   or not, that breaks a schema-declared corpus rule: a `pairs` rule.
    Each result also carries `derived` — `{ blocked }` when the schema declares a
    `blocks` field, else `{}`. A blocker target is read from `docs` when the scan
    holds it, else through `readDoc(path)`, which returns its html or null when
@@ -2828,6 +2830,7 @@ function parseSort(schema, spec, label = '--sort') {
 function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc = () => null } = {}) {
   const results = [];
   const skipped = [];
+  const problems = [];
   const seen = new Map(docs.map(d => [String(d.path).replace(/\\/g, '/'), d.error ? null : d.html]));
   const lookup = (p) => {
     if (!seen.has(p)) seen.set(p, readDoc(p));
@@ -2848,6 +2851,7 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     }
     const rec = resolveMeta(doc.html, { schema, docPath: doc.path });
     rec.derived = blocking ? { blocked: resolveBlocked(rec, { schema, lookup }) } : {};
+    for (const p of pairProblems(schema, rec)) problems.push({ path: doc.path, text: p.text });
     if (matchWhere(rec, where)) results.push(rec);
   }
   const matched = results.length;
@@ -2864,7 +2868,7 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     }
     return 0;
   });
-  return { results: limit === null ? results : results.slice(0, limit), skipped, scanned: docs.length, matched };
+  return { results: limit === null ? results : results.slice(0, limit), skipped, problems, scanned: docs.length, matched };
 }
 
 /* Pure: the columns to print. `path`, then every schema field at least one
@@ -2957,7 +2961,9 @@ function planQuery(docs, {
   const use = fields === null ? defaultFields(schema, q.results) : parseFields(schema, fields);
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
 
-  const done = (report) => ({ report, skipped: q.skipped, scanned: q.scanned, matched: q.matched, returned: q.results.length });
+  const done = (report) => ({
+    report, skipped: q.skipped, problems: q.problems, scanned: q.scanned, matched: q.matched, returned: q.results.length,
+  });
 
   // `fields` is the COLUMN list — what a table would print. `results[].fields`
   // is the whole projected record, every declared schema field present with its
@@ -2973,6 +2979,7 @@ function planQuery(docs, {
       ...blockedJson(r),
     })),
     skipped: q.skipped,
+    problems: q.problems,
   }, null, 2) + '\n');
 
   if (format === 'paths') return done(q.results.map(r => r.path).join('\n') + (q.results.length ? '\n' : ''));
@@ -2996,6 +3003,22 @@ function skipReport(skipped) {
   if (!skipped.length) return '';
   return [`${skipped.length} file(s) skipped — scanned, not queryable:`,
     ...skipped.map(s => `  ${s.path}: ${s.reason}`)].join('\n');
+}
+// The corpus problems, shaped like skipReport and printed beside it on stderr.
+function problemReport(problems) {
+  if (!problems.length) return '';
+  return [`${problems.length} problem(s) — the corpus breaks a schema rule:`,
+    ...problems.map(p => `  ${p.path}: ${p.text}`)].join('\n');
+}
+// What `--strict` refuses on a corpus scan: a skipped file or a corpus
+// problem. The message, or null when the scan is clean. One rule for every
+// command that scans a corpus.
+function strictFailure(cmd, skipped, problems) {
+  const parts = [
+    skipped.length ? `${skipped.length} file(s) skipped` : null,
+    problems.length ? `${problems.length} problem(s)` : null,
+  ].filter(Boolean);
+  return parts.length ? `${cmd} --strict: ${parts.join(', ')}, listed above` : null;
 }
 
 const NEXT_FORMATS = ['text', 'json'];
@@ -3062,10 +3085,11 @@ function planNext(docs, {
     sections: outline.sections, open: outline.open, next_section: outline.next,
   } : null;
 
-  const done = (report) => ({ report, skipped: q.skipped, scanned: q.scanned, matched: q.matched, document });
+  const done = (report) => ({ report, skipped: q.skipped, problems: q.problems, scanned: q.scanned, matched: q.matched, document });
 
   if (format === 'json') return done(JSON.stringify({
     target, rank, scanned: q.scanned, matched: q.matched, schema: sources, document, skipped: q.skipped,
+    problems: q.problems,
   }, null, 2) + '\n');
 
   if (!document) return done(`no document matches ranking '${rank}'` +
@@ -3811,7 +3835,7 @@ function readBlocker(p) {
 
 function cmdQuery(target, flags) {
   const { schema, sources } = loadSchema();
-  const { report, skipped } = planQuery(collectDocs(target), {
+  const { report, skipped, problems } = planQuery(collectDocs(target), {
     schema, target: String(target).replace(/\\/g, '/'),
     where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
     sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'),
@@ -3820,13 +3844,14 @@ function cmdQuery(target, flags) {
   });
   process.stdout.write(report);
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
-  if (flags.strict && skipped.length)
-    throw new PlanError(`query --strict: ${skipped.length} file(s) skipped, listed above`);
+  if (problems.length) process.stderr.write(problemReport(problems) + '\n');
+  const failure = flags.strict ? strictFailure('query', skipped, problems) : null;
+  if (failure) throw new PlanError(failure);
 }
 
 function cmdNext(target, flags) {
   const { schema, sources } = loadSchema();
-  const { report, skipped } = planNext(collectDocs(target), {
+  const { report, skipped, problems } = planNext(collectDocs(target), {
     schema, target: String(target).replace(/\\/g, '/'),
     where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
     rank: flagValue(flags, 'rank') || 'default',
@@ -3834,8 +3859,9 @@ function cmdNext(target, flags) {
   });
   process.stdout.write(report);
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
-  if (flags.strict && skipped.length)
-    throw new PlanError(`next --strict: ${skipped.length} file(s) skipped, listed above`);
+  if (problems.length) process.stderr.write(problemReport(problems) + '\n');
+  const failure = flags.strict ? strictFailure('next', skipped, problems) : null;
+  if (failure) throw new PlanError(failure);
 }
 
 // The files a directory contributes to `wordy`: prose and plan documents.
@@ -4172,7 +4198,7 @@ module.exports = {
   blockerPath, blockerFields, resolveBlocked, lintBlockers, pairProblems, lintPairs,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
-  QUERY_FORMATS, planQuery, skipReport,
+  QUERY_FORMATS, planQuery, skipReport, problemReport, strictFailure,
   globToRegExp, globBase, collectDocs, flagList,
   NEXT_FORMATS, docOutline, planNext,
   splitSentences, markdownUnits, htmlUnits, measureText, WORDY_KINDS, WORDY_FORMATS, planWordy,
