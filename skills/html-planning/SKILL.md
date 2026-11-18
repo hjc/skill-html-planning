@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # html-planning
@@ -433,13 +433,14 @@ tr:2          the 2nd <tr>, 1-based
 | `new` | `<file>` | `--title <T>` · `--template <name>` (default `basic`) · `--set <k=v>` (repeatable) | Generate a plan from a template. A **bare** `--set` key fills a `{{placeholder}}` the template declares (`lang`, `subtitle`, `status`, `reference-paths`, …); a **dotted** key is a node address applied to the generated file (`header.status=review`). Both are validated the same way, and an unusable key is an error, never a silent drop. A template's metadata fields are stamped from the schema. Run `templates <name>` for the variables a template offers. |
 | `templates` | `[<name>]` | *(none)* | With no name, a table of every template and its one-line gist. With a name, that template's **full guidance** — the leading comment its author wrote — plus the sections it scaffolds. |
 | `list` | `<file>` | `--no-outline` | Print the title, then every section as `num. id — title [status]`, indented by depth, **and each section's own `<h1>`–`<h6>` headings** — where a large plan's real structure lives, and the anchors `insert --before-heading` takes. `--no-outline` drops the headings for the rare document with hundreds of them. |
-| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, a legal parent for every balanced tag — a `<tr>` directly in `<table>`/`<thead>`/`<tbody>`/`<tfoot>`, a cell in a `<tr>`, and no table tag or block component inside an inline element such as `<code>` — unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`, a header carrying free-text `chips`, a `<plan-field>` stamp that disagrees with the schema, a `blocked-by` target that does not exist, and an inline loader that cannot find the skill (a pre-2 loader outside `.claude`, or a `data-skill-href` that no longer reaches it — see "Where plans live"). Warnings exit **0**; `--strict` exits **1** when there are any. |
+| `check` | `<file>` | `--strict` | **Authoritative structure validation, then warnings.** Per-tag balance for every `<plan-*>` and `<table>`/`<thead>`/`<tbody>`/`<tfoot>`/`<tr>`, a legal parent for every balanced tag — a `<tr>` directly in `<table>`/`<thead>`/`<tbody>`/`<tfoot>`, a cell in a `<tr>`, and no table tag or block component inside an inline element such as `<code>` — unregistered components, duplicate ids, and a tag census; exits **1** with the offending line numbers on any break. On a sound document it then lists, by line, markup that balances but will not render as written: an unescaped tag inside `<plan-file>`/`<plan-diff>`, a `<plan-diff>` line with no gutter character, link text that is only a section number (`&sect;5`), a badge whose label names a different type, a `<title>` that disagrees with the header title, and a template banner left at the top of `<main>`, a header carrying free-text `chips`, a `<plan-field>` stamp that disagrees with the schema, a `blocked-by` target that does not exist, a `pairs` rule the document breaks, a blocker cycle through the document, and an inline loader that cannot find the skill (a pre-2 loader outside `.claude`, or a `data-skill-href` that no longer reaches it — see "Where plans live"). Warnings exit **0**; `--strict` exits **1** when there are any. |
 | `loader` | `<file>` | *(none)* | Rewrite the document's inline loader (the `<script>` in `<head>` that loads `plan-runtime.js`) to the one `new` writes today, with a fresh `data-skill-href` for where the file now sits. Every byte outside that `<script>` element is left alone, and the file's line endings are kept. Prints `loader upgraded …`, `loader refreshed …` or `loader already current`. Run it on a plan created before loader version 2 that lives outside `.claude`, and on a plan you moved. |
 | `tasks` | `<file>` | `--all` · `--status <s>` (comma-sep) | List sections carrying a `status`, excluding `done`; `--all` includes `done`, `--status` lists only the given statuses. Rows are `<address>  [status]  title`. |
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
 | `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `label`/`tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
-| `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
-| `next` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
+| `query` | `<dir\|glob>` | `--where <expr>` (repeatable; `<expr>` is `<field><op><value>`, `<op>` one of `=` `!=` `>=` `<=` `>` `<` `~`, e.g. `priority=p0,p1`) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped, and so are the corpus problems — a broken `pairs` rule, a blocker cycle. See "Querying" below. |
+| `next` | `<dir\|glob>` | `--where <expr>` (repeatable; as in `query`) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
+| `index` | `<dir\|glob> <file> <address>` | `--where <expr>` (repeatable; as in `query`) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--strict` · `--check` | Write `query`'s selection as a linked `<plan-table>` into the addressed section of `<file>`. A re-run replaces that table in place and leaves the section's prose alone; `--strict` writes nothing when a file was skipped or the corpus has a problem; `--check` never writes and exits **1** when the table is missing or stale, saying which. See "Generated indexes" below. |
 | `wordy` | `<file\|dir\|glob> …` | `--max-chars N` · `--max-sentences N` · `--max-sentence-chars N` · `--format text\|json` | Detect wordy lines — `long`, `dense`, `run-on` — in Markdown, plain text and HTML plan documents. Detects only; exits **1** when anything is flagged. See "Wordy lines" below. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
@@ -597,7 +598,7 @@ A document's **metadata** is the small set of facts a tool filters and sorts a w
 }
 ```
 
-Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enum`, the declared `values` order **is** the sort order — never alphabetical. `list` is a repeatable `string`.
+Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enum`, the declared `values` order **is** the sort order — never alphabetical. `list` is a repeatable `string`. A `path` value is relative to the document that carries it, as an `href` is.
 
 | Key | Applies to | Means |
 |---|---|---|
@@ -610,6 +611,7 @@ Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enu
 | `.from` | any field | `header:title\|status\|date` — a read-only view of that header attribute |
 | `.label` | any field but a `from` one | the chip's text in place of the key; stamped onto each `<plan-field>` |
 | `.blocks` | `path` | `true` makes each target a blocker of the document (see "Blockers") |
+| `.pairs` | single-valued `enum` | value → the values another field may hold beside it (see "Pairs") |
 | `infer` | top level | `[{ "match": "<regex on path>", "set": { field: value } }]` |
 | `defaults` | top level | field → value, the last resort of the chain |
 | `rankings` | top level | name → `{ where, order }` (see "Rankings") |
@@ -714,6 +716,8 @@ planr query <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank 
                        [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                        [--format table|json|tsv|paths] [--strict]
 planr next  <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>] [--format text|json] [--strict]
+planr index <dir|glob> <file> <address> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
+                       [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N] [--strict] [--check]
 ```
 
 ### What gets scanned
@@ -736,7 +740,19 @@ A file the scan cannot use is **reported, never silently dropped**. Three reason
   .claude/plans/issues/old.html: structure does not balance — run `planr check` on it
 ```
 
-`--strict` turns a non-empty skip list into exit 1, exactly as it does for `check`'s warnings. A target that resolves to **no files at all** is an error; a filter that matches no documents is not.
+A **problem** is reported beside the skip list. Problems carry the rules a schema declares for the corpus — a broken
+`pairs` rule (see "Pairs") — and the rules only a corpus can see: a blocker cycle (see "Blockers"). Every scanned
+document counts, whether or not a filter matches it. A value's own validity, a drifted stamp and a missing blocker stay
+`check`'s, and `query` reports none of them.
+Problems go to stderr, and into the `problems` array under `--format json`:
+
+```
+1 problem(s) — the corpus breaks a schema rule:
+  .claude/plans/projects/search.html: stage 'shipped' pairs with status implemented — status is 'draft'
+```
+
+`--strict` turns a non-empty skip list or problem list into exit 1, exactly as it does for `check`'s warnings. A target
+that resolves to **no files at all** is an error; a filter that matches no documents is not.
 
 ### Filtering
 
@@ -822,6 +838,32 @@ planr meta q07-auth.html --set blocked-by=q04-tokens.html,../tdds/m1.html
 - **A missing target never blocks, and `check` warns on it**, naming the command that removes the stale entry:
   `planr meta <file> --set blocked-by=…` with the targets that remain, or `--unset blocked-by`.
 - Any `path` field may declare `"blocks": true`; `blocked` reads them all. No git history is consulted.
+- **A cycle is a problem.** When blockers loop — `a.html` waits on `b.html`, which waits on `a.html` — none can ever
+  close. `query`, `next` and `index` report every cycle among the scanned documents as a `blocker cycle:` problem, and
+  `check` warns on one that passes through the document it checks, following targets on disk. `--strict` makes either
+  fatal.
+
+### Pairs
+
+A field can declare which values **another field** may hold beside each of its own: a `stage` that may be `shipped`
+only on an `implemented` document, say. Declare it on the field, with `*` standing for every value not named:
+
+```json
+"stage": {
+  "type": "enum",
+  "values": ["idea", "planned", "active", "shipped", "dropped"],
+  "pairs": { "status": { "shipped": ["implemented"], "dropped": ["rejected"], "*": ["draft", "review", "approved"] } }
+}
+```
+
+- **Both fields are single-valued enums**, and the paired field may be a header view such as `status`. Every value a
+  rule names must be one the paired field declares; that is checked when the schema loads.
+- **A value with no rule, and no `*`, pairs with anything.** An unset declaring field claims nothing; an unset paired
+  field breaks the rule.
+- **`check` warns** on a document that breaks one, and **`query`, `next` and `index` report it as a problem** for every
+  scanned document. `--strict` makes either fatal.
+- Fix it by changing whichever value is wrong: `planr set <file> header.status=…` for a header field, `planr meta <file>
+  --set <field>=…` for any other.
 
 ### `planr next` — handing one document to an agent
 
@@ -853,6 +895,32 @@ Under `--format json` the `document` object carries the path, the title, every r
 - **`next_section`** — the first of those in document order, or `null`.
 
 **An empty queue is an answer, not a failure.** `next` prints `no document matches ranking '<name>'` and exits **0**, with `"document": null` in JSON, so a caller polling "is there anything to do" can tell *nothing* from *broken*.
+
+### Generated indexes
+
+A page opened from `file://` cannot fetch, so a rolled-up view of a directory has to be written into the page itself.
+**`planr index`** writes `query`'s selection as a `<plan-table>` into one section of a document:
+
+```bash
+planr index .claude/plans/projects .claude/plans/index.html projects --where 'stage!=dropped' --fields title,stage
+```
+
+- **It selects exactly as `query` does**: `--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields` and `--limit`,
+  composed with a ranking the same way. With no `--fields` the columns are the title, then every field a matched
+  document resolves; `path` leads instead when the schema binds no field to the header title.
+- **Every link is relative to the document written into.** The title links to its document, a `path` column shows the
+  path as linked code, and a `path` field links each value, resolved against the document carrying it and labelled
+  with the target's title when the scan holds it. Every href segment is percent-encoded.
+  A column's header is the field's `label`, else its name.
+- **The table is marked `data-planr-index`**, naming its source relative to the document. A re-run replaces that table
+  where it sits and leaves the rest of the section alone, so prose above or below it survives; when nothing changed,
+  nothing is written. A section holding two marked tables is refused.
+- **The document is never one of its own rows**, even when the target directory holds it.
+- Skipped files and problems print on stderr as they do for `query`, and **`--strict` writes nothing** when there are
+  any.
+- **`--check` asserts the index is current.** It computes the table exactly as a write would and writes nothing. It
+  exits **0** when the section's generated table is identical, and **1** when the section has none (`has no generated
+  index`) or it differs (`is stale`) — the gate for a checker or CI. Run the same command without `--check` to fix it.
 
 ## Wordy lines
 

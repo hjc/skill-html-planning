@@ -1199,3 +1199,186 @@ describe('a value flag given with no value', () => {
     expect(run(['tasks', P(), '--all']).code).toBe(0);
   });
 });
+
+// ── corpus rules: pairs and blocker cycles ────────────────
+// A staged skill plus a consumer schema declaring a `pairs` rule and a
+// blocking `depends-on`, and two documents under <root>/.claude/plans/projects.
+const PAIRS_SCHEMA = {
+  fields: {
+    stage: { type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'],
+             pairs: { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } } },
+    'depends-on': { type: 'path', repeatable: true, blocks: true, label: 'depends on' },
+  },
+  rankings: { default: { where: { stage: { in: ['active'] } }, order: ['title'] } },
+};
+function stageProjects(root) {
+  const staged = stageSkill(root, 'skills/html-planning');
+  writeFileSync(join(root, '.claude', 'planr-schema.json'), JSON.stringify(PAIRS_SCHEMA));
+  const dir = join(root, '.claude', 'plans', 'projects');
+  mkdirSync(dir, { recursive: true });
+  const make = (name, title, sets) => {
+    const out = join(dir, name);
+    expect(runAt(staged, ['new', out, '--title', title]).code, name).toBe(0);
+    expect(runAt(staged, ['meta', out, ...sets.flatMap(s => ['--set', s])]).code, name).toBe(0);
+    return out;
+  };
+  make('alpha.html', 'Alpha', ['stage=active']);
+  make('beta.html', 'Beta', ['stage=idea']);
+  return { planr: staged, dir };
+}
+
+describe('corpus problems (wiring)', () => {
+  it('query and next print a broken pairing on stderr, exit 0, and --strict makes it exit 1', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=shipped']).code).toBe(0);
+      const q = runAt(P, ['query', dir, '--format', 'paths']);
+      expect(q.code, q.stderr).toBe(0);
+      expect(q.stdout.trim().split('\n')).toHaveLength(2);
+      expect(q.stderr).toContain('1 problem(s) — the corpus breaks a schema rule:');
+      expect(q.stderr).toMatch(/beta\.html: stage 'shipped' pairs with status implemented — status is 'draft'/);
+      const strict = runAt(P, ['query', dir, '--strict']);
+      expect(strict.code).toBe(1);
+      expect(strict.stderr).toContain('query --strict: 1 problem(s), listed above');
+      expect(runAt(P, ['next', dir, '--strict']).code).toBe(1);
+      expect(runAt(P, ['check', join(dir, 'beta.html'), '--strict']).code).toBe(1);
+      expect(runAt(P, ['set', join(dir, 'beta.html'), 'header.status=implemented']).code).toBe(0);
+      expect(runAt(P, ['query', dir, '--strict']).code).toBe(0);
+    } finally { rmTmp(root); }
+  });
+});
+
+describe('blocker cycles (wiring)', () => {
+  it('query --strict and check --strict refuse a cycle across depends-on', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      expect(runAt(P, ['meta', join(dir, 'alpha.html'), '--set', 'depends-on=beta.html']).code).toBe(0);
+      expect(runAt(P, ['query', dir, '--strict']).code).toBe(0);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'depends-on=alpha.html']).code).toBe(0);
+      const q = runAt(P, ['query', dir, '--strict']);
+      expect(q.code).toBe(1);
+      expect(q.stderr).toMatch(/blocker cycle: \S*alpha\.html → \S*beta\.html → \S*alpha\.html/);
+      const c = runAt(P, ['check', join(dir, 'beta.html')]);
+      expect(c.code, c.stderr).toBe(0);
+      expect(c.stdout).toContain('blocker cycle:');
+      expect(runAt(P, ['check', join(dir, 'beta.html'), '--strict']).code).toBe(1);
+    } finally { rmTmp(root); }
+  });
+});
+
+describe('index (wiring)', () => {
+  it('writes a linked table into a section of a real document, and a re-run changes nothing', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const index = join(root, '.claude', 'plans', 'index.html');
+      expect(runAt(P, ['new', index, '--title', 'Roadmap']).code).toBe(0);
+      // From another working directory: every href is relative to the document.
+      const r = runAt(P, ['index', dir, index, 'overview', '--fields', 'title,stage', '--sort', 'title'], { cwd: SKILL_DIR });
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toBe("wrote the index in 'overview' — 2 document(s)\n");
+      const once = readFileSync(index, 'utf8');
+      expect(once).toContain('<plan-table data-planr-index="projects">');
+      expect(once).toContain('<tr><td><a href="projects/alpha.html">Alpha</a></td><td>active</td></tr>');
+      expect(once).toContain('<p>Replace with plan content.</p>');
+      expect(runAt(P, ['check', index, '--strict']).code).toBe(0);
+      const again = runAt(P, ['index', dir, index, 'overview', '--fields', 'title,stage', '--sort', 'title']);
+      expect(again.stdout).toBe("index in 'overview' is current — 2 document(s)\n");
+      expect(readFileSync(index, 'utf8')).toBe(once);
+    } finally { rmTmp(root); }
+  });
+
+  it('prints the corpus problems, and with --strict writes nothing and exits 1', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const index = join(root, '.claude', 'plans', 'index.html');
+      expect(runAt(P, ['new', index, '--title', 'Roadmap']).code).toBe(0);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=shipped']).code).toBe(0);
+      const before = readFileSync(index, 'utf8');
+      const strict = runAt(P, ['index', dir, index, 'overview', '--strict']);
+      expect(strict.code).toBe(1);
+      expect(strict.stderr).toContain("stage 'shipped' pairs with status implemented");
+      expect(strict.stderr).toContain('index --strict: 1 problem(s), listed above — nothing written');
+      expect(readFileSync(index, 'utf8')).toBe(before);
+      const loose = runAt(P, ['index', dir, index, 'overview']);
+      expect(loose.code, loose.stderr).toBe(0);
+      expect(loose.stderr).toContain('1 problem(s) — the corpus breaks a schema rule:');
+      expect(readFileSync(index, 'utf8')).toContain('data-planr-index');
+    } finally { rmTmp(root); }
+  });
+
+  it('prints skipped files and problems as given, the way query does, not as absolute paths', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const plans = join(root, '.claude', 'plans');
+      expect(runAt(P, ['new', join(plans, 'index.html'), '--title', 'Roadmap']).code).toBe(0);
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=shipped']).code).toBe(0);
+      const r = runAt(P, ['index', 'projects', 'index.html', 'overview'], { cwd: plans });
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stderr).toMatch(/^ {2}projects\/beta\.html: stage 'shipped' pairs with status implemented/m);
+      expect(r.stderr).not.toContain(root.replace(/\\/g, '/'));
+    } finally { rmTmp(root); }
+  });
+
+  it('--check writes nothing, and exits 1 naming a missing or a stale table', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, dir } = stageProjects(root);
+      const index = join(root, '.claude', 'plans', 'index.html');
+      expect(runAt(P, ['new', index, '--title', 'Roadmap']).code).toBe(0);
+      const args = ['index', dir, index, 'overview', '--fields', 'title,stage'];
+      const before = readFileSync(index, 'utf8');
+      const stale = runAt(P, [...args, '--check']);
+      expect(stale.code).toBe(1);
+      expect(stale.stderr).toContain("index --check: 'overview' of");
+      expect(stale.stderr).toContain('has no generated index — run the same command without --check to write it');
+      expect(readFileSync(index, 'utf8')).toBe(before);
+      expect(runAt(P, args).code).toBe(0);
+      const current = runAt(P, [...args, '--check']);
+      expect(current.code, current.stderr).toBe(0);
+      expect(current.stdout).toBe("index in 'overview' is current — 2 document(s)\n");
+      expect(runAt(P, ['meta', join(dir, 'beta.html'), '--set', 'stage=active']).code).toBe(0);
+      const drift = runAt(P, [...args, '--check']);
+      expect(drift.code).toBe(1);
+      expect(drift.stderr).toContain("index --check: the index in 'overview' of");
+      expect(drift.stderr).toContain('is stale — run the same command without --check to rewrite it');
+    } finally { rmTmp(root); }
+  });
+
+  it('refuses a missing or extra argument and a flag it does not read', () => {
+    expect(run(['index']).stderr).toContain("'index' requires a <dir|glob> argument");
+    expect(run(['index', 'a', 'b.html']).stderr).toContain("'index' takes <dir|glob> <file> <address> — got 2 argument(s)");
+    expect(run(['index', 'a', 'b.html', 'c', 'd']).stderr).toContain('got 4 argument(s)');
+    const f = run(['index', 'a', 'b.html', 'c', '--format', 'json']);
+    expect(f.code).toBe(1);
+    expect(f.stderr).toContain('index does not take --format');
+  });
+});
+
+describe('index, pairs and cycles documentation', () => {
+  const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  const repoFile = (f) => readFileSync(join(SKILL_DIR, '..', '..', f), 'utf8');
+
+  it('SKILL.md carries the index command, the pairs key and the corpus problems', () => {
+    const s = skill();
+    for (const t of ['| `index` |', 'planr index <dir|glob> <file> <address>', '### Generated indexes', 'data-planr-index',
+      '| `.pairs` |', '### Pairs', '"pairs"', '**A cycle is a problem.**', '`problems`', 'a `pairs` rule the document breaks'])
+      expect(s, t).toContain(t);
+  });
+
+  it('the README lists index and carries the 1.5.0 notes', () => {
+    const r = repoFile('README.md');
+    for (const t of ["## What's new in 1.5.0", '`index <dir\\|glob> <file> <address>`', 'planr index', '`pairs`', 'Blocker cycles'])
+      expect(r, t).toContain(t);
+  });
+
+  it('the repo CLAUDE.md records the selection path, the pairing rule, the cycle algorithm and the index marker', () => {
+    const c = repoFile('CLAUDE.md');
+    for (const t of ['runQuery', 'pairProblems', 'findCycles', 'lintCycles', 'strictFailure', 'INDEX_ATTR', 'relativeHref'])
+      expect(c, t).toContain(t);
+  });
+});

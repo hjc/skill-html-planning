@@ -89,14 +89,19 @@ When adding a command: write the pure `plan*` core (throwing `PlanError`), add a
 - **`queryDocs` calls `checkStructure(html, { nesting: false })`, never `planCheck`.** It needs "does this balance", not
   the lints, and the lints are half the cost of a corpus scan. Nesting is off because a misnested element leaves
   `findElement` — and so every metadata read — intact, and a rendering defect must not hide a document from `next`.
-  A metadata problem is `check`'s to report; `query` never opens a second channel for it.
+  `problems` carries the rules a schema declares for the corpus (`pairs`) and the rules only a corpus can see (blocker
+  cycles); `queryDocs` returns them for every scanned document, matched or not. A value's own validity, a drifted
+  stamp and a missing blocker stay `check`'s to report, and `query` opens no channel for them.
 - **Nothing a corpus scan cannot use is dropped in silence.** Unreadable, not-a-plan-document and does-not-balance each
   become a `skipped` entry, printed to stderr so stdout stays exactly the result set, carried in the JSON payload, and
-  gated by `--strict`. A target that resolves to zero FILES is an error; a filter that matches zero documents is not.
+  gated by `--strict`. `problems` travel the same way (`problemReport`), and `strictFailure` is the one rule for what
+  `--strict` refuses on every corpus command. A target that resolves to zero FILES is an error; a filter that matches
+  zero documents is not.
 - **`query`, `next` and `wordy` take a `<dir|glob>` (`wordy` one or more), so they live in `NEEDS_TARGET`, not `NEEDS_FILE`.** Both of `main()`'s
   guards read those lists — the unknown-command check reads `COMMAND_FLAGS`, and a test holds
   `NEEDS_FILE` ∪ `NEEDS_TARGET` ∪ `templates` to its keys — and the missing-argument check prints
-  "requires a `<file>` argument", which is false for a directory.
+  "requires a `<file>` argument", which is false for a directory. `index` is in `NEEDS_TARGET` too: its `<dir|glob>`
+  comes first, then a `<file>` and an `<address>`, and `main()` holds it to exactly three positionals.
 - **`next` is driven only by a named ranking.** There is no implicit order: a prioritisation policy in `planr.js` is a
   field vocabulary in `planr.js`, which the schema owns. An empty queue exits **0** — a caller polling "is there
   anything to do" must be able to tell nothing from broken.
@@ -104,7 +109,21 @@ When adding a command: write the pure `plan*` core (throwing `PlanError`), add a
   resolution rule. `queryDocs` reads a target from the scanned `docs` or through the injected `readDoc`, once per run;
   `lintBlockers` takes the same `readDoc`, so "missing" is `readDoc(p) === null` for both — the cores take the filesystem as a function and never touch `fs`. A
   missing target is `check`'s to warn on; `query` never reports it. No git history is consulted.
-- **No index, no cache.** `query` reads the documents. Measured on a 142-document, 8 MB corpus: ~230 ms wall clock,
+- **One selection path.** `runQuery` composes the CLI's filters with a ranking and calls `queryDocs`; `planQuery`,
+  `planNext` and `planIndex` all select through it, so the three cannot drift on how a flag overrides a ranking.
+- **`pairs` is ONE rule.** `pairProblems(schema, rec)` reads the resolved record — so a header, path or default value is
+  held to it like a `<plan-meta>` one — and has two callers: `lintPairs` (`check`) and `queryDocs`. `parseSchema`
+  checks a pairing's shape; `validateSchemaRefs` checks the paired field and its values on the MERGE.
+- **One cycle algorithm.** `findCycles(graph)` takes `Map(docKey -> [target path])` and is called by `queryDocs` (the
+  scanned documents) and `lintCycles` (every document reachable from the checked one through `readDoc`). Both build
+  edges with `blockerTargets` + `blockerPath`, key nodes with `docKey`, and word a cycle through `cycleText`.
+- **`index` replaces only its own table.** The table it writes carries `INDEX_ATTR` (`data-planr-index`); a re-run
+  finds the section's OWN marked table (`ownElements`) and replaces it in place, refusing two. `relativeHref` is pure
+  and reads no working directory, which is why `cmdIndex` resolves the corpus, the document and the target to
+  absolute forward-slash paths before calling the core, and maps skipped files and problems back to the paths as given.
+  `--check` and the no-op write share ONE notion of "current" (`html === before`); keep them on that one test.
+- **No index, no cache.** `query` reads the documents. (`planr index` writes a table INTO a document for a reader; it
+  is not a cache anything reads back.) Measured on a 142-document, 8 MB corpus: ~230 ms wall clock,
   ~70 ms of which is Node's own startup. Re-measure before proposing one.
 
 ## Adding or changing a component

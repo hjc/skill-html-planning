@@ -289,7 +289,7 @@ Every command that writes re-verifies the document afterwards and **aborts witho
 | Inspect | `list`, `check [--strict]`, `tasks`, `read [--body \| --text]` |
 | Maintain | `loader` — rewrite a plan's inline loader in place (after a move, or for a plan made before loader v2 that lives outside `.claude`) |
 | Metadata | `meta` (`--set`, `--unset`, `--stamp`, `--format json`) |
-| Corpus | `query <dir\|glob>` (`--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields`, `--limit`, `--format table\|json\|tsv\|paths`), `next <dir\|glob>` |
+| Corpus | `query <dir\|glob>` (`--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields`, `--limit`, `--format table\|json\|tsv\|paths`), `next <dir\|glob>`, `index <dir\|glob> <file> <address>` |
 | Prose | `wordy <file\|dir\|glob> …` (`--max-chars`, `--max-sentences`, `--max-sentence-chars`, `--format text\|json`) |
 | Edit by address | `set`, `set-body`, `prepend`, `append`, `insert`, `add-section`, `rm-section`, `move-section` |
 | Edit by text | `badge` (`--text`), `rm-item`, `strike`, `replace` |
@@ -305,9 +305,22 @@ planr query .claude/plans/issues --where 'status!=implemented' --sort priority
 planr query .claude/plans/issues --rank default --format json   # a schema-declared ranking, for an agent
 planr next  .claude/plans/issues --format json                  # the top document and the sections to act on
 planr query .claude/plans/issues --where blocked=false          # leave out what an open blocked-by target holds
+planr index .claude/plans/projects .claude/plans/index.html projects --fields title,stage   # the result set, written in as a linked table
 ```
 
 `--format json` is the machine surface: one record per document with every resolved field and its source. An empty queue exits 0, so "nothing to do" is distinguishable from "broken".
+
+## What's new in 1.5.0
+
+**Generated indexes and corpus rules; `next` takes `query`'s filters; templates link their code**
+
+- **`planr next --where` / `--has` / `--missing`.** `next` narrows its ranking with the same filters as `query`, composed the same way: a flag on a field the ranking already filters replaces that condition, and every other condition still applies. An empty filtered queue still exits 0 with `"document": null`.
+- **`planr index <dir|glob> <file> <address>`** writes `query`'s selection into a section of another document as a `<plan-table>`, every title and `path` value linked relative to that document, so a page opened from `file://` carries its own rolled-up view. It takes `query`'s `--where`, `--has`, `--missing`, `--rank`, `--sort`, `--fields` and `--limit`. The table is marked `data-planr-index`; a re-run replaces it in place and leaves the section's prose alone, and `--check` exits 1 without writing when the table is missing or stale.
+- **`pairs`.** A schema enum can declare which values another field may hold beside each of its own — `"pairs": { "status": { "shipped": ["implemented"], "*": ["draft", "review", "approved"] } }`. `check` warns on a document that breaks one.
+- **Blocker cycles.** A loop of `blocks` targets can never close. `check` warns on a cycle through the document it checks.
+- **Corpus problems.** `query`, `next` and `index` report a broken pairing and every blocker cycle among the scanned documents on stderr, and in a `problems` array under `--format json`; `--strict` exits 1 on them as it does on skipped files.
+- **Plans load outside `.claude`.** The inline loader (version 2) finds the skill from a plan anywhere in the repo; `planr loader <file>` upgrades an older plan or refreshes a moved one, and `check` warns on a loader that cannot reach the skill.
+- **Templates link on-disk code.** A template carries `<link rel="stylesheet" data-planr-href="…">` and `<script data-planr-src="…"></script>` instead of inline code; `~/` resolves against the `.claude` directory and `{page}` expands to the page's name. See `references/template-authoring.md` → Linking code.
 
 ## What's new in 1.4.0
 

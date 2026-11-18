@@ -3360,3 +3360,390 @@ describe('planWordy', () => {
     expect(failure).toBe('wordy: 1 file(s) could not be read, listed above');
   });
 });
+
+describe('pairs — a field value names the values another field may hold', () => {
+  const S = (o) => planr.parseSchema(o, 'probe.json');
+  const STATUS = { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' };
+  const RULE = { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } };
+  const STAGE = (extra = {}) => ({ type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'], ...extra });
+  const M = (fields) => planr.mergeSchemas(S({ fields }));
+
+  it('parseSchema keeps a pairing on a single-valued enum, as its own copy', () => {
+    const pairs = { status: { shipped: ['implemented'], '*': ['draft'] } };
+    const s = S({ fields: { stage: STAGE({ pairs }) } });
+    expect(s.fields.stage.pairs).toEqual(pairs);
+    pairs.status.shipped.push('rejected');
+    expect(s.fields.stage.pairs.status.shipped).toEqual(['implemented']);
+  });
+
+  it('parseSchema refuses a malformed pairing, naming the origin file', () => {
+    expect(() => S({ fields: { stage: { type: 'string', pairs: RULE } } }))
+      .toThrow("schema probe.json: field 'stage': `pairs` needs a single-valued enum — each value pairs with its own rule");
+    expect(() => S({ fields: { stage: STAGE({ repeatable: true, pairs: RULE }) } }))
+      .toThrow("field 'stage': `pairs` needs a single-valued enum");
+    expect(() => S({ fields: { stage: STAGE({ pairs: {} }) } }))
+      .toThrow("field 'stage': `pairs` must be an object of field → { value: [allowed, …] }");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: ['implemented'] } }) } }))
+      .toThrow("field 'stage': `pairs.status` must be an object of value → [allowed, …]");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: { launched: ['implemented'] } } }) } }))
+      .toThrow("field 'stage': `pairs.status` names 'launched', which is not a declared value — declared: idea, active, shipped, dropped, or * for every other value");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: { shipped: [] } } }) } }))
+      .toThrow("field 'stage': `pairs.status.shipped` must be a non-empty array of values");
+    expect(() => S({ fields: { stage: STAGE({ pairs: { status: { shipped: 'implemented' } } }) } }))
+      .toThrow("field 'stage': `pairs.status.shipped` must be a non-empty array of values");
+  });
+
+  it('mergeSchemas refuses a pairing with an unknown field, itself, a non-enum or an undeclared value', () => {
+    expect(() => M({ stage: STAGE({ pairs: RULE }) }))
+      .toThrow("schema probe.json: field 'stage': `pairs` names unknown field 'status' — declared: stage");
+    expect(() => M({ stage: STAGE({ pairs: { stage: { shipped: ['idea'] } } }) }))
+      .toThrow("field 'stage': `pairs` names the field itself — pair it with another field");
+    expect(() => M({ stage: STAGE({ pairs: { owner: { shipped: ['x'] } } }), owner: { type: 'string' } }))
+      .toThrow("field 'stage': `pairs` names 'owner', which is not a single-valued enum");
+    expect(() => M({ stage: STAGE({ pairs: { status: { shipped: ['done'] } } }), status: STATUS }))
+      .toThrow("field 'stage': `pairs.status.shipped` names 'done', which is not a declared value of 'status' — declared: draft, review, approved, implemented, rejected");
+  });
+
+  it('a consumer field pairs with a core field across the merge', () => {
+    const core = S({ fields: { status: STATUS } });
+    const consumer = planr.parseSchema({ fields: { stage: STAGE({ pairs: RULE }) } }, 'consumer.json');
+    expect(planr.mergeSchemas(core, consumer).fields.stage.pairs).toEqual(RULE);
+  });
+});
+
+describe('pairs — check warns when a pairing does not hold', () => {
+  let PS;
+  beforeAll(() => {
+    PS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:  { type: 'string', from: 'header:title' },
+        status: { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' },
+        stage:  { type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'],
+                  pairs: { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } } },
+      },
+      infer: [{ match: '/done/', set: { stage: 'shipped' } }],
+    }, 'probe.json'));
+  });
+  const warn = (html, ctx) => planr.planCheck(html, PS, ctx).warnings.map(w => [w.line, w.text]);
+
+  it('pairProblems reads the resolved record, value by value', () => {
+    const rec = (meta, attrs) => planr.resolveMeta(QDOC(meta, attrs), { schema: PS });
+    expect(planr.pairProblems(PS, rec({ stage: 'shipped' }, 'title="T" status="implemented"'))).toEqual([]);
+    expect(planr.pairProblems(PS, rec({ stage: 'active' }, 'title="T" status="approved"'))).toEqual([]);
+    expect(planr.pairProblems(PS, rec({ stage: 'dropped' }, 'title="T" status="draft"'))).toEqual([
+      { field: 'stage', text: "stage 'dropped' pairs with status rejected — status is 'draft'" }]);
+    expect(planr.pairProblems(PS, rec({ stage: 'idea' }, 'title="T" status="implemented"'))).toEqual([
+      { field: 'stage', text: "stage 'idea' pairs with status draft or review or approved — status is 'implemented'" }]);
+    // A value the enum does not declare never resolves, so it is lintMeta's problem, not a pairing.
+    expect(planr.pairProblems(PS, rec({ stage: 'bogus' }, 'title="T" status="implemented"'))).toEqual([]);
+  });
+
+  it('warns on the declaring field\'s line when the block carries it', () => {
+    expect(warn(QDOC({ stage: 'shipped' }, 'title="T" status="draft"')))
+      .toEqual([[4, "stage 'shipped' pairs with status implemented — status is 'draft'"]]);
+    expect(warn(QDOC({ stage: 'shipped' }, 'title="T" status="implemented"'))).toEqual([]);
+  });
+
+  it('names an unset paired field, and says nothing when the declaring field is unset', () => {
+    expect(warn(QDOC({ stage: 'active' }, 'title="T"')))
+      .toEqual([[4, "stage 'active' pairs with status draft or review or approved — status is unset"]]);
+    expect(warn(QDOC({}, 'title="T" status="implemented"'))).toEqual([]);
+  });
+
+  it('holds a value a path rule supplies to the same rule, on line 0', () => {
+    expect(warn(QDOC({}, 'title="T" status="draft"'), { docPath: 'plans/done/a.html' }))
+      .toEqual([[0, "stage 'shipped' pairs with status implemented — status is 'draft'"]]);
+  });
+});
+
+describe('pairs — a corpus scan reports every document that breaks one', () => {
+  let PS;
+  beforeAll(() => {
+    PS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:  { type: 'string', from: 'header:title' },
+        status: { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' },
+        stage:  { type: 'enum', values: ['idea', 'active', 'shipped', 'dropped'],
+                  pairs: { status: { shipped: ['implemented'], dropped: ['rejected'], '*': ['draft', 'review', 'approved'] } } },
+      },
+      rankings: { default: { where: { stage: { in: ['active'] } }, order: [] } },
+    }, 'probe.json'));
+  });
+  const CORPUS = () => [
+    { path: 'p/a.html', html: QDOC({ stage: 'active' }, 'title="A" status="review"') },
+    { path: 'p/b.html', html: QDOC({ stage: 'shipped' }, 'title="B" status="draft"') },
+    { path: 'p/c.html', html: QDOC({ stage: 'dropped' }, 'title="C" status="rejected"') },
+  ];
+  const B_PROBLEM = { path: 'p/b.html', text: "stage 'shipped' pairs with status implemented — status is 'draft'" };
+
+  it('queryDocs lists the problem whether or not the document matches the filter', () => {
+    const q = planr.queryDocs(CORPUS(), { schema: PS, where: planr.compileWhere(PS, { stage: { in: ['active'] } }, 'filter') });
+    expect(q.results.map(r => r.path)).toEqual(['p/a.html']);
+    expect(q.problems).toEqual([B_PROBLEM]);
+    expect(planr.queryDocs(CORPUS().slice(0, 1), { schema: PS }).problems).toEqual([]);
+  });
+
+  it('query and next carry the problems on the returned object and in JSON, never in the text report', () => {
+    const q = planr.planQuery(CORPUS(), { schema: PS, fields: 'path' });
+    expect(q.problems).toEqual([B_PROBLEM]);
+    expect(q.report).not.toContain('pairs with');
+    expect(JSON.parse(planr.planQuery(CORPUS(), { schema: PS, format: 'json' }).report).problems).toEqual([B_PROBLEM]);
+    const n = planr.planNext(CORPUS(), { schema: PS });
+    expect(n.problems).toEqual([B_PROBLEM]);
+    expect(JSON.parse(planr.planNext(CORPUS(), { schema: PS, format: 'json' }).report).problems).toEqual([B_PROBLEM]);
+  });
+
+  it('problemReport shapes the stderr block like skipReport, and is empty for none', () => {
+    expect(planr.problemReport([B_PROBLEM])).toBe([
+      '1 problem(s) — the corpus breaks a schema rule:',
+      "  p/b.html: stage 'shipped' pairs with status implemented — status is 'draft'",
+    ].join('\n'));
+    expect(planr.problemReport([])).toBe('');
+  });
+
+  it('strictFailure names what --strict refuses, and nothing on a clean scan', () => {
+    const skip = [{ path: 'x.html', reason: 'r' }];
+    expect(planr.strictFailure('query', skip, [])).toBe('query --strict: 1 file(s) skipped, listed above');
+    expect(planr.strictFailure('next', [], [B_PROBLEM])).toBe('next --strict: 1 problem(s), listed above');
+    expect(planr.strictFailure('query', skip, [B_PROBLEM, B_PROBLEM]))
+      .toBe('query --strict: 1 file(s) skipped, 2 problem(s), listed above');
+    expect(planr.strictFailure('query', [], [])).toBeNull();
+  });
+});
+
+describe('blocker cycles', () => {
+  let CS;
+  beforeAll(() => {
+    CS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        status: { type: 'enum', values: ['draft', 'implemented', 'rejected'], from: 'header:status' },
+        'depends-on': { type: 'path', repeatable: true, blocks: true },
+      },
+    }, 'probe.json'));
+  });
+  const G = (o) => new Map(Object.entries(o));
+  const CDOC = (deps) => QDOC(deps ? { 'depends-on': deps } : {});
+
+  it('findCycles returns each cycle once, rotated to its smallest path', () => {
+    expect(planr.findCycles(G({ 'b.html': ['a.html'], 'a.html': ['b.html'] }))).toEqual([['a.html', 'b.html']]);
+    expect(planr.findCycles(G({ 'c.html': ['a.html'], 'a.html': ['b.html'], 'b.html': ['c.html'] })))
+      .toEqual([['a.html', 'b.html', 'c.html']]);
+    expect(planr.findCycles(G({ 'a.html': ['a.html'] }))).toEqual([['a.html']]);
+  });
+
+  it('findCycles treats a target outside the map as a leaf, and finds both cycles of a tangle', () => {
+    expect(planr.findCycles(G({ 'a.html': ['b.html', 'gone.html'], 'b.html': [] }))).toEqual([]);
+    expect(planr.findCycles(G({ 'a.html': ['b.html'], 'b.html': ['a.html', 'c.html'], 'c.html': ['b.html'] })))
+      .toEqual([['a.html', 'b.html'], ['b.html', 'c.html']]);
+  });
+
+  it('queryDocs reports a cycle among the scanned documents, on the first path of the cycle', () => {
+    const q = planr.queryDocs([
+      { path: 'p/a.html', html: CDOC('b.html') },
+      { path: 'p/b.html', html: CDOC('a.html') },
+      { path: 'p/c.html', html: CDOC('a.html') },
+    ], { schema: CS });
+    expect(q.problems).toEqual([{ path: 'p/a.html',
+      text: 'blocker cycle: p/a.html → p/b.html → p/a.html — each waits on the next, so none can close' }]);
+    expect(planr.queryDocs([{ path: 'p/a.html', html: CDOC('b.html') }, { path: 'p/b.html', html: CDOC() }],
+      { schema: CS }).problems).toEqual([]);
+  });
+
+  it('queryDocs names a cycle by the paths the scan gave, and matches a drive letter in either case', () => {
+    const dotted = planr.queryDocs([
+      { path: './p/a.html', html: CDOC('b.html') },
+      { path: './p/b.html', html: CDOC('a.html') },
+    ], { schema: CS });
+    expect(dotted.problems).toEqual([{ path: './p/a.html',
+      text: 'blocker cycle: ./p/a.html → ./p/b.html → ./p/a.html — each waits on the next, so none can close' }]);
+    const drives = planr.queryDocs([
+      { path: 'd:/r/a.html', html: CDOC('b.html') },
+      { path: 'D:/r/b.html', html: CDOC('a.html') },
+    ], { schema: CS });
+    expect(drives.problems.map(p => p.text)).toEqual([
+      'blocker cycle: d:/r/a.html → D:/r/b.html → d:/r/a.html — each waits on the next, so none can close']);
+  });
+
+  it('check warns on a cycle through the document, followed through readDoc', () => {
+    const disk = { 'q/b.html': CDOC('c.html'), 'q/c.html': CDOC('a.html'), 'q/d.html': CDOC('b.html') };
+    const readDoc = (p) => disk[p] ?? null;
+    const warn = (docPath, html) => planr.planCheck(html, CS, { docPath, readDoc }).warnings
+      .filter(w => w.text.startsWith('blocker cycle')).map(w => [w.line, w.text]);
+    expect(warn('q/a.html', CDOC('b.html'))).toEqual([[4,
+      'blocker cycle: q/a.html → q/b.html → q/c.html → q/a.html — each waits on the next, so none can close']]);
+    // d waits on the cycle without being in it: the cycle is not d's to report.
+    expect(warn('q/d.html', disk['q/d.html'])).toEqual([]);
+    expect(warn('q/a.html', CDOC('a.html'))).toEqual([[4,
+      'blocker cycle: q/a.html → q/a.html — each waits on the next, so none can close']]);
+  });
+});
+
+describe('planIndex — a corpus written into a section as a table', () => {
+  let IS;
+  beforeAll(() => {
+    IS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:  { type: 'string', from: 'header:title' },
+        status: { type: 'enum', values: ['draft', 'review', 'approved', 'implemented', 'rejected'], from: 'header:status' },
+        stage:  { type: 'enum', values: ['idea', 'active', 'shipped'],
+                  pairs: { status: { shipped: ['implemented'], '*': ['draft', 'review', 'approved'] } } },
+        'depends-on': { type: 'path', repeatable: true, blocks: true, label: 'depends on' },
+        map:    { type: 'path' },
+      },
+      rankings: { open: { where: { stage: { ne: ['shipped'] } }, order: ['title'] } },
+    }, 'probe.json'));
+  });
+  const PDOC = (title, status, meta) => QDOC(meta, `title="${title}" status="${status}"`);
+  const DOCS = () => [
+    { path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { stage: 'active', 'depends-on': 'b.html' }) },
+    { path: 'r/projects/b.html', html: PDOC('Beta &amp; Co', 'draft', { stage: 'idea' }) },
+    { path: 'r/projects/c.html', html: PDOC('Gamma', 'implemented', { stage: 'shipped' }) },
+  ];
+  const INDEX = [
+    '<plan-header title="Roadmap" status="draft"></plan-header>',
+    '<main>',
+    '  <plan-section id="projects" title="Projects">',
+    '    <p>Prose stays.</p>',
+    '  </plan-section>',
+    '  <plan-section id="other" title="Other"></plan-section>',
+    '</main>',
+  ].join('\n');
+  const X = (html, opts) => planr.planIndex(html, DOCS(), {
+    schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', ...opts });
+  const TABLE = [
+    '    <plan-table data-planr-index="projects">',
+    '      <table>',
+    '        <thead><tr><th>title</th><th>stage</th><th>depends on</th></tr></thead>',
+    '        <tbody>',
+    '          <tr><td><a href="projects/a.html">Alpha</a></td><td>active</td><td><a href="projects/b.html">Beta &amp; Co</a></td></tr>',
+    '          <tr><td><a href="projects/b.html">Beta &amp; Co</a></td><td>idea</td><td>-</td></tr>',
+    '          <tr><td><a href="projects/c.html">Gamma</a></td><td>shipped</td><td>-</td></tr>',
+    '        </tbody>',
+    '      </table>',
+    '    </plan-table>',
+  ];
+
+  it('relativeHref links from a document to a file, both written the same way', () => {
+    expect(planr.relativeHref('r/index.html', 'r/projects/a.html')).toBe('projects/a.html');
+    expect(planr.relativeHref('r/sub/index.html', 'r/projects/a.html')).toBe('../projects/a.html');
+    expect(planr.relativeHref('D:/repo/docs/index.html', 'D:/repo/docs/a.html')).toBe('a.html');
+    expect(planr.relativeHref('D:\\repo\\docs\\index.html', 'D:/repo/docs/projects')).toBe('projects');
+    expect(planr.relativeHref('r/index.html', 'r')).toBe('.');
+    expect(planr.relativeHref('d:/repo/docs/index.html', 'D:/repo/docs/a.html')).toBe('a.html');
+  });
+
+  it('writes the table last in the section, after its prose, every link relative to the document', () => {
+    const r = X(INDEX, { fields: 'title,stage,depends-on', sort: 'title' });
+    expect(r.html).toBe([
+      '<plan-header title="Roadmap" status="draft"></plan-header>',
+      '<main>',
+      '  <plan-section id="projects" title="Projects">',
+      '    <p>Prose stays.</p>',
+      ...TABLE,
+      '  </plan-section>',
+      '  <plan-section id="other" title="Other"></plan-section>',
+      '</main>',
+    ].join('\n'));
+    expect(r.message).toBe("wrote the index in 'projects' — 3 document(s)");
+    expect(planr.planCheck(r.html).ok).toBe(true);
+  });
+
+  it('is idempotent, and a re-run replaces only its own table, where it now sits', () => {
+    const opts = { fields: 'title,stage,depends-on', sort: 'title' };
+    const once = X(INDEX, opts).html;
+    const again = X(once, opts);
+    expect(again.html).toBe(once);
+    expect(again.message).toBe("index in 'projects' is current — 3 document(s)");
+    const edited = once.replace('    <p>Prose stays.</p>\n', '')
+      .replace('    </plan-table>\n', '    </plan-table>\n    <p>Moved below.</p>\n');
+    const narrowed = X(edited, { ...opts, where: ['stage=idea'] });
+    expect(narrowed.message).toBe("rewrote the index in 'projects' — 1 document(s)");
+    expect(narrowed.html).toContain('</plan-table>\n    <p>Moved below.</p>\n  </plan-section>');
+    expect(narrowed.html).not.toContain('Alpha');
+    expect(narrowed.html.match(/data-planr-index/g)).toHaveLength(1);
+  });
+
+  it('defaults to the title, then every field a matched document resolves', () => {
+    const r = X(INDEX, { rank: 'open' });
+    expect(r.html).toContain('<thead><tr><th>title</th><th>status</th><th>stage</th><th>depends on</th></tr></thead>');
+    expect(r.html).not.toContain('Gamma');
+    expect(r.html.indexOf('Alpha')).toBeLessThan(r.html.indexOf('Beta'));
+  });
+
+  it('links a path column as code, and leads with it when the schema binds no title', () => {
+    const r = X(INDEX, { fields: 'path,stage', where: ['stage=idea'] });
+    expect(r.html).toContain('<tr><td><a href="projects/b.html"><code>projects/b.html</code></a></td><td>idea</td></tr>');
+    const bare = planr.mergeSchemas(planr.parseSchema(
+      { fields: { stage: { type: 'enum', values: ['idea', 'active', 'shipped'] } } }, 'bare.json'));
+    const b = planr.planIndex(INDEX, DOCS(), { schema: bare, address: 'projects', docPath: 'r/index.html', target: 'r/projects' });
+    expect(b.html).toContain('<thead><tr><th>path</th><th>stage</th></tr></thead>');
+  });
+
+  it('links every path field relative to the document written into, not only a blocking one', () => {
+    const docs = [
+      { path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { map: '../../plans/x/map.html' }) },
+      { path: 'r/projects/b.html', html: PDOC('Beta', 'draft', { map: 'a.html' }) },
+    ];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,map' });
+    expect(r.html).toContain('<td><a href="../plans/x/map.html"><code>../plans/x/map.html</code></a></td>');
+    expect(r.html).toContain('<td><a href="projects/a.html">Alpha</a></td></tr>');
+  });
+
+  it('percent-encodes each href segment, and leaves the text and the marker as written', () => {
+    const docs = [{ path: 'r/pro jects/c#1 100%.html', html: PDOC('Odd', 'draft', {}) }];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/pro jects', fields: 'title,path' });
+    expect(r.html).toContain('<a href="pro%20jects/c%231%20100%25.html">Odd</a>');
+    expect(r.html).toContain('<code>pro jects/c#1 100%.html</code>');
+    expect(r.html).toContain('<plan-table data-planr-index="pro jects">');
+  });
+
+  it('labels a path target outside the scan with its title, else with the path the link goes to', () => {
+    const docs = [{ path: 'r/projects/a.html', html: PDOC('Alpha', 'review', { 'depends-on': '../elsewhere/x.html' }) }];
+    const opts = { schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects', fields: 'title,depends-on' };
+    const unread = planr.planIndex(INDEX, docs, opts);
+    expect(unread.html).toContain('<td><a href="elsewhere/x.html"><code>elsewhere/x.html</code></a></td>');
+    const asked = [];
+    const read = planr.planIndex(INDEX, docs, { ...opts, readDoc: (p) => { asked.push(p); return PDOC('Elsewhere &amp; X', 'draft', {}); } });
+    expect(read.html).toContain('<td><a href="elsewhere/x.html">Elsewhere &amp; X</a></td>');
+    expect(asked).toContain('r/elsewhere/x.html');
+  });
+
+  it('never lists the document it writes into, and says so when nothing matches', () => {
+    const docs = [...DOCS(), { path: 'r/index.html', html: INDEX }];
+    const r = planr.planIndex(INDEX, docs, {
+      schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r', fields: 'title' });
+    expect(r.html).not.toContain('Roadmap</a>');
+    expect(r.html).toContain('<plan-table data-planr-index=".">');
+    const none = X(INDEX, { fields: 'title,stage', where: ['stage=shipped', 'status=draft'] });
+    expect(none.html).toContain('<tr><td colspan="2">No documents match.</td></tr>');
+  });
+
+  it('puts the table on lines of its own in a section written on one line', () => {
+    const r = X(INDEX, { address: 'other', fields: 'title', where: ['stage=idea'] });
+    expect(r.html).toContain('  <plan-section id="other" title="Other">\n    <plan-table data-planr-index="projects">');
+    expect(r.html).toContain('    </plan-table>\n  </plan-section>\n</main>');
+    expect(planr.planCheck(r.html).ok).toBe(true);
+  });
+
+  it('hands back the skipped files and the corpus problems', () => {
+    const docs = [...DOCS(), { path: 'r/projects/bad.html', html: PDOC('Bad', 'draft', { stage: 'shipped' }) },
+      { path: 'r/projects/mock.html', html: '<html></html>' }];
+    const r = planr.planIndex(INDEX, docs, { schema: IS, address: 'projects', docPath: 'r/index.html', target: 'r/projects' });
+    expect(r.skipped).toEqual([{ path: 'r/projects/mock.html', reason: 'not a plan document — no <plan-*> markup' }]);
+    expect(r.problems).toEqual([
+      { path: 'r/projects/bad.html', text: "stage 'shipped' pairs with status implemented — status is 'draft'" }]);
+  });
+
+  it('refuses no address, the header, an unknown section and two generated tables', () => {
+    expect(() => X(INDEX, { address: null })).toThrow('index requires an address — the section the table is written into');
+    expect(() => X(INDEX, { address: 'header' })).toThrow('the header holds no body — index into a section');
+    expect(() => X(INDEX, { address: 'nope' })).toThrow("section 'nope' not found");
+    const once = X(INDEX, { fields: 'title' }).html;
+    const twice = once.replace('  </plan-section>\n  <plan-section id="other"',
+      '    <plan-table data-planr-index="x"><table></table></plan-table>\n  </plan-section>\n  <plan-section id="other"');
+    expect(() => X(twice, { fields: 'title' }))
+      .toThrow("'projects' holds 2 generated tables (lines 5, 15) — remove all but one, then re-run");
+  });
+});

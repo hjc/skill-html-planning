@@ -1048,7 +1048,7 @@ function resolveConsumerSchemaPath(invoked = process.argv[1] || __filename) {
   return root ? `${root}/${CONSUMER_SCHEMA_FILENAME}` : null;
 }
 const FIELD_TYPES = ['enum', 'string', 'list', 'path', 'date', 'number'];
-const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden', 'blocks'];
+const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label', 'tones', 'hidden', 'blocks', 'pairs'];
 // Column names planr owns. Neither is a schema field nor a <plan-field>: `path`
 // is the document's own path, and `blocked` is derived from every field declared
 // `blocks` (see "blockers"). A field may not take either name.
@@ -1133,10 +1133,32 @@ function parseSchema(data, origin) {
     // A header-owned field never sits in <plan-meta>: the header draws it.
     if (def.from !== undefined && (def.tones !== undefined || def.hidden !== undefined))
       schemaFail(origin, `field '${name}': \`tones\` and \`hidden\` do not apply to a header field — the header renders it in its own chip`);
+    // `pairs` ties each value of this field to the values another field may
+    // hold beside it: { "<other>": { "<value>" | "*": ["<allowed>", …] } }, `*`
+    // standing for every value not named. The SHAPE is checked here; the other
+    // field and its values are cross-references, checked after the merge.
+    if (def.pairs !== undefined) {
+      if (def.type !== 'enum' || def.repeatable === true)
+        schemaFail(origin, `field '${name}': \`pairs\` needs a single-valued enum — each value pairs with its own rule`);
+      if (!isPlainObject(def.pairs) || !Object.keys(def.pairs).length)
+        schemaFail(origin, `field '${name}': \`pairs\` must be an object of field → { value: [allowed, …] }`);
+      for (const [other, rule] of Object.entries(def.pairs)) {
+        if (!isPlainObject(rule) || !Object.keys(rule).length)
+          schemaFail(origin, `field '${name}': \`pairs.${other}\` must be an object of value → [allowed, …]`);
+        for (const [v, allowed] of Object.entries(rule)) {
+          if (v !== '*' && !def.values.includes(v))
+            schemaFail(origin, `field '${name}': \`pairs.${other}\` names '${v}', which is not a declared value — declared: ${def.values.join(', ')}, or * for every other value`);
+          if (!Array.isArray(allowed) || !allowed.length || allowed.some(a => typeof a !== 'string' || !a))
+            schemaFail(origin, `field '${name}': \`pairs.${other}.${v}\` must be a non-empty array of values`);
+        }
+      }
+    }
     // `list` IS `string` + repeatable; normalising here gives one code path for
     // splitting, validating and normalising a multi-valued field.
     fields[name] = {
       ...def, ...(def.tones ? { tones: { ...def.tones } } : {}),
+      ...(def.pairs ? { pairs: Object.fromEntries(Object.entries(def.pairs).map(([o, r]) =>
+        [o, Object.fromEntries(Object.entries(r).map(([v, a]) => [v, [...a]]))])) } : {}),
       repeatable: def.type === 'list' || def.repeatable === true, origin,
     };
   }
@@ -1211,6 +1233,21 @@ function validateSchemaRefs(schema) {
       need(rule.origin, `infer rule /${rule.match}/`, name);
       const problem = validateField(schema, name, String(value));
       if (problem) schemaFail(rule.origin, `infer rule /${rule.match}/: ${problem}`);
+    }
+  // A pairing names another field, which must be a single-valued enum holding
+  // every value the rule allows — checked on the MERGE, because a consumer may
+  // pair its own field with a core one, or replace the core field it names.
+  for (const [name, def] of Object.entries(schema.fields))
+    for (const [other, rule] of Object.entries(def.pairs || {})) {
+      const odef = schema.fields[other];
+      if (!odef) schemaFail(def.origin, `field '${name}': \`pairs\` names unknown field '${other}' — declared: ${known.join(', ')}`);
+      if (other === name) schemaFail(def.origin, `field '${name}': \`pairs\` names the field itself — pair it with another field`);
+      if (odef.type !== 'enum' || odef.repeatable)
+        schemaFail(def.origin, `field '${name}': \`pairs\` names '${other}', which is not a single-valued enum`);
+      for (const [v, allowed] of Object.entries(rule))
+        for (const a of allowed)
+          if (!odef.values.includes(a))
+            schemaFail(def.origin, `field '${name}': \`pairs.${other}.${v}\` names '${a}', which is not a declared value of '${other}' — declared: ${odef.values.join(', ')}`);
     }
   // A ranking is validated by the very functions the query runs it through, so
   // a ranking that LOADS is a ranking `query --rank` can execute.
@@ -2332,6 +2369,71 @@ function lintBlockers(html, schema, { docPath = null, readDoc = null } = {}) {
   return out;
 }
 
+/* A cycle through this document, followed from it through `readDoc` — the same
+   reader lintBlockers takes, so the two agree on what exists. The graph is
+   every document the walk reaches; findCycles is the one algorithm, and only a
+   cycle that passes through this document is this document's to report. Its
+   line is the first blocking field's <plan-field>, else 0. */
+function lintCycles(html, schema, { docPath = null, readDoc = null } = {}) {
+  if (!schema || !docPath || !readDoc || !blockerFields(schema).length) return [];
+  const self = docKey(docPath);
+  const graph = new Map();
+  const queued = new Set([self]);
+  const queue = [[self, html]];
+  while (queue.length) {
+    const [p, doc] = queue.shift();
+    const edges = blockerTargets(schema, resolveMeta(doc, { schema, docPath: p })).map(b => docKey(blockerPath(p, b.target)));
+    graph.set(p, edges);
+    for (const t of edges) {
+      if (queued.has(t)) continue;
+      queued.add(t);
+      const next = readDoc(t);
+      if (next !== null) queue.push([t, next]);
+    }
+  }
+  const block = readMetaBlock(html);
+  const tag = block ? block.fields.find(f => blockerFields(schema).includes(f.key)) : null;
+  return findCycles(graph).filter(c => c.includes(self)).map(c => ({ line: tag ? tag.line : 0, text: cycleText(c) }));
+}
+
+/* ── pairs ────────────────────────────────────────────────
+   A field declaring `pairs` ties each of its values to the values another field
+   may hold beside it. ONE rule with two callers: lintPairs (`check`, one
+   document) and queryDocs (a corpus scan's `problems`). Read off the resolved
+   record, so a value from the header, a path rule or a default is held to it
+   exactly as a <plan-meta> one is. An unset declaring field claims nothing; an
+   unset paired field breaks the rule, which names the values it must hold.
+   Returns [{ field, text }]. */
+function pairProblems(schema, rec) {
+  const out = [];
+  for (const [name, def] of Object.entries(schema.fields)) {
+    if (!def.pairs) continue;
+    const f = rec.fields[name];
+    if (f.source === null) continue;
+    for (const [other, rule] of Object.entries(def.pairs)) {
+      const allowed = Object.prototype.hasOwnProperty.call(rule, f.value) ? rule[f.value] : rule['*'];
+      if (!allowed) continue;
+      const got = rec.fields[other];
+      if (got.source !== null && allowed.includes(got.value)) continue;
+      out.push({ field: name, text: `${name} '${f.value}' pairs with ${other} ${allowed.join(' or ')} — ` +
+        `${other} is ${got.source === null ? 'unset' : `'${got.value}'`}` });
+    }
+  }
+  return out;
+}
+// The check half: each broken pairing, on the declaring field's <plan-field>
+// line when the block carries it, else line 0 (a header, path or default value
+// has no tag of its own to point at).
+function lintPairs(html, schema, { docPath = null } = {}) {
+  if (!schema) return [];
+  const rec = resolveMeta(html, { schema, docPath });
+  const block = readMetaBlock(html);
+  return pairProblems(schema, rec).map((p) => {
+    const tag = block && rec.fields[p.field].source === 'meta' ? block.fields.find(f => f.key === p.field) : null;
+    return { line: tag ? tag.line : 0, text: p.text };
+  });
+}
+
 /* ── check warnings ───────────────────────────────────────
    Each lint returns [{ line, text }] for markup that passes the structure
    check and still renders something other than what the author wrote. */
@@ -2339,6 +2441,8 @@ function lintPlan(html, schema = null, ctx = {}) {
   return [
     ...lintMeta(html, schema),
     ...lintBlockers(html, schema, ctx),
+    ...lintPairs(html, schema, ctx),
+    ...lintCycles(html, schema, ctx),
     ...lintScaffoldBanner(html),
     ...lintCodeBodies(html),
     ...lintSectionRefs(html),
@@ -2536,6 +2640,51 @@ function blockerTargets(schema, rec) {
     return (Array.isArray(f.value) ? f.value : [f.value]).map(t => ({ field: name, target: t }));
   });
 }
+// A document path in one comparable form: forward slashes, normalised, and a
+// Windows drive letter upper-cased. The key of the blocker graph, so
+// `./a/b.html` and `a/b.html` are one node, and `d:/x` and `D:/x` are too.
+function docKey(p) {
+  return path.posix.normalize(String(p).replace(/\\/g, '/')).replace(/^([a-z]):/, (m, d) => `${d.toUpperCase()}:`);
+}
+
+/* Pure: Map(path -> [target path]) -> the cycles in the blocker graph, each the
+   paths around it, rotated to start at its smallest path, listed once and in
+   order. A document naming itself is a cycle of one; a target with no entry in
+   the map is a leaf. A depth-first walk reports every back edge it meets, so a
+   tangle of cycles yields at least one of them. ONE algorithm behind
+   queryDocs' corpus problems and check's lintCycles — the two differ only in
+   which documents they put in the map. */
+function findCycles(graph) {
+  const found = new Map();
+  const state = new Map();
+  const stack = [];
+  const visit = (p) => {
+    state.set(p, 'open');
+    stack.push(p);
+    for (const t of graph.get(p)) {
+      if (!graph.has(t)) continue;
+      if (state.get(t) === 'open') {
+        const loop = stack.slice(stack.indexOf(t));
+        const k = loop.indexOf([...loop].sort()[0]);
+        const canon = [...loop.slice(k), ...loop.slice(0, k)];
+        found.set(canon.join('\u0000'), canon);
+      } else if (!state.has(t)) visit(t);
+    }
+    stack.pop();
+    state.set(p, 'done');
+  };
+  for (const p of [...graph.keys()].sort()) if (!state.has(p)) visit(p);
+  return [...found.values()].sort((a, b) => cmpRank(a.join('\u0000'), b.join('\u0000')));
+}
+// One wording for a cycle, wherever it is reported.
+function cycleText(cycle) {
+  return `blocker cycle: ${[...cycle, cycle[0]].join(' → ')} — each waits on the next, so none can close`;
+}
+// The field bound to a header attribute (`from: header:<attr>`), or null. The
+// field's NAME is the schema's to choose, so nothing here hardcodes one.
+function headerField(schema, attr) {
+  return Object.keys(schema.fields).find(n => schema.fields[n].from === `header:${attr}`) || null;
+}
 // A condition's field definition: the schema's own, or the derived `blocked`
 // when the schema declares a field that feeds it. ONE lookup for every place a
 // condition, a sort key or a column is named, so the derived column is
@@ -2552,7 +2701,7 @@ function conditionNames(schema) {
    shape plus the targets that hold it. `lookup(path)` returns a target's html,
    or null when there is no such file — the one thing the core cannot know. */
 function resolveBlocked(rec, { schema, lookup }) {
-  const statusKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:status') || null;
+  const statusKey = headerField(schema, 'status');
   const blockers = [];
   for (const { target } of blockerTargets(schema, rec)) {
     const p = blockerPath(rec.path, target);
@@ -2741,23 +2890,31 @@ function parseSort(schema, spec, label = '--sort') {
 }
 
 /* Pure: ([{ path, html } | { path, error }], opts) -> { results, skipped,
-   scanned, matched }. `results` is sorted and limited; `matched` is the count
-   BEFORE the limit. A file that cannot be read, is not a plan document, or does
-   not balance is reported in `skipped` rather than dropped — the corpus is
-   other people's files, and a silent omission reads as "nothing matched".
+   problems, scanned, matched }. `results` is sorted and limited; `matched` is
+   the count BEFORE the limit. A file that cannot be read, is not a plan
+   document, or does not balance is reported in `skipped` rather than dropped —
+   the corpus is other people's files, and a silent omission reads as "nothing
+   matched". `problems` ([{ path, text }]) lists every scanned document, matched
+   or not, that breaks a schema-declared corpus rule — a `pairs` rule — and then
+   every cycle among the scanned documents' blockers, on the cycle's first path.
+   `records` is every scanned document's record, matched or not, in path order.
    Each result also carries `derived` — `{ blocked }` when the schema declares a
    `blocks` field, else `{}`. A blocker target is read from `docs` when the scan
    holds it, else through `readDoc(path)`, which returns its html or null when
    there is no such file; each target is read once per run. */
 function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc = () => null } = {}) {
   const results = [];
+  const records = [];
   const skipped = [];
+  const problems = [];
   const seen = new Map(docs.map(d => [String(d.path).replace(/\\/g, '/'), d.error ? null : d.html]));
   const lookup = (p) => {
     if (!seen.has(p)) seen.set(p, readDoc(p));
     return seen.get(p);
   };
   const blocking = blockerFields(schema).length > 0;
+  const graph = new Map();
+  const given = new Map();          // docKey -> the path as the scan gave it
   for (const doc of docs) {
     if (doc.error) { skipped.push({ path: doc.path, reason: doc.error }); continue; }
     if (!/<plan-[a-z]/i.test(doc.html)) {
@@ -2772,8 +2929,17 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     }
     const rec = resolveMeta(doc.html, { schema, docPath: doc.path });
     rec.derived = blocking ? { blocked: resolveBlocked(rec, { schema, lookup }) } : {};
+    records.push(rec);
+    for (const p of pairProblems(schema, rec)) problems.push({ path: doc.path, text: p.text });
+    if (blocking) {
+      graph.set(docKey(doc.path), blockerTargets(schema, rec).map(b => docKey(blockerPath(doc.path, b.target))));
+      given.set(docKey(doc.path), doc.path);
+    }
     if (matchWhere(rec, where)) results.push(rec);
   }
+  // Named by each document's path as the scan gave it, like every other problem.
+  for (const cycle of findCycles(graph).map(c => c.map(k => given.get(k))))
+    problems.push({ path: cycle[0], text: cycleText(cycle) });
   const matched = results.length;
   // Stable by construction: the shell hands documents over in sorted path
   // order and Array#sort is stable, so ties keep that order on every platform.
@@ -2788,7 +2954,9 @@ function queryDocs(docs, { schema, where = [], order = [], limit = null, readDoc
     }
     return 0;
   });
-  return { results: limit === null ? results : results.slice(0, limit), skipped, scanned: docs.length, matched };
+  return {
+    results: limit === null ? results : results.slice(0, limit), records, skipped, problems, scanned: docs.length, matched,
+  };
 }
 
 /* Pure: the columns to print. `path`, then every schema field at least one
@@ -2849,6 +3017,30 @@ function applyRanking(schema, name, { where = {}, sort = null } = {}) {
 
 const QUERY_FORMATS = ['table', 'json', 'tsv', 'paths'];
 
+/* Pure: the selection every corpus command shares — the CLI's filters composed
+   with a named ranking, then queryDocs. Compile the two halves SEPARATELY so
+   each condition is attributed to where it actually came from: merged under
+   one label, a bad `--where` literal read as the ranking's fault and sent the
+   reader to edit the schema. `filtered` says whether any CLI filter was given. */
+function runQuery(docs, {
+  schema, where = [], has = [], missing = [], sort = null, rank = null, limit = null, readDoc = () => null,
+} = {}) {
+  const cli = parseWhere(schema, { where, has, missing });
+  const plan = applyRanking(schema, rank, { where: cli, sort });
+  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
+  const q = queryDocs(docs, {
+    schema,
+    where: [
+      ...compileWhere(schema, cli, 'filter'),
+      ...compileWhere(schema, preset, `ranking '${rank}' where`),
+    ],
+    order: plan.sort === null ? [] : parseSort(schema, plan.sort, sort === null && rank !== null ? `ranking '${rank}' order` : '--sort'),
+    limit: parseLimit(limit),
+    readDoc,
+  });
+  return { ...q, filtered: Object.keys(cli).length > 0 };
+}
+
 
 /* Pure: ([{ path, html }], opts) -> the `query` report. `table` is the default
    and is what a human reads; `json` is what an orchestrator dispatches from and
@@ -2862,26 +3054,13 @@ function planQuery(docs, {
     throw new PlanError(`unknown --format '${format}' — valid: ${QUERY_FORMATS.join(', ')}`);
   if (format === 'paths' && fields !== null)
     throw new PlanError('--format paths prints paths only — drop --fields, or pick table, tsv or json');
-  const cli = parseWhere(schema, { where, has, missing });
-  const plan = applyRanking(schema, rank, { where: cli, sort });
-  // Compile the two halves SEPARATELY so each condition is attributed to where
-  // it actually came from. Merged under one label, a bad `--where` literal read
-  // as the ranking's fault and sent the reader to edit the schema.
-  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
-  const q = queryDocs(docs, {
-    schema,
-    where: [
-      ...compileWhere(schema, cli, 'filter'),
-      ...compileWhere(schema, preset, `ranking '${rank}' where`),
-    ],
-    order: plan.sort === null ? [] : parseSort(schema, plan.sort),
-    limit: parseLimit(limit),
-    readDoc,
-  });
+  const q = runQuery(docs, { schema, where, has, missing, sort, rank, limit, readDoc });
   const use = fields === null ? defaultFields(schema, q.results) : parseFields(schema, fields);
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
 
-  const done = (report) => ({ report, skipped: q.skipped, scanned: q.scanned, matched: q.matched, returned: q.results.length });
+  const done = (report) => ({
+    report, skipped: q.skipped, problems: q.problems, scanned: q.scanned, matched: q.matched, returned: q.results.length,
+  });
 
   // `fields` is the COLUMN list — what a table would print. `results[].fields`
   // is the whole projected record, every declared schema field present with its
@@ -2897,6 +3076,7 @@ function planQuery(docs, {
       ...blockedJson(r),
     })),
     skipped: q.skipped,
+    problems: q.problems,
   }, null, 2) + '\n');
 
   if (format === 'paths') return done(q.results.map(r => r.path).join('\n') + (q.results.length ? '\n' : ''));
@@ -2920,6 +3100,22 @@ function skipReport(skipped) {
   if (!skipped.length) return '';
   return [`${skipped.length} file(s) skipped — scanned, not queryable:`,
     ...skipped.map(s => `  ${s.path}: ${s.reason}`)].join('\n');
+}
+// The corpus problems, shaped like skipReport and printed beside it on stderr.
+function problemReport(problems) {
+  if (!problems.length) return '';
+  return [`${problems.length} problem(s) — the corpus breaks a schema rule:`,
+    ...problems.map(p => `  ${p.path}: ${p.text}`)].join('\n');
+}
+// What `--strict` refuses on a corpus scan: a skipped file or a corpus
+// problem. The message, or null when the scan is clean. One rule for every
+// command that scans a corpus.
+function strictFailure(cmd, skipped, problems) {
+  const parts = [
+    skipped.length ? `${skipped.length} file(s) skipped` : null,
+    problems.length ? `${problems.length} problem(s)` : null,
+  ].filter(Boolean);
+  return parts.length ? `${cmd} --strict: ${parts.join(', ')}, listed above` : null;
 }
 
 const NEXT_FORMATS = ['text', 'json'];
@@ -2957,27 +3153,14 @@ function planNext(docs, {
     `unknown ranking '${rank}' — declared: ${Object.keys(schema.rankings).join(', ') || '(none)'}` +
     (rank === 'default' ? "\nnext is driven by a schema-declared ranking: declare one named 'default', or pass --rank <name>" : ''));
   // The same filters as `query`, composed with the ranking the same way: a flag
-  // on a field the ranking filters replaces that condition, and each half is
-  // compiled under its own label so a bad literal is blamed on its real source.
-  const cli = parseWhere(schema, { where, has, missing });
-  const plan = applyRanking(schema, rank, { where: cli });
-  const preset = Object.fromEntries(Object.entries(plan.where).filter(([k]) => !(k in cli)));
-  const q = queryDocs(docs, {
-    schema,
-    where: [
-      ...compileWhere(schema, cli, 'filter'),
-      ...compileWhere(schema, preset, `ranking '${rank}' where`),
-    ],
-    order: parseSort(schema, plan.sort, `ranking '${rank}' order`),
-    limit: 1,
-    readDoc,
-  });
+  // on a field the ranking filters replaces that condition.
+  const q = runQuery(docs, { schema, where, has, missing, rank, limit: 1, readDoc });
   const sources = schemaSources.map(s => String(s).replace(/\\/g, '/'));
   const top = q.results[0] || null;
   const outline = top ? docOutline(docs.find(d => d.path === top.path).html) : null;
   // The headline is whichever field the schema binds to the header's title —
   // `from: header:title`, not a field NAME, so nothing here is hardcoded.
-  const titleKey = Object.keys(schema.fields).find(n => schema.fields[n].from === 'header:title') || null;
+  const titleKey = headerField(schema, 'title');
   const document = top ? {
     path: top.path,
     title: titleKey && top.fields[titleKey].source ? top.fields[titleKey].value : null,
@@ -2986,14 +3169,15 @@ function planNext(docs, {
     sections: outline.sections, open: outline.open, next_section: outline.next,
   } : null;
 
-  const done = (report) => ({ report, skipped: q.skipped, scanned: q.scanned, matched: q.matched, document });
+  const done = (report) => ({ report, skipped: q.skipped, problems: q.problems, scanned: q.scanned, matched: q.matched, document });
 
   if (format === 'json') return done(JSON.stringify({
     target, rank, scanned: q.scanned, matched: q.matched, schema: sources, document, skipped: q.skipped,
+    problems: q.problems,
   }, null, 2) + '\n');
 
   if (!document) return done(`no document matches ranking '${rank}'` +
-    (Object.keys(cli).length ? ' and the given filters' : '') + ` — ${q.scanned} scanned\n`);
+    (q.filtered ? ' and the given filters' : '') + ` — ${q.scanned} scanned\n`);
   const set = Object.entries(top.fields).filter(([k, f]) => f.source && k !== titleKey);
   const kw = Math.max(...set.map(([k]) => k.length));
   const vw = Math.max(...set.map(([, f]) => f.raw.length));
@@ -3015,6 +3199,132 @@ function planNext(docs, {
     out.push('', `no open sections — ${document.sections.length} section(s), none carrying an unfinished status`);
   }
   return done(out.join('\n') + '\n');
+}
+
+/* ── index: a corpus written into a document ──────────────
+   `planr index` renders query's selection as a <plan-table> inside one section
+   of another document, so a page opened from file:// — where fetch is blocked
+   — carries the rolled-up view in its own markup. The table carries
+   `data-planr-index`, naming its source relative to the document; a re-run
+   replaces exactly that table, in place, and leaves the section's prose alone.
+   Every href is relative to the document written into. */
+const INDEX_ATTR = 'data-planr-index';
+// Pure: the relative href from the document at `fromDoc` to `to`. Both are
+// written the same way — both absolute, or both relative to one directory — so
+// no working directory is consulted.
+function relativeHref(fromDoc, to) {
+  const a = docKey(fromDoc).split('/').slice(0, -1);
+  const b = docKey(to).split('/');
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return [...a.slice(i).map(() => '..'), ...b.slice(i)].join('/') || '.';
+}
+// escapeText plus the double quote, for a value written into an attribute.
+function escapeAttr(s) { return escapeText(s).replace(/"/g, '&quot;'); }
+// A column's header: the field's schema label, else its name.
+function indexHeading(schema, name) {
+  const def = name === 'path' ? null : conditionDef(schema, name);
+  return escapeText(def && def.label ? def.label : name);
+}
+// The default columns: the title, then every other field some matched document
+// resolves, in schema order. `path` stands in for the title when the schema
+// binds no field to it.
+function indexColumns(schema, results, titleKey) {
+  const rest = defaultFields(schema, results).filter(c => c !== 'path' && c !== titleKey);
+  return [titleKey || 'path', ...rest];
+}
+// One cell. The title and the path link to the document. A `path` field's
+// value is relative to the document carrying it — as an href is relative to
+// the file that carries it, and as blockerPath resolves a blocker — so each
+// item links to its target, labelled with the target's title: from the scan,
+// else read through `readDoc`, else the path the link goes to, so the text
+// and the href agree. Everything else is query's own
+// cell text, escaped. An href's segments are percent-encoded, so a `#` or `%`
+// in a file name stays part of the path.
+function indexCell(rec, name, { schema, docPath, titleKey, titles, readDoc }) {
+  const titleOf = (p) => {
+    if (titles.has(p)) return titles.get(p);
+    const html = titleKey ? readDoc(p) : null;
+    if (html === null) return null;
+    const f = resolveMeta(html, { schema, docPath: p }).fields[titleKey];
+    return f.source === null ? null : f.value;
+  };
+  const href = (to) => relativeHref(docPath, to).split('/').map(encodeURIComponent).join('/');
+  const link = (to, inner) => `<a href="${escapeAttr(href(to))}">${inner}</a>`;
+  if (name === 'path') return link(rec.path, `<code>${escapeText(relativeHref(docPath, rec.path))}</code>`);
+  const f = recField(rec, name);
+  if (f.source === null) return '-';
+  if (name === titleKey) return link(rec.path, escapeText(f.value));
+  if (schema.fields[name] && schema.fields[name].type === 'path')
+    return (Array.isArray(f.value) ? f.value : [f.value]).map((t) => {
+      const p = docKey(blockerPath(rec.path, t));
+      const title = titleOf(p);
+      return link(p, title !== null ? escapeText(title) : `<code>${escapeText(relativeHref(docPath, p))}</code>`);
+    }).join(', ');
+  return escapeText(cellText(rec, name, '-'));
+}
+// The table's lines, unindented: the caller indents every line after the first
+// to sit where the table sits.
+function indexTableLines(cols, rows, source) {
+  const cells = (tag, xs) => xs.map(x => `<${tag}>${x}</${tag}>`).join('');
+  return [
+    `<plan-table ${INDEX_ATTR}="${escapeAttr(source)}">`,
+    '  <table>',
+    `    <thead><tr>${cells('th', cols)}</tr></thead>`,
+    '    <tbody>',
+    ...(rows.length ? rows.map(r => `      <tr>${cells('td', r)}</tr>`)
+      : [`      <tr><td colspan="${cols.length}">No documents match.</td></tr>`]),
+    '    </tbody>',
+    '  </table>',
+    '</plan-table>',
+  ];
+}
+
+/* Pure: (html, docs, opts) -> { html, message, existed, skipped, problems }.
+   `existed` says whether the section already held a generated table. `docPath`
+   is the document written into, `target` the scanned directory or glob; both
+   in the same form as each doc's path. The document itself is never one of its
+   own rows. */
+function planIndex(html, docs, {
+  schema, address, docPath, target, where = [], has = [], missing = [], sort = null,
+  fields = null, limit = null, rank = null, readDoc = () => null,
+} = {}) {
+  if (!address) throw new PlanError('index requires an address — the section the table is written into');
+  const node = resolveNode(html, String(address).split('.'));
+  if (node.tag === 'plan-header')
+    throw new PlanError('the header holds no body — index into a section');
+  const self = docKey(docPath);
+  const q = runQuery(docs.filter(d => docKey(d.path) !== self), { schema, where, has, missing, sort, rank, limit, readDoc });
+  const titleKey = headerField(schema, 'title');
+  const titles = new Map(titleKey ? q.records.filter(r => r.fields[titleKey].source !== null)
+    .map(r => [docKey(r.path), r.fields[titleKey].value]) : []);
+  const cols = fields === null ? indexColumns(schema, q.results, titleKey) : parseFields(schema, fields);
+  const ctx = { schema, docPath, titleKey, titles, readDoc };
+  const lines = indexTableLines(cols.map(c => indexHeading(schema, c)),
+    q.results.map(r => cols.map(c => indexCell(r, c, ctx))), relativeHref(docPath, target));
+
+  const tables = ownElements(html, node, 'plan-table').filter(t => getAttr(t.attrsRaw, INDEX_ATTR) !== undefined);
+  if (tables.length > 1) throw new PlanError(`'${address}' holds ${tables.length} generated tables ` +
+    `(lines ${tables.map(t => lineOf(html, t.outerStart)).join(', ')}) — remove all but one, then re-run`);
+  let out;
+  if (tables.length) {
+    const el = tables[0];
+    const indent = indentAt(html, el.outerStart);
+    out = html.slice(0, el.outerStart) + lines.map((l, i) => (i ? indent + l : l)).join('\n') + html.slice(el.outerEnd);
+  } else {
+    // Last in the section's body. A body on one line gets the table on lines of
+    // its own, and the closing tag back at the section's indent.
+    const indent = childIndent(html, node);
+    const block = lines.map(l => indent + l).join('\n');
+    out = html.slice(node.innerStart, node.innerEnd).includes('\n')
+      ? spliceBefore(html, node.innerEnd, block)
+      : html.slice(0, node.innerEnd) + '\n' + block + '\n' + indentAt(html, node.outerStart) + html.slice(node.innerEnd);
+  }
+  assertIntact(html, out, 'index');
+  const n = `${q.results.length} document(s)`;
+  const message = out === html ? `index in '${address}' is current — ${n}`
+    : `${tables.length ? 'rewrote' : 'wrote'} the index in '${address}' — ${n}`;
+  return { html: out, message, existed: tables.length > 0, skipped: q.skipped, problems: q.problems };
 }
 
 /* ── wordy: the sentence rule ─────────────────────────────
@@ -3735,7 +4045,7 @@ function readBlocker(p) {
 
 function cmdQuery(target, flags) {
   const { schema, sources } = loadSchema();
-  const { report, skipped } = planQuery(collectDocs(target), {
+  const { report, skipped, problems } = planQuery(collectDocs(target), {
     schema, target: String(target).replace(/\\/g, '/'),
     where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
     sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'),
@@ -3744,13 +4054,14 @@ function cmdQuery(target, flags) {
   });
   process.stdout.write(report);
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
-  if (flags.strict && skipped.length)
-    throw new PlanError(`query --strict: ${skipped.length} file(s) skipped, listed above`);
+  if (problems.length) process.stderr.write(problemReport(problems) + '\n');
+  const failure = flags.strict ? strictFailure('query', skipped, problems) : null;
+  if (failure) throw new PlanError(failure);
 }
 
 function cmdNext(target, flags) {
   const { schema, sources } = loadSchema();
-  const { report, skipped } = planNext(collectDocs(target), {
+  const { report, skipped, problems } = planNext(collectDocs(target), {
     schema, target: String(target).replace(/\\/g, '/'),
     where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
     rank: flagValue(flags, 'rank') || 'default',
@@ -3758,8 +4069,46 @@ function cmdNext(target, flags) {
   });
   process.stdout.write(report);
   if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
-  if (flags.strict && skipped.length)
-    throw new PlanError(`next --strict: ${skipped.length} file(s) skipped, listed above`);
+  if (problems.length) process.stderr.write(problemReport(problems) + '\n');
+  const failure = flags.strict ? strictFailure('next', skipped, problems) : null;
+  if (failure) throw new PlanError(failure);
+}
+
+// `index` writes query's selection into a section of <file>. Both the corpus and
+// the document are resolved to absolute, forward-slash paths, so every href the
+// core computes is relative to the document whatever directory planr ran from.
+// With --strict a skipped file or a corpus problem writes nothing. With --check
+// nothing is ever written: the run fails when the document's table is not the
+// one a write would produce, so a checker can assert the index is current.
+function cmdIndex(target, file, address, flags) {
+  const { schema } = loadSchema();
+  const abs = (p) => path.resolve(String(p)).replace(/\\/g, '/');
+  const before = read(file);
+  const given = collectDocs(target);
+  const shown = new Map(given.map(d => [abs(d.path), d.path]));
+  const asGiven = (text) => [...shown].reduce((t, [a, g]) => t.split(a).join(g), text);
+  const out = planIndex(before, given.map(d => ({ ...d, path: abs(d.path) })), {
+    schema, address, docPath: abs(file), target: abs(target),
+    where: flagList(flags, 'where'), has: flagList(flags, 'has'), missing: flagList(flags, 'missing'),
+    sort: flagValue(flags, 'sort'), fields: flagValue(flags, 'fields'), limit: flagValue(flags, 'limit'),
+    rank: flagValue(flags, 'rank'), readDoc: readBlocker,
+  });
+  const { html, message, existed } = out;
+  const skipped = out.skipped.map(x => ({ ...x, path: asGiven(x.path) }));
+  const problems = out.problems.map(x => ({ ...x, path: asGiven(x.path), text: asGiven(x.text) }));
+  if (skipped.length) process.stderr.write(skipReport(skipped) + '\n');
+  if (problems.length) process.stderr.write(problemReport(problems) + '\n');
+  const failure = flags.strict ? strictFailure('index', skipped, problems) : null;
+  if (failure) throw new PlanError(`${failure} — nothing written`);
+  if (flags.check) {
+    if (html !== before) throw new PlanError(existed
+      ? `index --check: the index in '${address}' of ${file} is stale — run the same command without --check to rewrite it`
+      : `index --check: '${address}' of ${file} has no generated index — run the same command without --check to write it`);
+    process.stdout.write(message + '\n');
+    return;
+  }
+  if (html !== before) write(file, html);
+  process.stdout.write(message + '\n');
 }
 
 // The files a directory contributes to `wordy`: prose and plan documents.
@@ -3910,6 +4259,8 @@ const COMMAND_FLAGS = {
   query:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
                     fields: 'value', limit: 'value', format: 'value', strict: 'bool' },
   next:           { where: 'value', has: 'value', missing: 'value', rank: 'value', format: 'value', strict: 'bool' },
+  index:          { where: 'value', has: 'value', missing: 'value', rank: 'value', sort: 'value',
+                    fields: 'value', limit: 'value', strict: 'bool', check: 'bool' },
   wordy:          { ...Object.fromEntries(WORDY_KINDS.map(k => [k.flag, 'value'])), format: 'value' },
   set:            {},
   'set-body':     { file: 'value', append: 'bool' },
@@ -3944,8 +4295,8 @@ const NEEDS_FILE = ['new', 'list', 'check', 'loader', 'tasks', 'read', 'meta', '
   'insert', 'badge', 'rm-item', 'strike', 'replace', 'add-section', 'rm-section', 'move-section'];
 // The corpus commands take a <dir|glob> in the same slot, so they need their
 // own required-argument message rather than one that says <file>. `wordy`
-// takes one or more of them.
-const NEEDS_TARGET = ['query', 'next', 'wordy'];
+// takes one or more of them; `index` takes a <file> and an <address> after it.
+const NEEDS_TARGET = ['query', 'next', 'wordy', 'index'];
 // A flag declared 'value' must be followed by a value; a bare one is refused here,
 // once, for every command, rather than read as "absent" by whichever core meets it.
 function parseFlags(argv, cmd) {
@@ -3989,6 +4340,10 @@ Usage: node planr.js <command> [args]   (no args or --help prints this)
                           [--format table|json|tsv|paths] [--strict]
   next         <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                           [--format text|json] [--strict]
+  index        <dir|glob> <file> <address> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
+                          [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N] [--strict] [--check]
+                          (write the matching documents as a linked table into that section; re-runs replace it;
+                          --check writes nothing and exits 1 when the table is missing or stale)
   wordy        <file|dir|glob> [...] [--format text|json]  (detects long, dense and run-on lines; exit 1 on any)
                           [--max-chars N] [--max-sentences N] [--max-sentence-chars N]
   set          <file> <path>=<value> [<path>=<value> ...]
@@ -4039,6 +4394,9 @@ function main() {
     assertKnownFlags(cmd, flags);
     if (NEEDS_FILE.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <file> argument`);
     if (NEEDS_TARGET.includes(cmd) && !file) throw new PlanError(`'${cmd}' requires a <dir|glob> argument`);
+    // Three positionals, and a fourth would be dropped in silence.
+    if (cmd === 'index' && positional.length !== 3)
+      throw new PlanError(`'index' takes <dir|glob> <file> <address> — got ${positional.length} argument(s)`);
     switch (cmd) {
       case 'new':          return cmdNew(file, flags);
       case 'templates':    return cmdTemplates(positional[0]);
@@ -4049,6 +4407,7 @@ function main() {
       case 'meta':         return cmdMeta(file, flags);
       case 'query':        return cmdQuery(file, flags);
       case 'next':         return cmdNext(file, flags);
+      case 'index':        return cmdIndex(file, positional[1], positional[2], flags);
       case 'wordy':        return cmdWordy(positional, flags);
       case 'read':         return cmdRead(file, positional[1], flags);
       // Every assignment, not just the first: dropping the extras exited 0 and
@@ -4093,12 +4452,13 @@ module.exports = {
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,
   fieldStamp, stampAttrs, stampDrift, stampMetaFields, planMetaStamp,
   WHERE_OPS, parseWhere, compileWhere, matchWhere, cmpRank,
-  blockerPath, blockerFields, resolveBlocked, lintBlockers,
+  blockerPath, blockerFields, resolveBlocked, lintBlockers, pairProblems, lintPairs, findCycles, lintCycles,
   parseSort, queryDocs, defaultFields, parseFields, cellText, parseLimit,
   applyRanking,
-  QUERY_FORMATS, planQuery, skipReport,
+  QUERY_FORMATS, planQuery, skipReport, problemReport, strictFailure,
   globToRegExp, globBase, collectDocs, flagList,
-  NEXT_FORMATS, docOutline, planNext,
+  NEXT_FORMATS, docOutline, planNext, runQuery,
+  INDEX_ATTR, relativeHref, planIndex,
   splitSentences, markdownUnits, htmlUnits, measureText, WORDY_KINDS, WORDY_FORMATS, planWordy,
   planNew, planTemplates, planTemplateIndex, planTemplateReport, planList, planCheck, warningReport, planTasks, planRead,
   planSet, planSetBody, planInsert, planBadge, planRmItem, planStrike, planReplace, planAddSection, planRmSection, planMoveSection,
