@@ -2,19 +2,33 @@
 
 Every structured argument `planr` parses, in EBNF. `SKILL.md` gives a one-line form for each and points here for the full grammar.
 
-Notation (ISO 14977 style): `=` defines a rule, `,` concatenates, `|` separates alternatives, `[ … ]` is optional, `{ … }` repeats zero or more times, `"…"` is a terminal, `? … ?` is a plain-language set, and `;` ends a rule.
+Notation (ISO 14977 style): `=` defines a rule, `,` concatenates, `|` separates alternatives, `[ … ]` is optional, `{ … }` repeats zero or more times, `"…"` is a terminal, `? … ?` is a plain-language set, `(* … *)` is a comment, and `;` ends a rule.
 
-## Addresses
+Each grammar is self-contained: it uses only its own rules and the common elements below. A rule name is defined once in the whole file, so no grammar shadows another's.
 
-The one grammar for every address argument: the positional `<address>`, `--parent`, `--after`, `--before`, `--in`, and a dotted `new --set` key.
+## Common elements
+
+Shared by every grammar in this file.
 
 ```ebnf
-address   = "header" | section , { "." , child } ;
-section   = id ;
-child     = id | ordinal ;
-id        = ? a section's id attribute ? ;
-ordinal   = digit , { digit } ;       (* 1-based, among that node's child sections *)
-digit     = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+digit          = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+letter         = ? "A" to "Z" or "a" to "z" ? ;
+ordinal        = digit , { digit } ;      (* 1-based *)
+name           = ? letters, digits, "_" and "-" ? ;
+section-id     = ? a section's id attribute ? ;
+attribute-name = ? an attribute name the addressed tag accepts ? ;
+field          = ? a field the schema declares, or "blocked" when a field declares "blocks" ? ;
+```
+
+`field` never includes `path`: `path` is the document's own path, a built-in column that `--fields` accepts and that no condition or sort key can name.
+
+### Addresses
+
+The one grammar for every address argument: the positional `<address>`, `--parent`, `--after`, `--before`, `--in`, and a dotted `new --set` key. `address` is a common element, so the grammars below use it directly.
+
+```ebnf
+address       = "header" | section-id , { "." , address-child } ;
+address-child = section-id | ordinal ;   (* an ordinal counts that node's child sections *)
 ```
 
 - `header` takes no children.
@@ -27,9 +41,8 @@ digit     = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 The positional arguments of `set`.
 
 ```ebnf
-assignment = address , "." , attribute , "=" , value ;
-attribute  = ? an attribute name the addressed tag accepts ? ;
-value      = ? any text without a literal double quote ? ;
+assignment       = address , "." , attribute-name , "=" , assignment-value ;
+assignment-value = ? any text without a literal double quote ? ;
 ```
 
 The **last** dotted segment is the attribute, never a node: `steps.3.status=done`. The value is everything after the first `=`. Write a `"` as `&quot;`.
@@ -39,21 +52,20 @@ The **last** dotted segment is the attribute, never a node: `steps.3.status=done
 The values of `new --set`.
 
 ```ebnf
-scaffold-key    = placeholder-key , "=" , value | assignment ;
-placeholder-key = name ;
-name            = ? letters, digits, "_" and "-" ? ;
+scaffold-key   = name , "=" , scaffold-value                            (* bare: fills a placeholder *)
+               | address , "." , attribute-name , "=" , scaffold-value ;  (* dotted: sets an attribute *)
+scaffold-value = ? any text ? ;
 ```
 
-A key with no dot is a **bare** key and fills a template placeholder (see Template placeholders). A key with a dot is an `assignment` (see Set assignments), applied to the rendered document. A key that matches nothing is an error.
+A key with no dot is a **bare** key and fills the template placeholder of that name, verbatim. A key with a dot sets an attribute on the rendered document exactly as `set` does, so its value takes the same rule: no literal `"`. A key that matches nothing is an error.
 
 ## Container selectors
 
 The value of `--into`, which names a plain container inside an already-addressed section.
 
 ```ebnf
-selector = tag , [ ":" , ordinal ] | "#" , element-id ;
-tag      = letter , { letter | digit | "-" } ;
-letter   = ? "A" to "Z" or "a" to "z" ? ;
+selector   = tag , [ ":" , ordinal ] | "#" , element-id ;
+tag        = letter , { letter | digit | "-" } ;
 element-id = ? an id attribute on any element in the section ? ;
 ```
 
@@ -66,15 +78,14 @@ element-id = ? an id attribute on any element in the section ? ;
 The values of `--where`, `--has` and `--missing` on `query` and `next`.
 
 ```ebnf
-where-expr = field , op , value ;
-op         = ">=" | "<=" | "!=" | "~" | "=" | ">" | "<" ;
-value      = item , { "," , item }    (* a list only after "=" or "!=" *)
-           | text ;                   (* "~", ">=", "<=", ">", "<" take one value *)
-item       = ? text without "," ; surrounding spaces trimmed ? ;
-text       = ? any non-empty text ? ;
-field      = ? a schema field name, or "blocked" ? ;
-has-expr   = field ;                  (* --has: the field resolves a value *)
-missing-expr = field ;                (* --missing: it does not *)
+where-expr   = field , filter-op , filter-value ;
+filter-op    = ">=" | "<=" | "!=" | "~" | "=" | ">" | "<" ;
+filter-value = filter-item , { "," , filter-item }  (* a list only after "=" or "!=" *)
+             | filter-text ;                       (* "~", ">=", "<=", ">", "<" take one value *)
+filter-item  = ? text without "," ; surrounding spaces trimmed ? ;
+filter-text  = ? any non-empty text ? ;
+has-expr     = field ;                             (* --has: the field resolves a value *)
+missing-expr = field ;                             (* --missing: it does not *)
 ```
 
 | Operator | Means |
@@ -84,10 +95,10 @@ missing-expr = field ;                (* --missing: it does not *)
 | `>=` `<=` `>` `<` | compares positions in the field's **declared order** |
 | `~` | case-insensitive substring |
 
-- The operator is the first token, in the order listed under `op`, that appears anywhere in the expression; `>=` is tried before `>`. Field and value are trimmed.
+- The operator is the first token, in the order listed under `filter-op`, that appears anywhere in the expression; `>=` is tried before `>`. Field and value are trimmed.
 - Every flag is repeatable, and they AND together. A second `--where` with the same operator on one field replaces the first.
 - An unknown field, an empty field or value, or a value the field cannot hold is an error naming what is valid.
-- `path` is never a field: narrow by path with the target glob.
+- `--where path…` is refused: narrow by path with the target glob.
 - On a repeatable field, `=`, `!=` and `~` match per item, and the ordering operators are refused.
 - An unset field satisfies only `--missing` and `!=`.
 
@@ -96,33 +107,39 @@ missing-expr = field ;                (* --missing: it does not *)
 The values of `--sort` and of a ranking's `order` entries.
 
 ```ebnf
-sort-spec = sort-key , { "," , sort-key } ;
-sort-key  = field , [ ":" , direction ] ;
-direction = "asc" | "desc" ;          (* default asc *)
+sort-spec      = sort-key , { "," , sort-key } ;
+sort-key       = field , [ ":" , sort-direction ] ;
+sort-direction = "asc" | "desc" ;        (* default asc *)
 ```
 
 A repeatable field is refused, because it has no single position. A document with no value for a key sorts last in both directions.
 
-`--fields` takes a plain list:
+## Field lists
+
+The value of `--fields`.
 
 ```ebnf
 field-list = column , { "," , column } ;
-column     = field | "path" | "blocked" ;
+column     = field | "path" ;
 ```
 
 ## Rankings
 
-A ranking is JSON in the schema's `rankings` object. Its `where` uses the same conditions the filter flags parse into.
+A ranking is JSON in the schema's `rankings` object, which maps a ranking's name to it. Its `where` uses the same conditions the filter flags parse into.
 
 ```ebnf
-ranking   = "{" , [ member , [ "," , member ] ] , "}" ;   (* each key at most once *)
-member    = '"where": ' , where-obj | '"order": ' , order-list ;
-where-obj = "{" , [ condition , { "," , condition } ] , "}" ;
-condition = '"' , field , '": {' , op-entry , { "," , op-entry } , "}" ;
-op-entry  = '"' , json-op , '": ' , literal ;
-json-op   = "eq" | "ne" | "in" | "ge" | "le" | "gt" | "lt" | "contains" | "set" ;
-literal   = string | string-array | boolean ;   (* a boolean for "set", and only there *)
-order-list = "[" , [ '"' , sort-key , '"' , { "," , '"' , sort-key , '"' } ] , "]" ;
+ranking       = "{" , [ ranking-member , [ "," , ranking-member ] ] , "}" ;  (* each key at most once *)
+ranking-member = '"where": ' , where-object | '"order": ' , order-list ;
+where-object  = "{" , [ condition , { "," , condition } ] , "}" ;
+condition     = '"' , field , '": {' , op-entry , { "," , op-entry } , "}" ;
+op-entry      = '"' , json-op , '": ' , json-literal ;
+json-op       = "eq" | "ne" | "in" | "ge" | "le" | "gt" | "lt" | "contains" | "set" ;
+json-literal  = json-string | json-string-array | json-boolean ;  (* a boolean for "set", and only there *)
+json-string   = ? a JSON string ? ;
+json-string-array = "[" , [ json-string , { "," , json-string } ] , "]" ;
+json-boolean  = "true" | "false" ;
+order-list    = "[" , [ order-entry , { "," , order-entry } ] , "]" ;
+order-entry   = '"' , field , [ ":" , ( "asc" | "desc" ) ] , '"' ;
 ```
 
 | JSON op | Flag form |
@@ -138,8 +155,8 @@ A missing `where` filters nothing; a missing `order` keeps path order. A ranking
 ## Template placeholders
 
 ```ebnf
-placeholder = "{{" , name , [ ":" , default ] , "}}" ;
-default     = ? any text without "}" ? ;
+placeholder         = "{{" , name , [ ":" , placeholder-default ] , "}}" ;
+placeholder-default = ? any text without "}" ? ;
 ```
 
 A bare `new --set name=value` fills it. With no value given, `{{name:default}}` becomes its default (possibly empty) and `{{name}}` is left literally. Template conventions are in `references/template-authoring.md`.

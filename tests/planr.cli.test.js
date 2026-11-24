@@ -189,6 +189,33 @@ describe('shipped docs stand alone', () => {
     }
     expect(checked, 'no cited references found — has the pattern gone stale?').toBeGreaterThan(0);
   });
+  it('keep every grammar in references/grammar.md self-contained', () => {
+    // Each ```ebnf block under a `## ` section is one grammar. A rule name is
+    // defined once in the file, and a block references only its own rules and
+    // the ones under "Common elements" (Addresses included).
+    const text = readFileSync(join(SKILL_DIR, 'references', 'grammar.md'), 'utf8');
+    const strip = (s) => s.replace(/\(\*[\s\S]*?\*\)|\?[^?]*\?|"[^"]*"|'[^']*'/g, ' ');
+    const blocks = [];
+    let section = null;
+    for (const part of text.split(/^(## .+)$/m)) {
+      if (part.startsWith('## ')) { section = part.slice(3); continue; }
+      for (const m of part.matchAll(/```ebnf\n([\s\S]*?)```/g)) {
+        const body = strip(m[1]);
+        const defs = [...body.matchAll(/^([a-z][a-z0-9-]*)\s*=/gm)].map(d => d[1]);
+        const refs = [...body.replace(/^[a-z][a-z0-9-]*\s*=/gm, ' ').matchAll(/[a-z][a-z0-9-]*/g)].map(r => r[0]);
+        blocks.push({ section, defs, refs });
+      }
+    }
+    const all = blocks.flatMap(b => b.defs);
+    expect(all.filter((n, i) => all.indexOf(n) !== i), 'defined twice').toEqual([]);
+    const common = new Set(blocks.filter(b => b.section === 'Common elements').flatMap(b => b.defs));
+    expect(common.has('address')).toBe(true);
+    for (const b of blocks) {
+      const own = new Set(b.defs);
+      const stray = b.refs.filter(r => !own.has(r) && !common.has(r));
+      expect(stray, `${b.section} uses rules it neither defines nor shares`).toEqual([]);
+    }
+  });
   it('document the consumer template directory', () => {
     // Scoped to the two docs Templates/template-authoring guidance lives in —
     // not the full `docs` list above, which also covers authoring-traps.md,
