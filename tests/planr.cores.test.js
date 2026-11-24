@@ -1574,6 +1574,42 @@ describe('validateField / fieldValue / fieldRank', () => {
   });
 });
 
+// grammar.md documents the schema file and a ranking as JSON Schemas. Both are
+// read by people and editors, never by planr, so these tests are what keep them
+// describing the parser that actually runs.
+describe("grammar.md's JSON Schemas", () => {
+  const grammar = () => skillFile('references/grammar.md');
+  const jsonUnder = (heading) => {
+    const text = grammar();
+    const at = text.indexOf(`\n${heading}\n`);
+    expect(at, heading).toBeGreaterThan(-1);
+    return JSON.parse(/```json\n([\s\S]*?)```/.exec(text.slice(at))[1]);
+  };
+  const file = () => jsonUnder('## Schema file');
+  const keys = (o) => Object.keys(o).sort();
+
+  it('the schema file names exactly the keys, types, tones and patterns parseSchema accepts', () => {
+    const f = file();
+    expect(keys(f.properties)).toEqual([...planr.SCHEMA_KEYS].sort());
+    const field = f.$defs.field;
+    expect(keys(field.properties)).toEqual([...planr.FIELD_KEYS].sort());
+    expect(field.properties.type.enum).toEqual(planr.FIELD_TYPES);
+    expect(field.properties.tones.additionalProperties.enum).toEqual(planr.TONES);
+    expect(field.properties.values.items.pattern).toBe(planr.ENUM_VALUE.source);
+    expect(f.properties.fields.propertyNames.pattern).toBe(planr.FIELD_NAME.source);
+    expect(f.properties.fields.propertyNames.not.enum).toEqual(planr.BUILTIN_COLUMNS);
+    expect(f.properties.rankings.propertyNames.pattern).toBe(planr.FIELD_NAME.source);
+    expect(keys(f.$defs.condition.properties)).toEqual([...planr.WHERE_OPS].sort());
+  });
+
+  it("the ranking schema under Rankings is the schema file's own ranking definition", () => {
+    const r = jsonUnder('### As JSON Schema'), f = file();
+    expect(f.$defs.ranking).toEqual({ type: r.type, additionalProperties: r.additionalProperties, properties: r.properties });
+    expect(f.$defs.condition).toEqual(r.$defs.condition);
+    expect(f.$defs.scalar).toEqual(r.$defs.scalar);
+  });
+});
+
 describe('the shipped core schema', () => {
   const core = () => planr.parseSchema(JSON.parse(skillFile('planr-schema.json')), 'core');
 

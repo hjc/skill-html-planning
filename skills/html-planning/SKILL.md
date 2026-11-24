@@ -596,7 +596,7 @@ Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enu
 | `defaults` | top level | field → value, the last resort of the chain |
 | `rankings` | top level | name → `{ where, order }` (see "Rankings") |
 
-Field and ranking names match `^[a-z][a-z0-9-]*$`, except that no field may be `path` or `blocked`, which are built-in columns. An enum value may hold spaces but no comma, line break or tab, and no leading or trailing space, and a ranking's `order` takes one key per entry: anything a filter or sort spec could not express is refused when the schema loads. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file.
+Field and ranking names match `^[a-z][a-z0-9-]*$`, except that no field may be `path` or `blocked`, which are built-in columns. An enum value may hold spaces but no comma, line break or tab, and no leading or trailing space, and a ranking's `order` takes one key per entry: anything a filter or sort spec could not express is refused when the schema loads. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file. The whole file format is also given as a JSON Schema in `references/grammar.md#schema-file`.
 
 **`planr meta`** reads and writes the block. With no `--set`/`--unset`, it prints the resolved value of every field and where each one came from:
 

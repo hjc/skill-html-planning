@@ -26,4 +26,4 @@ with the two document types the skill ships templates for — `issue` and `tdd` 
   **`defaults`** fill whatever is still unset.
 - Run `planr meta <file>` on a few documents to see which source each value came from.
 
-Every key the schema accepts is in `SKILL.md`'s schema table, under "Metadata".
+Every key the schema accepts is in `SKILL.md`'s schema table, under "Metadata". To check a schema while writing it, point your editor at the JSON Schema in `references/grammar.md#schema-file`.

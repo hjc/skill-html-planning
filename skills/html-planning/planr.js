@@ -985,7 +985,7 @@ const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
 // An enum value is typed into `--where` and split on a comma when stored, and
 // both trim the edges: a comma, a line break, a tab or an edge space makes a
 // value that no filter can match. Interior spaces are fine (`in progress`).
-const ENUM_VALUE = /^[^\s,](?:[^,\r\n\t]*[^\s,])?$/;
+const ENUM_VALUE = /^(?!\s)[^,\r\n\t]+(?<!\s)$/;
 // The header attributes a field may view: the three that carry a queryable
 // fact. A subtitle is prose, and free-text chips are deprecated.
 const HEADER_SOURCE = /^header:(title|status|date)$/;
@@ -4014,7 +4014,7 @@ module.exports = {
   walkNodes, TEXT_RULES, visibleUnits, visibleText, textLines, nodeText, resolveScope, matchNeedle, matchSelection, pickMatches,
   findItems, itemText, removeItem, findTextRuns,
   PlanError, SECTION_STATUS, HEADER_STATUS, HEADER_STATUS_TONES, BADGE_TYPES, BADGE_LABELS, BADGE_TONES, TONES,
-  PLAN_TAGS, FIELD_TYPES, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags, parseFlags,
+  PLAN_TAGS, FIELD_TYPES, FIELD_KEYS, SCHEMA_KEYS, FIELD_NAME, ENUM_VALUE, CLOSED_STATUS, BUILTIN_COLUMNS, USAGE, COMMAND_FLAGS, isBooleanFlag, assertKnownFlags, parseFlags,
   NEEDS_FILE, NEEDS_TARGET,
   resolveConsumerSchemaPath, parseSchema, mergeSchemas, validateField, fieldValue, fieldRank,
   readMetaBlock, resolveMeta, planMeta, headerOwnedProblem, planMetaSet, lintMeta,

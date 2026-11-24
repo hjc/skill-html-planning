@@ -206,6 +206,140 @@ The same ranking object, as a JSON Schema for one value of `rankings`. It checks
 }
 ```
 
+## Schema file
+
+The whole metadata schema file — the shipped `planr-schema.json` and a repo's `.claude/planr-schema.json` — as a JSON Schema. Point an editor at it to check a schema while writing one.
+
+It checks everything that a single file decides on its own. Three checks need more than one file, or a value that only exists elsewhere, so `planr` makes them after the core and consumer files merge:
+
+- a `tones` key must be one of that field's `values`;
+- a `defaults` or `infer` value must be one its field can hold, and must name a declared field;
+- a ranking's fields, literals and sort keys must exist and fit (see Rankings).
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "planr metadata schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "fields": {
+      "description": "field name -> definition; a consumer field replaces the core field of the same name",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$", "not": { "enum": ["path", "blocked"] } },
+      "additionalProperties": { "$ref": "#/$defs/field" }
+    },
+    "infer": {
+      "description": "path rules, first match wins; a consumer's rules run before the core's",
+      "type": "array",
+      "items": { "$ref": "#/$defs/infer-rule" }
+    },
+    "defaults": {
+      "description": "field -> value, the last source a field resolves from",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": { "type": ["string", "number"] }
+    },
+    "rankings": {
+      "description": "ranking name -> ranking, run by query --rank and next",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": { "$ref": "#/$defs/ranking" }
+    }
+  },
+  "$defs": {
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type":       { "enum": ["enum", "string", "list", "path", "date", "number"] },
+        "values":     {
+          "description": "the allowed values, in sort order",
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^(?!\\s)[^,\\r\\n\\t]+(?<!\\s)$" }
+        },
+        "min":        { "type": "number" },
+        "max":        { "type": "number" },
+        "repeatable": { "type": "boolean" },
+        "from":       { "enum": ["header:title", "header:status", "header:date"] },
+        "label":      { "type": "string", "pattern": "\\S" },
+        "tones":      {
+          "description": "value -> tone for the header chip",
+          "type": "object",
+          "additionalProperties": { "enum": ["danger", "warn", "info", "ok", "final", "muted"] }
+        },
+        "hidden":     { "type": "boolean" },
+        "blocks":     { "type": "boolean" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "enum" } } },
+          "then": { "required": ["values"] },
+          "else": { "not": { "required": ["values"] } } },
+        { "if": { "not": { "properties": { "type": { "const": "number" } } } },
+          "then": { "not": { "anyOf": [{ "required": ["min"] }, { "required": ["max"] }] } } },
+        { "if": { "required": ["tones"] },
+          "then": { "properties": { "type": { "const": "enum" }, "repeatable": { "const": false } } } },
+        { "if": { "required": ["blocks"] },
+          "then": { "properties": { "type": { "const": "path" } } } },
+        { "if": { "required": ["from"] },
+          "then": { "not": { "anyOf": [{ "required": ["label"] }, { "required": ["tones"] }, { "required": ["hidden"] }] } } }
+      ]
+    },
+    "infer-rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["match", "set"],
+      "properties": {
+        "match": { "description": "a regular expression on the document's path", "type": "string", "minLength": 1 },
+        "set":   {
+          "type": "object", "minProperties": 1,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+          "additionalProperties": { "type": ["string", "number"] }
+        }
+      }
+    },
+    "ranking": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "where": {
+          "description": "field -> condition; every condition must hold",
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+          "additionalProperties": { "$ref": "#/$defs/condition" }
+        },
+        "order": {
+          "description": "sort keys, most significant first; default direction asc",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(:(asc|desc))?$" }
+        }
+      }
+    },
+    "condition": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "eq":       { "$ref": "#/$defs/scalar" },
+        "in":       { "type": "array", "items": { "$ref": "#/$defs/scalar" } },
+        "ne":       { "oneOf": [{ "$ref": "#/$defs/scalar" }, { "type": "array", "items": { "$ref": "#/$defs/scalar" } }] },
+        "ge":       { "$ref": "#/$defs/scalar" },
+        "le":       { "$ref": "#/$defs/scalar" },
+        "gt":       { "$ref": "#/$defs/scalar" },
+        "lt":       { "$ref": "#/$defs/scalar" },
+        "contains": { "$ref": "#/$defs/scalar" },
+        "set":      { "type": "boolean" }
+      }
+    },
+    "scalar": {
+      "description": "compared by its text: false and \"false\" are the same literal",
+      "type": ["string", "number", "boolean"]
+    }
+  }
+}
+```
+
 ## Template placeholders
 
 ```ebnf
