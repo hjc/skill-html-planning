@@ -167,7 +167,7 @@ describe('shipped docs stand alone', () => {
   // who did not clone the repo.
   // They are read by an LLM, never clicked, so a reference is a bare backtick
   // path: a relative Markdown link only repeats the path it wraps.
-  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md'];
+  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md', 'references/schema-setup.md'];
   it('cite only references that ship, as bare paths, and never repo-only tooling', () => {
     let checked = 0;
     for (const doc of docs) {
@@ -1002,9 +1002,11 @@ describe('schema core, label and blockers documentation', () => {
   const skill = () => readFileSync(join(SKILL_DIR, 'SKILL.md'), 'utf8');
   const repoFile = (f) => readFileSync(join(SKILL_DIR, '..', '..', f), 'utf8');
 
-  it('SKILL.md carries first-time setup, the trimmed schema keys and the blockers contract', () => {
+  it('SKILL.md points at first-time setup and carries the trimmed schema keys and the blockers contract', () => {
     const s = skill();
-    for (const t of ['### First-time setup', '### Blockers', '| `.blocks` | `path` |', '`header:title\\|status\\|date`',
+    expect(s).not.toContain('### First-time setup');
+    expect(readFileSync(join(SKILL_DIR, 'references', 'schema-setup.md'), 'utf8')).toContain('.claude/planr-schema.json');
+    for (const t of ['`references/schema-setup.md`', '### Blockers', '| `.blocks` | `path` |', '`header:title\\|status\\|date`',
       '--where blocked=false', '"blocked": { "eq": false }', 'A missing target never blocks', 'label="…"'])
       expect(s, t).toContain(t);
     expect(s).not.toContain('accepted, not yet rendered');

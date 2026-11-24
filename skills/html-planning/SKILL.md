@@ -637,31 +637,7 @@ $ planr meta plan.html --unset reference-paths
 
 **Template defaults.** A template declares metadata defaults by writing a literal `<plan-meta>` block at the top of its body, using `{{name:default}}` wherever the value should be fillable at scaffold time — no new template syntax. A placeholder left empty is dropped rather than written as an empty field, and a template may not declare a header-owned field. See **`references/template-authoring.md`** for the full convention.
 
-### First-time setup
-
-The shipped core declares only what every repo shares: `title`, `status` and `date` (views of the header), `type`
-with the two document types the skill ships templates for — `issue` and `tdd` — plus `reference-paths` and
-`blocked-by`. It infers nothing and defaults nothing. Declare the rest in **`.claude/planr-schema.json`**:
-
-```json
-{
-  "fields": {
-    "type": { "type": "enum", "values": ["prd", "spec", "tdd", "issue"] }
-  },
-  "infer": [
-    { "match": "/issues/", "set": { "type": "issue" } },
-    { "match": "/tdds/", "set": { "type": "tdd" } },
-    { "match": "/prd-[^/]*\\.html$", "set": { "type": "prd" } }
-  ],
-  "defaults": { "type": "spec" }
-}
-```
-
-- **Redeclare `type` whole to add a document type.** A consumer field replaces the core one, so keep `issue` and `tdd`
-  in the list if you use those templates.
-- **`infer`** sets fields from the document's path — a regex on the path, the first matching rule wins — and
-  **`defaults`** fill whatever is still unset.
-- Run `planr meta <file>` on a few documents to see which source each value came from.
+> **Installing the skill into a repo, or adding its first document type, path rule or default?** See **`references/schema-setup.md`**.
 
 ### Tones and the header
 
@@ -863,7 +839,7 @@ Under `--format json` the `document` object carries the path, the title, every r
 ├── planr.js          ← Generate (from a template) + address-based plan mutator
 ├── planr-schema.json ← Shipped core metadata schema (field vocabulary, as data)
 ├── templates/        ← _shell.html (shared doc + loader) and <name>.html bodies (basic, tdd, …)
-├── references/       ← Deep-dive docs, read on demand (template-authoring.md, authoring-traps.md)
+├── references/       ← Deep-dive docs, read on demand (template-authoring.md, authoring-traps.md, schema-setup.md)
 ├── plan-styles.css   ← Design system (loaded at runtime)
 ├── plan-runtime.js   ← Web Component definitions (loaded at runtime)
 └── SKILL.md          ← This file (agent instructions)

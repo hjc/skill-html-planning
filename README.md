@@ -241,7 +241,7 @@ The shipped core knows two document types, `issue` and `tdd`, and infers and def
 }
 ```
 
-A consumer field replaces the core one of the same name, so a redeclared `type` lists every type you use. See `SKILL.md`'s "First-time setup".
+A consumer field replaces the core one of the same name, so a redeclared `type` lists every type you use. See `skills/html-planning/references/schema-setup.md`.
 
 ## Editing Plans Cheaply
 
@@ -373,7 +373,7 @@ Relative to `skills/html-planning/`:
 | `SKILL.md` | The skill definition (agent instructions + primer + component reference). |
 | `planr.js` | The CLI — generates plan skeletons (`planr new`), validates structure and warns on silent rendering traps (`planr check`), and makes cheap, address-based edits to an existing plan (status flips, section add/remove/move, body swaps, hunk inserts) without re-reading the whole file. |
 | `templates/` | Plan skeletons composed by `planr new` — `_shell.html` (shared document + inline loader) plus one selectable body per template (`basic`, `tdd`, `issue`). A consuming repo adds its own in `.claude/planr-templates/`. |
-| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md` and `authoring-traps.md`. |
+| `references/` | Deep-dive docs the skill points at rather than inlining — `template-authoring.md`, `authoring-traps.md` and `schema-setup.md`. |
 | `plan-runtime.js` | Web Component definitions loaded at runtime via the inline loader. |
 | `plan-styles.css` | Plan design system, also injected via the inline loader. |
 | `examples/sample-plan.html` | Sample file with every component listed. |
