@@ -134,9 +134,11 @@ where-object  = "{" , [ condition , { "," , condition } ] , "}" ;
 condition     = '"' , field , '": {' , op-entry , { "," , op-entry } , "}" ;
 op-entry      = '"' , json-op , '": ' , json-literal ;
 json-op       = "eq" | "ne" | "in" | "ge" | "le" | "gt" | "lt" | "contains" | "set" ;
-json-literal  = json-string | json-string-array | json-boolean ;  (* a boolean for "set", and only there *)
+json-literal  = json-scalar | json-array ;   (* "set" takes only json-boolean *)
+json-scalar   = json-string | json-number | json-boolean ;
+json-array    = "[" , [ json-scalar , { "," , json-scalar } ] , "]" ;
 json-string   = ? a JSON string ? ;
-json-string-array = "[" , [ json-string , { "," , json-string } ] , "]" ;
+json-number   = ? a JSON number ? ;
 json-boolean  = "true" | "false" ;
 order-list    = "[" , [ order-entry , { "," , order-entry } ] , "]" ;
 order-entry   = '"' , field , [ ":" , ( "asc" | "desc" ) ] , '"' ;
@@ -150,7 +152,57 @@ order-entry   = '"' , field , [ ":" , ( "asc" | "desc" ) ] , '"' ;
 | `contains` | `~` |
 | `set: true` / `set: false` | `--has` / `--missing` |
 
+Every operator but `set` compares a literal by its text, so `false` and `"false"`, or `3` and `"3"`, are the same literal: `"blocked": { "eq": false }` and `"blocked": { "eq": "false" }` mean one thing. `set` takes `true` or `false` only.
+
 A missing `where` filters nothing; a missing `order` keeps path order. A ranking is validated when the schema is read, by the same code that runs it. A flag on a field the ranking filters replaces that field's conditions; `--sort` replaces `order` outright.
+
+### As JSON Schema
+
+The same ranking object, as a JSON Schema for one value of `rankings`. It checks shape only: whether a field exists, whether a literal is a value that field can hold, and whether an operator applies to it (`blocked` takes only `eq`, `in` and `ne`; a repeatable field takes no ordering operator) depend on the loaded schema, and `planr` checks them when it reads the schema.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "planr ranking",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "where": {
+      "description": "field -> condition; every condition must hold",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": { "$ref": "#/$defs/condition" }
+    },
+    "order": {
+      "description": "sort keys, most significant first; default direction asc",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(:(asc|desc))?$" }
+    }
+  },
+  "$defs": {
+    "condition": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "eq":       { "$ref": "#/$defs/scalar" },
+        "in":       { "type": "array", "items": { "$ref": "#/$defs/scalar" } },
+        "ne":       { "oneOf": [{ "$ref": "#/$defs/scalar" }, { "type": "array", "items": { "$ref": "#/$defs/scalar" } }] },
+        "ge":       { "$ref": "#/$defs/scalar" },
+        "le":       { "$ref": "#/$defs/scalar" },
+        "gt":       { "$ref": "#/$defs/scalar" },
+        "lt":       { "$ref": "#/$defs/scalar" },
+        "contains": { "$ref": "#/$defs/scalar" },
+        "set":      { "type": "boolean" }
+      }
+    },
+    "scalar": {
+      "description": "compared by its text: false and \"false\" are the same literal",
+      "type": ["string", "number", "boolean"]
+    }
+  }
+}
+```
 
 ## Template placeholders
 
