@@ -1,0 +1,13 @@
+{
+  "fields": {
+    "title":           { "type": "string", "from": "header:title" },
+    "type":            { "type": "enum", "values": ["issue", "tdd"] },
+    "status":          { "type": "enum", "values": ["draft", "review", "approved", "implemented", "rejected"], "from": "header:status" },
+    "date":            { "type": "date", "from": "header:date" },
+    "reference-paths": { "type": "list", "label": "paths" },
+    "blocked-by":      { "type": "path", "repeatable": true, "blocks": true, "label": "blocked by" }
+  },
+  "infer": [],
+  "defaults": {},
+  "rankings": {}
+}

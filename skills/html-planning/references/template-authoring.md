@@ -18,6 +18,18 @@ templates/
 
 You will almost always be writing a body. Change `_shell.html` only to alter something every plan shares — a new document-level variable, a `<head>` addition.
 
+## Where a template lives
+
+A template is either **shipped** — in the skill's `templates/` — or **consumer-owned**, in `.claude/planr-templates/`, the directory beside `skills/` under the same `.claude` ancestor. Write a repo's own templates in the consumer directory: updating the skill overwrites `templates/` and never touches `planr-templates/`.
+
+| | Shipped `templates/` | Consumer `.claude/planr-templates/` |
+|---|---|---|
+| Bodies (`<name>.html`) | yes | yes — same format, same rules |
+| `_shell.html` | the one shell | refused — `planr` errors until it is removed |
+| A name the other directory also has | — | the consumer template wins; `planr templates` marks it `[consumer, shadows skill]` |
+
+Everything below applies to both. `planr templates` holds every template it lists to the leading-comment rules and to `check`, and prints any that fail under **Template problems**.
+
 ## Variables
 
 Values fill via a zero-dep `{{var}}` substitution. A placeholder may **declare a default**:
@@ -43,7 +55,7 @@ Names are `\w+`. Values are substituted through a function replacer, so a `$` in
 | `skillSubpath` | the skill's install path, baked into the loader — **do not repurpose this name** |
 | `body` | the selected body template; consumed before substitution, so it is not a knob |
 
-The shell also declares `lang`, `subtitle`, `status` and `chips`. Reuse those names in a body only if you mean the same thing — they share one namespace.
+The shell also declares `lang`, `subtitle` and `status`. Reuse those names in a body only if you mean the same thing — they share one namespace.
 
 ### How `--set` reaches your variables
 
@@ -52,7 +64,7 @@ The shell also declares `lang`, `subtitle`, `status` and `chips`. Reuse those na
 - **bare** (`--set lang=fr`) fills a `{{placeholder}}`. It must name one the template declares, or the command errors and lists the ones that exist.
 - **dotted** (`--set header.status=review`) is a node address applied to the *rendered* document, so it reaches any `<plan-*>` node whether or not the template parameterised it.
 
-Both are validated identically. If you add a placeholder whose value has a constrained set — a status, an enum — note that a bare fill bypasses `planSet`, so its validation lives in `planNew` and must be added there too. Otherwise the placeholder path silently accepts what the node path rejects.
+Both are validated identically: `new` runs every attribute of the rendered header and sections through the same `validateAttr` rule `set` uses, and every `<plan-field>` value through the schema. A placeholder whose value has a constrained set therefore needs no extra code — a new attribute rule is one `ATTR_RULES` entry, and a new field rule is a schema edit.
 
 ## The leading comment is the template's documentation
 
@@ -60,7 +72,7 @@ Both are validated identically. If you add a placeholder whose value has a const
 
 - its **first sentence** becomes the template's one-line gist in `planr templates`;
 - the **whole comment** is what `planr templates <name>` prints;
-- it **ships inside every generated plan**, so the guidance reaches whoever fills the scaffold in — months later, in another repo, without this file.
+- it is **left out of the document `planr new` writes**, so a scaffolded plan never opens with instructions to itself. `new` strips it with the same match `templates` reads it with, so the two never disagree about which comment is the guidance.
 
 Write it for that person: what the document type is for, what each section is meant to contain, and the judgement calls the shape encodes. The `issue` template's comment is a good model — it explains *why* root cause and impact are separate sections, not just that they are.
 
@@ -81,10 +93,25 @@ Ordinary plan markup, subject to the same rules as any plan (`SKILL.md` is the c
 
 Seed each section with a sentence describing what belongs there rather than leaving it empty. That placeholder prose is what an author actually reads, and it is where a convention gets enforced — "Convention: a table of decision → rationale" does more work than an empty section.
 
+## Declaring metadata defaults
+
+A template may declare the metadata a scaffolded document starts with by writing a literal `<plan-meta>` block at the **top of the body**, above its first section — no new template syntax, since a placeholder inside it fills exactly like any other `{{var}}`:
+
+```html
+<plan-meta>
+  <plan-field key="type">issue</plan-field>
+  <plan-field key="reference-paths">{{reference-paths:}}</plan-field>
+</plan-meta>
+```
+
+Write a **concrete value** for a field the document type always has (`type` above never varies for this template), and `{{name:}}` for one the author fills at scaffold time (`--set reference-paths=…`). A placeholder name may carry a hyphen, so it can match the field it fills. An unfilled placeholder means "no value" — `new` **drops** that field, and the whole block once nothing is left, rather than writing an empty one.
+
+Every value is held to the schema in force when `new` runs, exactly as a `meta --set` write is: a template may only name a field the schema declares, and only a value it accepts. A template may **not** declare a field the header already owns (`title`, `status`, `date`, or any other `from: "header:…"` field) — that value has exactly one writer, and it is not a template.
+
 ## Verifying a new template
 
 ```bash
-node .claude/skills/html-planning/planr.js templates              # gist reads correctly?
+node .claude/skills/html-planning/planr.js templates              # gist reads correctly? no "Template problems"?
 node .claude/skills/html-planning/planr.js templates <name>       # guidance + sections + variables
 node .claude/skills/html-planning/planr.js new /tmp/probe.html --template <name>
 node .claude/skills/html-planning/planr.js check /tmp/probe.html  # exits 1 on a structural break

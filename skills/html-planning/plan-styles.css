@@ -170,14 +170,27 @@ plan-header .meta-row {
   border-radius: 50%;
   display: inline-block;
 }
-/* Header status dots. One rule per value in planr's HEADER_STATUS enum — a
-   value with no rule here renders an uncolored dot, which is how `rejected`
-   shipped documented-but-unstyled. */
-.dot.draft { background: var(--amber); }
-.dot.review { background: var(--accent); }
-.dot.approved { background: var(--green); }
-.dot.implemented { background: var(--purple); }
-.dot.rejected { background: var(--red); }
+/* Tones. Every coloured mark — a badge, the header status dot, a metadata
+   chip's dot — colours by one of planr's TONES, each mapped onto an existing
+   token. One rule per tone here and one per tone under plan-badge; a test
+   asserts both sets equal TONES. */
+.dot.tone-danger { background: var(--red); }
+.dot.tone-warn   { background: var(--amber); }
+.dot.tone-info   { background: var(--accent); }
+.dot.tone-ok     { background: var(--green); }
+.dot.tone-final  { background: var(--purple); }
+.dot.tone-muted  { background: var(--text-muted); }
+/* A metadata chip (PlanHeader, from <plan-meta>): the key, muted and
+   monospaced, then the value. A long value is cut with an ellipsis; the chip's
+   title carries `key: value` whole. */
+.meta-field .meta-key { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.meta-field .meta-value {
+  color: var(--text);
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ── main (container) ─────────────────────────────────── */
 /* Centered, capped column by default (comfortable reading measure). The gear's
@@ -298,6 +311,58 @@ plan-table tbody tr:hover { background: var(--surface); }
 plan-table th.right, plan-table td.right { text-align: right; }
 plan-table td.mono { font-family: var(--mono); font-size: 13px; }
 plan-table .row-total { background: var(--accent-dim) !important; }
+
+/* ── plan-meta / plan-field ───────────────────────────── */
+/* The document's metadata STORE. planr reads it; PlanHeader renders its fields
+   as chips in the header's meta-row. The block itself shows nothing. */
+plan-meta { display: none; }
+
+/* ── plan-defs / plan-def ─────────────────────────────── */
+/* A sub-record of name → value pairs. CSS table display: every key shares one
+   column width, and a value's mixed inline content (text, <code>, <strong>, a
+   badge) is wrapped into ONE anonymous table cell. The key is generated from
+   the `key` attribute, so no JS runs. */
+plan-defs {
+  display: table;
+  border-collapse: separate;
+  border-spacing: 0 4px;
+  max-width: 100%;
+  margin: 12px 0;
+  padding: 6px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.5;
+}
+plan-def {
+  display: table-row;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+plan-def::before {
+  content: attr(key);
+  display: table-cell;
+  padding-right: 16px;
+  white-space: nowrap;
+  vertical-align: baseline;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+/* Inside a table cell the host <td> already carries padding and a border, so
+   the sub-record drops its chrome and reads as part of its row. */
+plan-table td plan-defs {
+  margin: -2px 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  border-spacing: 0 2px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+plan-table td plan-def::before { padding-right: 12px; font-size: 12px; }
 
 /* ── plan-tabs / plan-tab ─────────────────────────────── */
 plan-tabs {
@@ -541,12 +606,13 @@ plan-badge {
   padding: 3px 10px;
   border-radius: 12px;
 }
-plan-badge[type="decided"]  { background: var(--green-dim);  color: var(--green); }
-plan-badge[type="open"]     { background: var(--amber-dim);  color: var(--amber); }
-plan-badge[type="deferred"] { background: var(--surface-2);  color: var(--text-muted); }
-plan-badge[type="high"]     { background: var(--green-dim);  color: var(--green); }
-plan-badge[type="medium"]   { background: var(--amber-dim);  color: var(--amber); }
-plan-badge[type="low"]      { background: var(--red-dim);    color: var(--red); }
+/* PlanBadge adds `tone-<t>` from its type (planr's BADGE_TONES). */
+plan-badge.tone-danger { background: var(--red-dim);    color: var(--red); }
+plan-badge.tone-warn   { background: var(--amber-dim);  color: var(--amber); }
+plan-badge.tone-info   { background: var(--accent-dim); color: var(--accent); }
+plan-badge.tone-ok     { background: var(--green-dim);  color: var(--green); }
+plan-badge.tone-final  { background: var(--purple-dim); color: var(--purple); }
+plan-badge.tone-muted  { background: var(--surface-2);  color: var(--text-muted); }
 
 /* ── Code blocks (pre > code, highlight.js compatible) ── */
 pre {
@@ -761,7 +827,7 @@ plan-diagram .diagram-render[aria-busy="true"]::before {
   content: 'Rendering diagram…';
 }
 plan-diagram .diagram-render svg {
-  max-width: 100%;
+  max-width: none;
   height: auto;
 }
 plan-diagram .diagram-caption {

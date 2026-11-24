@@ -5,6 +5,10 @@
    ═══════════════════════════════════════════════════════════ */
 
 /* ── plan-header ──────────────────────────────────────── */
+// Header status → tone. A copy of planr's HEADER_STATUS_TONES (a test asserts
+// the two agree); a status with no entry draws an uncoloured dot.
+const STATUS_TONES = { draft: 'warn', review: 'info', approved: 'ok', implemented: 'final', rejected: 'danger' };
+
 class PlanHeader extends HTMLElement {
   connectedCallback() {
     const title = this.getAttribute('title') || 'Untitled';
@@ -12,22 +16,52 @@ class PlanHeader extends HTMLElement {
     const status = this.getAttribute('status') || 'draft';
     const date = this.getAttribute('date') || '';
     const chips = this.getAttribute('chips') || '';
+    const tone = STATUS_TONES[status];
 
-    const extraChips = chips
+    // Free-text chips are deprecated (planr check warns on them) but still
+    // rendered, after the typed metadata, until every document has migrated.
+    const legacyChips = chips
       .split('|').filter(Boolean)
-      .map(c => `<span class="meta-chip">${c.trim()}</span>`)
+      .map(c => `<span class="meta-chip meta-legacy">${c.trim()}</span>`)
       .join('');
 
     this.innerHTML = `
       <h1>${title}</h1>
       ${subtitle ? `<div class="plan-subtitle">${subtitle}</div>` : ''}
       <div class="meta-row">
-        <span class="meta-chip"><span class="dot ${status}"></span> ${status.charAt(0).toUpperCase() + status.slice(1)}</span>
+        <span class="meta-chip meta-status"><span class="dot${tone ? ` tone-${tone}` : ''}"></span> ${status.charAt(0).toUpperCase() + status.slice(1)}</span>
         ${date ? `<span class="meta-chip">${date}</span>` : ''}
-        ${extraChips}
+        ${_metaChips()}
+        ${legacyChips}
       </div>
     `;
   }
+}
+
+/* The document's metadata as header chips: one per <plan-field> in the FIRST
+   <plan-meta>, the block planr reads. The page is schema-free — the chip's
+   text is the field's stamped `label` (the key when it has none), its colour
+   the stamped `tone`, and a field stamped `hidden` is skipped. A field with no
+   stamp (written before stamps existed) renders as an untoned chip showing its
+   key. A repeated key renders once, the first, as planr reads it. The chip
+   always names its field — the hover title carries the key itself — so a
+   metadata chip never reads as the status chip. */
+function _metaChips() {
+  const meta = document.querySelector('plan-meta');
+  if (!meta) return '';
+  const seen = new Set();
+  return [...meta.querySelectorAll('plan-field')].map((f) => {
+    const key = (f.getAttribute('key') || '').trim();
+    if (!key || seen.has(key)) return '';
+    seen.add(key);
+    const value = f.textContent.replace(/\s+/g, ' ').trim();
+    if (!value || f.hasAttribute('hidden')) return '';
+    const tone = f.getAttribute('tone') || '';
+    const label = (f.getAttribute('label') || '').trim() || key;
+    const dot = /^[a-z]+$/.test(tone) ? `<span class="dot tone-${tone}"></span>` : '';
+    return `<span class="meta-chip meta-field" title="${_escapeAttr(`${key}: ${value}`)}">${dot}` +
+      `<span class="meta-key">${_escapeHtml(label)}</span><span class="meta-value">${_escapeHtml(value)}</span></span>`;
+  }).join('');
 }
 
 /* ── plan-nav ─────────────────────────────────────────── */
@@ -279,14 +313,33 @@ class PlanBadge extends HTMLElement {
       decided: 'Decided', open: 'Open', deferred: 'Deferred',
       high: 'High', medium: 'Medium', low: 'Low'
     };
+    // The tone each type colours with — a copy of planr's BADGE_TONES (a test
+    // asserts the two agree). CSS styles the class; an unknown type gets none.
+    const tones = {
+      decided: 'ok', open: 'warn', deferred: 'muted',
+      high: 'ok', medium: 'warn', low: 'danger'
+    };
     if (!this.textContent.trim()) {
       this.textContent = labels[type] || type;
     }
+    if (tones[type]) this.classList.add('tone-' + tones[type]);
   }
 }
 
 /* ── plan-table ───────────────────────────────────────── */
 class PlanTable extends HTMLElement {} // Pure CSS wrapper
+
+/* ── plan-meta / plan-field ───────────────────────────── */
+// The document's metadata STORE. planr reads it; PlanHeader renders its fields
+// as chips (_metaChips). The block itself shows nothing (display: none).
+class PlanMeta extends HTMLElement {}  // store only — rendered by PlanHeader
+class PlanField extends HTMLElement {} // store only — rendered by PlanHeader
+
+/* ── plan-defs / plan-def ─────────────────────────────── */
+// A sub-record of name → value pairs. Pure CSS: plan-styles.css lays the pairs
+// out as table rows and renders each key from its `key` attribute via ::before.
+class PlanDefs extends HTMLElement {} // CSS container only
+class PlanDef extends HTMLElement {}  // key rendered by CSS attr(key)
 
 /* ── Helpers ──────────────────────────────────────────── */
 // Human labels for the section/subsection `status` attribute. Unknown values
@@ -322,6 +375,8 @@ function _sectionNumber(el) {
 function _escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+// For a value interpolated into a double-quoted attribute.
+function _escapeAttr(s) { return _escapeHtml(s).replace(/"/g, '&quot;'); }
 
 // Trim the blank leading/trailing lines that come from authoring a
 // component across multiple HTML lines, WITHOUT touching the indentation
@@ -332,6 +387,14 @@ function _trimEdgeBlankLines(s) {
   while (lines.length && lines[0].trim() === '') lines.shift();
   while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
   return lines.join('\n');
+}
+
+// Inverse of the entity-escaping the HTML serializer applies to text nodes when
+// innerHTML is read. ONE pass over all six entities: decoding `&amp;` in a
+// separate pass would turn an authored `&amp;lt;` into `<` instead of `&lt;`.
+const _ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': '\u00a0' };
+function _decodeEntities(s) {
+  return s.replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, (m) => _ENTITIES[m]);
 }
 
 const _extLangMap = {
@@ -483,6 +546,16 @@ const MERMAID_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.12.0/merm
 let _mermaidPromise = null;
 let _diagramSeq = 0;
 
+// Every diagram type mermaid accepts a per-type `useMaxWidth` for. At its
+// default (true) mermaid emits width="100%" plus an inline max-width, so a wide
+// diagram SHRINKS to the column and its labels become illegible. Off, the SVG
+// keeps its natural size and .diagram-body's overflow scrolls it instead.
+const _MERMAID_DIAGRAM_TYPES = [
+  'flowchart', 'sequence', 'gantt', 'journey', 'timeline', 'class', 'state',
+  'er', 'pie', 'quadrantChart', 'xyChart', 'requirement', 'mindmap', 'kanban',
+  'gitGraph', 'c4', 'sankey', 'packet', 'block', 'radar', 'architecture',
+];
+
 function _ensureMermaid() {
   if (_mermaidPromise) return _mermaidPromise;
   _mermaidPromise = new Promise((resolve, reject) => {
@@ -496,6 +569,7 @@ function _ensureMermaid() {
         startOnLoad: false,
         securityLevel: 'strict',
         theme: 'base',
+        ...Object.fromEntries(_MERMAID_DIAGRAM_TYPES.map((t) => [t, { useMaxWidth: false }])),
         themeVariables: {
           darkMode: true,
           // Canvas matches the panel; nodes use a distinctly *elevated* gray
@@ -530,9 +604,19 @@ function _ensureMermaid() {
 class PlanDiagram extends HTMLElement {
   connectedCallback() {
     const caption = this.getAttribute('caption') || '';
-    // Mermaid source is whitespace-sensitive; strip only the authoring blank
-    // edge lines (like the code components) and hand the raw text to mermaid.
-    const src = _trimEdgeBlankLines(this.textContent);
+    // Read the source ONCE and keep it: this callback replaces innerHTML, so a
+    // second connect (the element moved in the DOM) would otherwise read back
+    // the rendered SVG instead of the source.
+    //
+    // innerHTML, not textContent: the parser has already turned a label's
+    // literal <br/> into an element, which textContent drops. innerHTML keeps
+    // the tag and escapes text (`-->` reads back as `--&gt;`), which one
+    // _decodeEntities pass undoes. Mermaid source is whitespace-sensitive, so
+    // only the authoring blank edge lines are stripped.
+    if (this._source === undefined) {
+      this._source = _trimEdgeBlankLines(_decodeEntities(this.innerHTML));
+    }
+    const src = this._source;
 
     this.innerHTML = `
       <div class="diagram-body"><div class="diagram-render" aria-busy="true"></div></div>
@@ -546,6 +630,15 @@ class PlanDiagram extends HTMLElement {
         `<div class="diagram-error">${_escapeHtml(msg)}</div>` +
         `<pre class="diagram-source">${_escapeHtml(src)}</pre>`;
     };
+
+    // Registration waits for the parse to finish (_boot), so an element always
+    // has its children here. An empty source therefore means the runtime read
+    // it at the wrong time, and saying so saves a reader from debugging their
+    // Mermaid syntax.
+    if (src.trim() === '') {
+      fail('Diagram source was empty when the component initialised. This is a plan-runtime.js bug, not a content error.');
+      return;
+    }
 
     _ensureMermaid().then((mermaid) => {
       mermaid.render('plan-mmd-' + (_diagramSeq++), src)
@@ -576,26 +669,49 @@ const components = {
   'plan-phase':      PlanPhase,
   'plan-badge':      PlanBadge,
   'plan-table':      PlanTable,
+  'plan-meta':       PlanMeta,
+  'plan-field':      PlanField,
+  'plan-defs':       PlanDefs,
+  'plan-def':        PlanDef,
   'plan-file':       PlanFile,
   'plan-diff':       PlanDiff,
   'plan-diagram':    PlanDiagram,
 };
 
-Object.entries(components).forEach(([tag, cls]) => {
-  if (!customElements.get(tag)) {
-    customElements.define(tag, cls);
-  }
-});
+/* Nearly every component reads its OWN children in connectedCallback
+   (this.textContent / this.innerHTML) and replaces them. That is only correct
+   once the parser has appended those children.
 
-/* ── Syntax highlighting (highlight.js) ──────────────── */
-// This script is dynamically injected, so DOMContentLoaded has already fired.
-// Just defer one frame to let Web Components transform their innerHTML first.
-requestAnimationFrame(() => {
-  if (typeof hljs !== 'undefined') {
-    hljs.highlightAll();
-  }
-});
-requestAnimationFrame(() => _initPlanTree());
+   plan-runtime.js is injected dynamically from <head>, so it is async: it can
+   execute WHILE the body is still parsing. An element whose start tag has been
+   parsed but whose children have not then upgrades against an EMPTY body: the
+   component injects its markup, and the parser afterwards appends the raw
+   source as trailing text. plan-diagram hands mermaid an empty string, and
+   plan-file / plan-diff render nothing.
+
+   Registering after parsing completes fixes every component at once. */
+function _boot() {
+  Object.entries(components).forEach(([tag, cls]) => {
+    if (!customElements.get(tag)) {
+      customElements.define(tag, cls);
+    }
+  });
+
+  /* ── Syntax highlighting (highlight.js) ────────────── */
+  // Defer one frame to let the components transform their innerHTML first.
+  requestAnimationFrame(() => {
+    if (typeof hljs !== 'undefined') {
+      hljs.highlightAll();
+    }
+  });
+  requestAnimationFrame(() => _initPlanTree());
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _boot, { once: true });
+} else {
+  _boot();
+}
 
 /* ── View: side-panel navigation tree ────────────────── */
 // Runtime-injected full-depth section tree (like the settings gear). Shown by
