@@ -1,7 +1,7 @@
 ---
 name: html-planning
 description: Format implementation plans, PRDs, BSDs, and design documents as interactive HTML using a Web Component DSL — instead of verbose hand-written CSS/HTML. Use when asked to produce or format any plan or design document as an HTML file.
-version: 1.4.0
+version: 1.5.0
 ---
 
 # html-planning
@@ -12,11 +12,11 @@ Format implementation plans, PRDs, BSDs, and design documents as interactive HTM
 
 1. **You MUST run `planr new` before writing any plan content.** This is non-negotiable. It creates the skeleton from a template with the inline loader that resolves `plan-styles.css` and `plan-runtime.js` from the skill folder. Without it, the plan has no styling or interactivity.
 
-2. **NEVER write inline `<style>` blocks, CSS custom properties, or `<script>` blocks in plan files.** All styling comes from `plan-styles.css`, loaded at runtime by the skeleton's inline loader. If you find yourself writing CSS in a plan file, STOP — you are doing it wrong.
+2. **NEVER write `<style>` blocks, CSS custom properties, or `<script>` blocks in a plan file.** All styling comes from `plan-styles.css`, loaded at runtime by the skeleton's inline loader. Only a template may carry style or script, and the scaffold keeps what its template put there (`references/template-authoring.md` → Linking code).
 
 3. **NEVER write raw `<div>` structures for visual elements.** Use the Web Component tags documented below (`<plan-card>`, `<plan-callout>`, `<plan-table>`, `<plan-tabs>`, etc.). These are defined in `plan-runtime.js` and styled by `plan-styles.css`.
 
-4. **Plan files contain ONLY semantic markup.** No CSS. No JS. Just the HTML skeleton from the generator plus the Web Component tags you add via `Edit`.
+4. **Plan files contain ONLY semantic markup.** No CSS. No JS. Just the HTML skeleton from the generator, including any asset links its template declared, plus the Web Component tags you add via `Edit`.
 
 ## Quick Start
 
@@ -402,27 +402,9 @@ Run `planr` with no arguments (or `--help`) to print usage.
 
 ### Addressing
 
-One grammar for every address argument — the positional `<address>`, `--parent`, `--after`, `--before`, `--in`, and a dotted `new --set` key alike:
+Every address argument — the positional `<address>`, `--parent`, `--after`, `--before`, `--in`, and a dotted `new --set` key — is a **dot-path**: `header`, or a section id followed by `.<child>` segments, each a child's id or 1-based ordinal (`steps.step-3`, `steps.3.detail`). A bare id resolves at any depth, because ids are unique document-wide. `set` takes the same path with an attribute name as its last segment (`steps.3.status=done`). See `references/grammar.md#addresses` and `references/grammar.md#set-assignments` for the full grammar.
 
-```
-header                    the <plan-header>
-<sectionId>               the section carrying that id, at any depth
-<sectionId>.<child>…      a descendant, to any depth
-```
-
-Each segment after the first is a child's `id` or its **1-based ordinal** among siblings: `steps.step-3`, `steps.3`, `steps.3.detail`. A bare id resolves at **any depth** — `step-1` finds `steps.step-1` — because ids are unique document-wide. A document where two sections carry the id is refused, naming each one's full path and line. The full path is what `list` and `tasks` print, and an ordinal segment still needs its parent in front of it.
-
-`set` is the one exception: its **last** segment is an attribute name, not a node (`steps.3.status=done`).
-
-**`--into <sel>` is the only non-address selector**, and it never replaces an address — it names a plain HTML container *inside* an already-addressed section:
-
-```
-ul            the LAST <ul> the section owns   (what "the running list" means)
-tr:2          the 2nd <tr>, 1-based
-#tickets      the element carrying id="tickets"
-```
-
-"Owns" excludes anything inside a nested section, so `--into ul` on a parent never reaches a child section's list. `--into` refuses exactly the tags the dot-path addresses — `plan-section`, `plan-subsection`, `plan-header` — and accepts any other container, components included: `--into plan-defs` adds a `<plan-def>` pair, `--into plan-cards` a card. `read --body` on a parent still shows its nested sections' content; when an ordinal taken from it is out of range for `--into`, the error says nested sections are excluded.
+**`--into <sel>` is the only non-address selector.** It names a plain container inside an already-addressed section: `<tag>` (the last one the section owns), `<tag>:<n>` (1-based) or `#<id>`. A section owns nothing inside a nested section, though `read --body` shows that content. Components count as containers (`--into plan-defs`, `--into plan-cards`); the tags a dot-path reaches do not. See `references/grammar.md#container-selectors` for the full grammar.
 
 ### Command reference
 
@@ -438,7 +420,7 @@ tr:2          the 2nd <tr>, 1-based
 | `read` | `<file> <address>` | `--body` · `--text` | Print the node's **outer** markup; with `--body`, just its **inner** content. With `--text`, plain text instead of markup, structure kept: one block per line, headings and numbered section titles as `#` lines, list items as `- ` lines, table rows as cells joined with ` \| `, badges as `[label]`, content carried in attributes (a card's value, a header's subtitle, a diagram's caption) on its own line, code components fenced with their lines verbatim. Nested sections are included either way; `--body` drops only the node's own title line. |
 | `meta` | `<file>` | `--format text\|json` · `--set <k>=<v>` (repeatable) · `--unset <k>` (repeatable) · `--stamp` | With no `--set`/`--unset`, print the document's **resolved metadata** and where each value came from. With them, write the `<plan-meta>` block — creating it when absent, refusing an unknown field or an out-of-schema value, and stamping every field from the schema. `--stamp` alone rewrites each field's `label`/`tone`/`hidden` stamp from the schema without touching a value. See "Metadata" below. |
 | `query` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--sort <k[:asc\|desc],…>` · `--fields <cols>` · `--limit N` · `--format table\|json\|tsv\|paths` · `--strict` | Filter, sort and project a **corpus** of documents by their resolved metadata. Unreadable, non-document and unbalanced files are reported on stderr, never dropped. See "Querying" below. |
-| `next` | `<dir\|glob>` | `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
+| `next` | `<dir\|glob>` | `--where <expr>` (repeatable) · `--has <k>` · `--missing <k>` · `--rank <name>` · `--format text\|json` · `--strict` | The single top-ranked document, with its metadata and the section addresses an agent needs to act on it. An empty queue exits 0. |
 | `wordy` | `<file\|dir\|glob> …` | `--max-chars N` · `--max-sentences N` · `--max-sentence-chars N` · `--format text\|json` | Detect wordy lines — `long`, `dense`, `run-on` — in Markdown, plain text and HTML plan documents. Detects only; exits **1** when anything is flagged. See "Wordy lines" below. |
 | `set` | `<file> <path>=<value> …` | *(none)* | Set attributes. **Every** assignment given is applied, each to the result of the last. |
 | `set-body` | `<file> <address>` | `--file <f>` · `--append` | Replace the node's inner content (or `--append` before its closing tag). Body from `--file`, else **stdin**. |
@@ -452,6 +434,8 @@ tr:2          the 2nd <tr>, 1-based
 | `add-section` | `<file>` | `--id <id>` **(required)** · `--title <T>` · `--status <S>` · `--num <N>` · `--after <addr>` \| `--before <addr>` · `--parent <addr>` · `--body-file <f>` | Insert a section, empty or filled from `--body-file`. |
 | `rm-section` | `<file> <address>` | *(none)* | Remove the section at that address, at any depth. |
 | `move-section` | `<file> <address>` | `--after <addr>` \| `--before <addr>` **(one required)** | Move the addressed section beside a sibling. |
+
+`<expr>` is `<field><op><value>`, `<op>` one of `=` `!=` `>=` `<=` `>` `<` `~`, see `references/grammar.md#filter-expressions` for the full grammar. `--sort` takes `field[:asc|desc]` keys, comma-separated, see `references/grammar.md#sort-specs`.
 
 **Rules & gotchas:**
 
@@ -565,12 +549,11 @@ node .claude/skills/html-planning/planr.js templates          # all of them, one
 node .claude/skills/html-planning/planr.js templates tdd      # what tdd is for, and its conventions
 ```
 
-**Setting values.** `new --set` takes two key shapes, told apart by whether the key has a dot:
+**Setting values.** `new --set` takes two key shapes, and both are validated identically. See `references/grammar.md#scaffold-keys` for the full grammar.
 
-- **bare** — `--set lang=fr` — fills a `{{placeholder}}` the template declares. The shell offers `lang`, `title`, `subtitle`, `status`, `date`, `skillSubpath`; `templates <name>` lists any others, with defaults.
-- **dotted** — `--set header.status=review` — is a node address applied to the rendered document, reaching any `<plan-*>` node whether or not the template parameterised it.
-
-Both are validated identically (`--set status=aproved` and `--set header.status=aproved` both fail), and a key that matches nothing is an error listing the ones that exist — never a silent drop.
+- **bare** (`--set lang=fr`) fills a `{{placeholder}}` the template declares. The shell offers `lang`, `title`, `subtitle`, `status`, `date` and `skillSubpath`; `templates <name>` lists any others, with defaults.
+- **dotted** (`--set header.status=review`) is a `set` assignment applied to the rendered document.
+- A key that matches nothing is an error listing the ones that exist.
 
 > **Writing or changing a template?** See **`references/template-authoring.md`**.
 >
@@ -613,7 +596,7 @@ Six field types: `enum`, `string`, `list`, `path`, `date`, `number`. For an `enu
 | `defaults` | top level | field → value, the last resort of the chain |
 | `rankings` | top level | name → `{ where, order }` (see "Rankings") |
 
-Field names match `^[a-z][a-z0-9-]*$`, except `path` and `blocked`, which are built-in columns. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file.
+Field and ranking names match `^[a-z][a-z0-9-]*$`, except that no field may be `path` or `blocked`, which are built-in columns. An enum value may hold spaces but no comma, line break or tab, and no leading or trailing space, and a ranking's `order` takes one key per entry: anything a filter or sort spec could not express is refused when the schema loads. Merge: a consumer field or ranking **replaces** the core one of the same name, a consumer default overrides per field, and consumer `infer` rules run **before** the core's. A malformed schema fails every command that loads it, naming the file. The whole file format is also given as a JSON Schema in `references/grammar.md#schema-file`.
 
 **`planr meta`** reads and writes the block. With no `--set`/`--unset`, it prints the resolved value of every field and where each one came from:
 
@@ -636,7 +619,7 @@ $ planr meta plan.html --unset reference-paths
 
 **One writable home per fact.** A field declared `from: "header:…"` — `title`, `status`, `date` in the shipped core — is a **read-only view** of that header attribute, not a second place to store it. `planr meta --set` refuses to write one and names the real writer: `planr set <file> header.status=…`. A template may not declare one either, and `check` warns when a hand edit puts one in a block anyway.
 
-**Template defaults.** A template declares metadata defaults by writing a literal `<plan-meta>` block at the top of its body, using `{{name:default}}` wherever the value should be fillable at scaffold time — no new template syntax. A placeholder left empty is dropped rather than written as an empty field, and a template may not declare a header-owned field. See **`references/template-authoring.md`** for the full convention.
+**Template defaults.** A template declares metadata defaults by writing a literal `<plan-meta>` block at the top of its body, using `{{name:default}}` wherever the value should be fillable at scaffold time — no new template syntax (see `references/grammar.md#template-placeholders`). A placeholder left empty is dropped rather than written as an empty field, and a template may not declare a header-owned field. See **`references/template-authoring.md`** for the full convention.
 
 > **Installing the skill into a repo, or adding its first document type, path rule or default?** See **`references/schema-setup.md`**.
 
@@ -688,7 +671,7 @@ Rich content (paragraphs, code, diffs, callouts) is irreducibly the size of the 
 planr query <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>]
                        [--sort <k[:asc|desc],...>] [--fields <cols>] [--limit N]
                        [--format table|json|tsv|paths] [--strict]
-planr next  <dir|glob> [--rank <name>] [--format text|json] [--strict]
+planr next  <dir|glob> [--where <expr> ...] [--has <k>] [--missing <k>] [--rank <name>] [--format text|json] [--strict]
 ```
 
 ### What gets scanned
@@ -715,29 +698,15 @@ A file the scan cannot use is **reported, never silently dropped**. Three reason
 
 ### Filtering
 
-`--where`, `--has` and `--missing` are repeatable and **AND** together. Every comparison runs against the schema, so an unknown field or a value the field cannot hold is an error naming what *is* valid — never a silently empty result.
+`--where <expr>` compares a field: `<expr>` is `<field><op><value>`, `<op>` one of `=` `!=` `>=` `<=` `>` `<` `~` (`priority=p0,p1`, `status!=implemented`, `reference-paths~celery`). `--has <k>` and `--missing <k>` test whether a field resolves a value. All three are repeatable and **AND** together, and every comparison is checked against the schema, so a bad field or value is an error, never an empty result. See `references/grammar.md#filter-expressions` for the full grammar and the per-item rules for repeatable fields.
 
-| Form | Means |
-|---|---|
-| `--where 'priority=p0'` | equals |
-| `--where 'priority=p0,p1'` | equals any of them |
-| `--where 'status!=implemented'` | equals none of them |
-| `--where 'impact>=high'` · `<=` · `>` · `<` | compares positions in the field's **declared order** |
-| `--where 'reference-paths~celery'` | case-insensitive substring |
-| `--has blocked-by` | the field resolves a value |
-| `--missing priority` | it does not |
-
-Three rules worth knowing before the first surprise:
-
-- **`>=` and friends read the declared order, not intuitive importance.** With `priority` declared `["p0","p1","p2","p3"]`, `priority<=p1` means "at index p1 or below" — p0 and p1, the *most* important. The schema's declaration order is the whole of the ordering.
-- **A repeatable field matches per item.** `reference-paths~celery` and `reference-paths=celery` both hit `crm, celery`; `reference-paths=crm, celery` does not, because that is the raw string rather than one item. `>=`, `<=`, `>`, `<` and `--sort` refuse a repeatable field outright — it has no single position.
-- **An unset field satisfies nothing** except `--missing` and `!=`. A document that declares no `status` does match `--where 'status!=implemented'`, which is what you want while a corpus is still being backfilled.
-
-Narrow by **path** with the target glob, not with a filter — `path` is a column you can print, not a field you can filter.
+- **`>=` and friends read the declared order, not intuitive importance.** With `priority` declared `["p0","p1","p2","p3"]`, `priority<=p1` means p0 and p1, the *most* important.
+- **An unset field satisfies nothing** except `--missing` and `!=`, which is what you want while a corpus is still being backfilled.
+- **Narrow by path with the target glob.** `path` is a column you can print, not a field you can filter.
 
 ### Sorting, projection and output
 
-`--sort priority,impact:desc` sorts on the same declared order, **ascending by default for every field type**, so an enum sorts in the order the schema declares it and a ranking writes `:desc` where its enum runs least-to-most. Documents with no value for a sort key come **last in both directions**, and the sort is stable: ties keep path order.
+`--sort priority,impact:desc` sorts on the same declared order, **ascending by default for every field type**, so an enum sorts in the order the schema declares it and a ranking writes `:desc` where its enum runs least-to-most. Documents with no value for a sort key come **last in both directions**, and the sort is stable: ties keep path order. See `references/grammar.md#sort-specs` for the full grammar.
 
 `--fields path,title,priority` picks the columns. With none given, the columns are `path` plus every schema field that at least one matching document resolves — so a column is never all-empty and any field you filtered on is always shown.
 
@@ -766,7 +735,7 @@ A ranking is a named `where` + `order` preset declared **in the schema**, so eac
 }
 ```
 
-The `where` operators are `eq`, `ne`, `ge`, `le`, `gt`, `lt`, `in`, `contains` and `set` — the same nine the command line spells `=`, `!=`, `>=`, `<=`, `>`, `<`, `~`, `--has` and `--missing`. A ranking is validated **when the schema is read**, by the very code that runs it, so an unknown operator or an out-of-enum literal is refused at load rather than the first time somebody reaches for that ranking.
+A `where` uses the same conditions the filter flags parse into, spelled as JSON operators (`eq`, `ne`, `in`, `ge`, `le`, `gt`, `lt`, `contains`, `set`); see `references/grammar.md#rankings` for the full grammar and how each maps to a flag. A ranking is validated **when the schema is read**, by the very code that runs it, so an unknown operator or an out-of-enum literal is refused at load rather than the first time somebody reaches for that ranking.
 
 `--rank <name>` applies the preset. An explicit flag **replaces the preset's conditions on that field** and leaves the rest standing; `--sort`, when given, replaces the preset's order outright:
 
@@ -800,7 +769,7 @@ planr meta q07-auth.html --set blocked-by=q04-tokens.html,../tdds/m1.html
 
 ### `planr next` — handing one document to an agent
 
-`next` is the top-ranked document and the addresses needed to act on it. It is driven by a **named ranking** and nothing else, defaulting to the one called `default`; with no ranking declared it says so rather than inventing an order.
+`next` is the top-ranked document and the addresses needed to act on it. It is driven by a **named ranking**, defaulting to the one called `default`; with no ranking declared it says so rather than inventing an order. It takes `query`'s filters — `--where`, `--has`, `--missing` — composed with the ranking exactly as `query` composes them: a flag on a field the ranking filters replaces that condition, and every other condition still applies.
 
 ```
 $ planr next .claude/plans/issues
@@ -868,6 +837,6 @@ planr wordy plan.html --format json         # the work list
 └── SKILL.md          ← This file (agent instructions)
 ```
 
-The inline loader in each generated plan file finds `.claude/` in the file path and resolves the skill assets from there, appending the install subpath that `planr new` baked in at generation time (so the skill works under any folder name within `.claude/skills/`). Plan files contain only semantic markup — no CSS or JS.
+The inline loader in each generated plan file finds `.claude/` in the file path and resolves the skill assets from there, appending the install subpath that `planr new` baked in at generation time (so the skill works under any folder name within `.claude/skills/`). Plan files contain only semantic markup; a template's linked assets resolve through `plan-runtime.js` (`references/template-authoring.md` → Linking code).
 
 Every rendered plan also gets a **view-settings gear** (floating, top-right) injected by the runtime, with per-reader toggles persisted via `localStorage`: **"Wrap long lines"** (soft-wraps code/diff blocks), **"Side-panel navigation"** (**on by default** — a left **side-panel tree** listing every section at every depth; turning it off falls back to the two-level top nav), **"Start sections collapsed"**, and **"Full-width content"** (drops the centered reading cap so content fills the available width). A toggle the reader has never touched tracks its default, so changing a default reaches everyone who hasn't opted out. The panel is runtime-injected from the live section tree and drawn as a file-tree with connector guides; it has a header with a collapse control, collapses to a floating opener, is resizable by dragging its right edge, and on narrow screens overlays full-screen. A single scroll-spy highlights the active section in whichever view is showing. This is all automatic; you don't author it, and you shouldn't hand-roll your own settings UI or navigation tree.

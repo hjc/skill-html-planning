@@ -167,19 +167,54 @@ describe('shipped docs stand alone', () => {
   // who did not clone the repo.
   // They are read by an LLM, never clicked, so a reference is a bare backtick
   // path: a relative Markdown link only repeats the path it wraps.
-  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md', 'references/schema-setup.md'];
+  const docs = ['SKILL.md', 'references/template-authoring.md', 'references/authoring-traps.md', 'references/schema-setup.md', 'references/grammar.md'];
+  // A `#anchor` after the path must name one of the target's headings, slugged
+  // the way GitHub slugs them.
+  const slug = (h) => h.trim().toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s/g, '-');
   it('cite only references that ship, as bare paths, and never repo-only tooling', () => {
     let checked = 0;
     for (const doc of docs) {
       const text = readFileSync(join(SKILL_DIR, doc), 'utf8');
       expect(text, doc).not.toMatch(/npm (test|install)|package\.json|CLAUDE\.md|node_modules|\btests\//);
       expect(text, doc).not.toMatch(/\]\((?!https?:|#)[^)]+\)/);
-      for (const rel of new Set([...text.matchAll(/`(references\/[\w.-]+\.md)`/g)].map(m => m[1]))) {
+      for (const cite of new Set([...text.matchAll(/`(references\/[\w.-]+\.md(?:#[\w-]+)?)`/g)].map(m => m[1]))) {
+        const [rel, anchor] = cite.split('#');
         expect(existsSync(join(SKILL_DIR, rel)), `${doc} → ${rel}`).toBe(true);
+        if (anchor) {
+          const heads = [...readFileSync(join(SKILL_DIR, rel), 'utf8').matchAll(/^#{1,6} (.+)$/gm)].map(m => slug(m[1]));
+          expect(heads, `${doc} → ${cite}`).toContain(anchor);
+        }
         checked++;
       }
     }
     expect(checked, 'no cited references found — has the pattern gone stale?').toBeGreaterThan(0);
+  });
+  it('keep every grammar in references/grammar.md self-contained', () => {
+    // Each ```ebnf block under a `## ` section is one grammar. A rule name is
+    // defined once in the file, and a block references only its own rules and
+    // the ones under "Common elements" (Addresses included).
+    const text = readFileSync(join(SKILL_DIR, 'references', 'grammar.md'), 'utf8');
+    const strip = (s) => s.replace(/\(\*[\s\S]*?\*\)|\?[^?]*\?|"[^"]*"|'[^']*'/g, ' ');
+    const blocks = [];
+    let section = null;
+    for (const part of text.split(/^(## .+)$/m)) {
+      if (part.startsWith('## ')) { section = part.slice(3); continue; }
+      for (const m of part.matchAll(/```ebnf\n([\s\S]*?)```/g)) {
+        const body = strip(m[1]);
+        const defs = [...body.matchAll(/^([a-z][a-z0-9-]*)\s*=/gm)].map(d => d[1]);
+        const refs = [...body.replace(/^[a-z][a-z0-9-]*\s*=/gm, ' ').matchAll(/[a-z][a-z0-9-]*/g)].map(r => r[0]);
+        blocks.push({ section, defs, refs });
+      }
+    }
+    const all = blocks.flatMap(b => b.defs);
+    expect(all.filter((n, i) => all.indexOf(n) !== i), 'defined twice').toEqual([]);
+    const common = new Set(blocks.filter(b => b.section === 'Common elements').flatMap(b => b.defs));
+    expect(common.has('address')).toBe(true);
+    for (const b of blocks) {
+      const own = new Set(b.defs);
+      const stray = b.refs.filter(r => !own.has(r) && !common.has(r));
+      expect(stray, `${b.section} uses rules it neither defines nor shares`).toEqual([]);
+    }
   });
   it('document the consumer template directory', () => {
     // Scoped to the two docs Templates/template-authoring guidance lives in —
@@ -909,6 +944,23 @@ describe('next (wiring)', () => {
       expect(r.code).toBe(0);
       expect(r.stdout).toContain("no document matches ranking 'triage' — 6 scanned");
       expect(JSON.parse(runAt(P, ['next', issues, '--rank', 'triage', '--format', 'json']).stdout).document).toBeNull();
+    } finally { rmTmp(root); }
+  });
+
+  it('wires --where, --has and --missing through to the ranked queue', () => {
+    const root = mkTmp();
+    try {
+      const { planr: P, issues } = stageCorpus(root);
+      const all = JSON.parse(runAt(P, ['next', issues, '--format', 'json']).stdout);
+      const w = runAt(P, ['next', issues, '--where', `priority=${all.document.fields.priority.raw}`, '--format', 'json']);
+      expect(w.code, w.stderr).toBe(0);
+      expect(JSON.parse(w.stdout).document.path).toBe(all.document.path);
+      const none = runAt(P, ['next', issues, '--where', 'title~no-such-title-anywhere', '--format', 'json']);
+      expect(none.code, none.stderr).toBe(0);
+      expect(JSON.parse(none.stdout).document).toBeNull();
+      expect(runAt(P, ['next', issues, '--has', 'priority']).code).toBe(0);
+      expect(runAt(P, ['next', issues, '--missing', 'priority']).code).toBe(0);
+      expect(runAt(P, ['next', issues, '--has']).code).toBe(1);
     } finally { rmTmp(root); }
   });
 

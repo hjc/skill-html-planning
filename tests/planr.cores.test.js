@@ -1428,6 +1428,26 @@ describe('parseSchema', () => {
       .toThrow(/ranking 'r': `order` must be an array/);
     expect(() => S('nope')).toThrow(/probe\.json: must be a JSON object/);
   });
+
+  // Every name and value a schema declares is later typed into a grammar —
+  // `--where`, `--sort`, `--rank`, a ranking's `order` — or split on a comma
+  // when stored. A declaration that grammar cannot express is refused here.
+  it('refuses an enum value no filter can match: a comma, a line break, or an edge space', () => {
+    for (const v of ['a,b', ' p0', 'p0 ', 'a\nb', 'a\tb'])
+      expect(() => S({ fields: { p: { type: 'enum', values: ['ok', v] } } }), JSON.stringify(v))
+        .toThrow(`field 'p': enum value ${JSON.stringify(v)} must have no comma, line break, tab or leading/trailing space`);
+    expect(S({ fields: { p: { type: 'enum', values: ['in progress', 'p-0'] } } }).fields.p.values)
+      .toEqual(['in progress', 'p-0']);
+  });
+
+  it('holds a ranking name to the field-name rule, and an order entry to one key', () => {
+    for (const name of ['Default', 'my ranking', ''])
+      expect(() => S({ rankings: { [name]: {} } }), name)
+        .toThrow(`ranking name '${name}' must be lower-case letters, digits and hyphens`);
+    expect(Object.keys(S({ rankings: { 'triage-2': {} } }).rankings)).toEqual(['triage-2']);
+    expect(() => S({ rankings: { r: { order: ['priority,impact:desc'] } } }))
+      .toThrow("ranking 'r': `order` entry 'priority,impact:desc' names more than one key — write one key per entry");
+  });
 });
 
 describe('parseSchema — tones and hidden', () => {
@@ -1551,6 +1571,42 @@ describe('validateField / fieldValue / fieldRank', () => {
     expect(planr.fieldRank(schema().fields.note, 'Beta')).toBe('beta');
     expect(planr.fieldRank(schema().fields.area, 'crm, celery')).toBeNull();
     expect(planr.fieldRank(schema().fields.note, '')).toBeNull();
+  });
+});
+
+// grammar.md documents the schema file and a ranking as JSON Schemas. Both are
+// read by people and editors, never by planr, so these tests are what keep them
+// describing the parser that actually runs.
+describe("grammar.md's JSON Schemas", () => {
+  const grammar = () => skillFile('references/grammar.md');
+  const jsonUnder = (heading) => {
+    const text = grammar();
+    const at = text.indexOf(`\n${heading}\n`);
+    expect(at, heading).toBeGreaterThan(-1);
+    return JSON.parse(/```json\n([\s\S]*?)```/.exec(text.slice(at))[1]);
+  };
+  const file = () => jsonUnder('## Schema file');
+  const keys = (o) => Object.keys(o).sort();
+
+  it('the schema file names exactly the keys, types, tones and patterns parseSchema accepts', () => {
+    const f = file();
+    expect(keys(f.properties)).toEqual([...planr.SCHEMA_KEYS].sort());
+    const field = f.$defs.field;
+    expect(keys(field.properties)).toEqual([...planr.FIELD_KEYS].sort());
+    expect(field.properties.type.enum).toEqual(planr.FIELD_TYPES);
+    expect(field.properties.tones.additionalProperties.enum).toEqual(planr.TONES);
+    expect(field.properties.values.items.pattern).toBe(planr.ENUM_VALUE.source);
+    expect(f.properties.fields.propertyNames.pattern).toBe(planr.FIELD_NAME.source);
+    expect(f.properties.fields.propertyNames.not.enum).toEqual(planr.BUILTIN_COLUMNS);
+    expect(f.properties.rankings.propertyNames.pattern).toBe(planr.FIELD_NAME.source);
+    expect(keys(f.$defs.condition.properties)).toEqual([...planr.WHERE_OPS].sort());
+  });
+
+  it("the ranking schema under Rankings is the schema file's own ranking definition", () => {
+    const r = jsonUnder('### As JSON Schema'), f = file();
+    expect(f.$defs.ranking).toEqual({ type: r.type, additionalProperties: r.additionalProperties, properties: r.properties });
+    expect(f.$defs.condition).toEqual(r.$defs.condition);
+    expect(f.$defs.scalar).toEqual(r.$defs.scalar);
   });
 });
 
@@ -2122,6 +2178,14 @@ describe('parseWhere', () => {
     expect(P({ where: ['points>=3', 'points<=9'] })).toEqual({ points: { ge: '3', le: '9' } });
   });
 
+  it('splits at the leftmost operator, so a value may itself contain one', () => {
+    // A field name never holds an operator character, so the first one is the split.
+    expect(P({ where: ['owner=a~b'] })).toEqual({ owner: { in: ['a~b'] } });
+    expect(P({ where: ['owner~x=y'] })).toEqual({ owner: { contains: 'x=y' } });
+    expect(P({ where: ['owner!=a>=b'] })).toEqual({ owner: { ne: ['a>=b'] } });
+    expect(P({ where: ['owner=<b'] })).toEqual({ owner: { in: ['<b'] } });
+  });
+
   it('refuses a malformed expression, an unknown field, and `path`', () => {
     expect(() => P({ where: ['priority'] })).toThrow(/has no comparison — write key=value/);
     expect(() => P({ where: ['=p0'] })).toThrow(/names no field/);
@@ -2242,6 +2306,8 @@ describe('parseSort / parseFields / parseLimit', () => {
   it('refuses an unknown field, a bad direction, and a repeatable field', () => {
     expect(() => planr.parseSort(QS, 'nope')).toThrow(/--sort names unknown field 'nope' — declared: title, status/);
     expect(() => planr.parseSort(QS, 'priority:sideways')).toThrow(/--sort 'priority:sideways': direction must be asc or desc/);
+    expect(() => planr.parseSort(QS, 'priority:desc:extra'))
+      .toThrow("--sort 'priority:desc:extra': write field or field:asc|desc");
     expect(() => planr.parseSort(QS, 'area'))
       .toThrow(/--sort names 'area', which is repeatable and so has no single position/);
     expect(() => planr.parseSort(QS, 'nope', "ranking 'r' order")).toThrow(/ranking 'r' order names unknown field 'nope'/);
@@ -2680,6 +2746,56 @@ describe('planNext', () => {
 
   it('refuses a format it does not have', () => {
     expect(() => N({ format: 'tsv' })).toThrow(/unknown --format 'tsv' — valid: text, json/);
+  });
+});
+
+describe('planNext — query filters', () => {
+  let FS;
+  beforeAll(() => {
+    FS = planr.mergeSchemas(planr.parseSchema({
+      fields: {
+        title:    { type: 'string', from: 'header:title' },
+        status:   { type: 'enum', values: ['draft', 'review', 'implemented'], from: 'header:status' },
+        priority: { type: 'enum', values: ['p0', 'p1', 'p2'] },
+        owner:    { type: 'string' },
+      },
+      rankings: { default: { where: { priority: { in: ['p0', 'p1'] } }, order: ['priority'] } },
+    }, 'probe.json'));
+  });
+  const DOCS = () => [
+    { path: 'a/p0-ann.html',  html: NDOC({ priority: 'p0', owner: 'ann' }) },
+    { path: 'a/p1-bob.html',  html: NDOC({ priority: 'p1', owner: 'bob' }) },
+    { path: 'a/p1-none.html', html: NDOC({ priority: 'p1' }) },
+    { path: 'a/p2-bob.html',  html: NDOC({ priority: 'p2', owner: 'bob' }) },
+  ];
+  const N = (opts) => JSON.parse(planr.planNext(DOCS(), { schema: FS, format: 'json', ...opts }).report);
+
+  it('narrows the ranked queue with --where, keeping the ranking\'s own conditions', () => {
+    const out = N({ where: ['owner=bob'] });
+    expect(out.document.path).toBe('a/p1-bob.html');   // p2-bob is outside the ranking
+    expect(out.matched).toBe(1);
+  });
+
+  it('takes --has and --missing as query does', () => {
+    expect(N({ missing: ['owner'] }).document.path).toBe('a/p1-none.html');
+    expect(N({ has: ['owner'] }).document.path).toBe('a/p0-ann.html');
+  });
+
+  it('lets a --where on a field the ranking filters replace that condition, as query does', () => {
+    expect(N({ where: ['priority=p2'] }).document.path).toBe('a/p2-bob.html');
+  });
+
+  it('returns an empty queue, not an error, when the filter matches nothing', () => {
+    const out = N({ where: ['owner=cy'] });
+    expect(out.document).toBeNull();
+    expect(planr.planNext(DOCS(), { schema: FS, where: ['owner=cy'] }).report)
+      .toBe("no document matches ranking 'default' and the given filters — 4 scanned\n");
+  });
+
+  it('attributes a bad filter to the filter, not the ranking', () => {
+    expect(() => N({ where: ['priority=p9'] })).toThrow(/filter/);
+    expect(() => N({ where: ['priority=p9'] })).not.toThrow(/ranking 'default' where/);
+    expect(() => N({ has: ['nope'] })).toThrow(/nope/);
   });
 });
 
