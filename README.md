@@ -315,6 +315,8 @@ planr query .claude/plans/issues --where blocked=false          # leave out what
 - **`planr next --where` / `--has` / `--missing`.** `next` narrows its ranking with the same filters as `query`, composed the same way: a flag on a field the ranking already filters replaces that condition, and every other condition still applies. An empty filtered queue still exits 0 with `"document": null`.
 - **Templates link on-disk code.** A template carries `<link rel="stylesheet" data-planr-href="…">` and `<script data-planr-src="…"></script>` instead of inline code; `~/` resolves against the `.claude` directory and `{page}` expands to the page's name. See `references/template-authoring.md` → Linking code.
 - **`references/grammar.md`.** Every structured argument `planr` parses (addresses, `--into` selectors, `set` and `new --set` keys, filter expressions, sort specs, rankings, template placeholders) now has its grammar in EBNF in one reference. `SKILL.md` keeps a one-line form of each and points there.
+- **The schema refuses what a grammar cannot express.** A ranking name follows the field-name rule; an enum value has no comma, line break, tab or edge space; a ranking's `order` takes one key per entry; and a sort key with a second `:` is refused rather than cut short. A consumer schema that relied on any of these now fails to load, naming the file.
+- **`--where` splits at the leftmost operator.** A value may now contain an operator character: `--where owner=a~b` compares `owner` with `a~b` instead of failing on a field named `owner=a`.
 
 ## What's new in 1.4.0
 

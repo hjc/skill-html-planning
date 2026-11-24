@@ -1428,6 +1428,26 @@ describe('parseSchema', () => {
       .toThrow(/ranking 'r': `order` must be an array/);
     expect(() => S('nope')).toThrow(/probe\.json: must be a JSON object/);
   });
+
+  // Every name and value a schema declares is later typed into a grammar —
+  // `--where`, `--sort`, `--rank`, a ranking's `order` — or split on a comma
+  // when stored. A declaration that grammar cannot express is refused here.
+  it('refuses an enum value no filter can match: a comma, a line break, or an edge space', () => {
+    for (const v of ['a,b', ' p0', 'p0 ', 'a\nb', 'a\tb'])
+      expect(() => S({ fields: { p: { type: 'enum', values: ['ok', v] } } }), JSON.stringify(v))
+        .toThrow(`field 'p': enum value ${JSON.stringify(v)} must have no comma, line break, tab or leading/trailing space`);
+    expect(S({ fields: { p: { type: 'enum', values: ['in progress', 'p-0'] } } }).fields.p.values)
+      .toEqual(['in progress', 'p-0']);
+  });
+
+  it('holds a ranking name to the field-name rule, and an order entry to one key', () => {
+    for (const name of ['Default', 'my ranking', ''])
+      expect(() => S({ rankings: { [name]: {} } }), name)
+        .toThrow(`ranking name '${name}' must be lower-case letters, digits and hyphens`);
+    expect(Object.keys(S({ rankings: { 'triage-2': {} } }).rankings)).toEqual(['triage-2']);
+    expect(() => S({ rankings: { r: { order: ['priority,impact:desc'] } } }))
+      .toThrow("ranking 'r': `order` entry 'priority,impact:desc' names more than one key — write one key per entry");
+  });
 });
 
 describe('parseSchema — tones and hidden', () => {
@@ -2122,6 +2142,14 @@ describe('parseWhere', () => {
     expect(P({ where: ['points>=3', 'points<=9'] })).toEqual({ points: { ge: '3', le: '9' } });
   });
 
+  it('splits at the leftmost operator, so a value may itself contain one', () => {
+    // A field name never holds an operator character, so the first one is the split.
+    expect(P({ where: ['owner=a~b'] })).toEqual({ owner: { in: ['a~b'] } });
+    expect(P({ where: ['owner~x=y'] })).toEqual({ owner: { contains: 'x=y' } });
+    expect(P({ where: ['owner!=a>=b'] })).toEqual({ owner: { ne: ['a>=b'] } });
+    expect(P({ where: ['owner=<b'] })).toEqual({ owner: { in: ['<b'] } });
+  });
+
   it('refuses a malformed expression, an unknown field, and `path`', () => {
     expect(() => P({ where: ['priority'] })).toThrow(/has no comparison — write key=value/);
     expect(() => P({ where: ['=p0'] })).toThrow(/names no field/);
@@ -2242,6 +2270,8 @@ describe('parseSort / parseFields / parseLimit', () => {
   it('refuses an unknown field, a bad direction, and a repeatable field', () => {
     expect(() => planr.parseSort(QS, 'nope')).toThrow(/--sort names unknown field 'nope' — declared: title, status/);
     expect(() => planr.parseSort(QS, 'priority:sideways')).toThrow(/--sort 'priority:sideways': direction must be asc or desc/);
+    expect(() => planr.parseSort(QS, 'priority:desc:extra'))
+      .toThrow("--sort 'priority:desc:extra': write field or field:asc|desc");
     expect(() => planr.parseSort(QS, 'area'))
       .toThrow(/--sort names 'area', which is repeatable and so has no single position/);
     expect(() => planr.parseSort(QS, 'nope', "ranking 'r' order")).toThrow(/ranking 'r' order names unknown field 'nope'/);

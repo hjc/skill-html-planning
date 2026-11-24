@@ -20,6 +20,8 @@ attribute-name = ? an attribute name the addressed tag accepts ? ;
 field          = ? a field the schema declares, or "blocked" when a field declares "blocks" ? ;
 ```
 
+A field's name, a ranking's name and an enum value are all checked when the schema loads, so each one fits the grammars here: a name matches `^[a-z][a-z0-9-]*$`, and an enum value has no comma, line break, tab or leading or trailing space.
+
 `field` never includes `path`: `path` is the document's own path, a built-in column that `--fields` accepts and that no condition or sort key can name.
 
 ### Addresses
@@ -95,7 +97,7 @@ missing-expr = field ;                             (* --missing: it does not *)
 | `>=` `<=` `>` `<` | compares positions in the field's **declared order** |
 | `~` | case-insensitive substring |
 
-- The operator is the first token, in the order listed under `filter-op`, that appears anywhere in the expression; `>=` is tried before `>`. Field and value are trimmed.
+- The **leftmost** operator splits the expression; where two start at the same place the longer wins, so `>=` beats `>`. A field never holds an operator character, so the value may: `owner=a~b` compares `owner` with `a~b`. Field and value are trimmed.
 - Every flag is repeatable, and they AND together. A second `--where` with the same operator on one field replaces the first.
 - An unknown field, an empty field or value, or a value the field cannot hold is an error naming what is valid.
 - `--where path…` is refused: narrow by path with the target glob.
@@ -112,7 +114,7 @@ sort-key       = field , [ ":" , sort-direction ] ;
 sort-direction = "asc" | "desc" ;        (* default asc *)
 ```
 
-A repeatable field is refused, because it has no single position. A document with no value for a key sorts last in both directions.
+A repeatable field is refused, because it has no single position, and so is a key with a second `:`. A document with no value for a key sorts last in both directions.
 
 ## Field lists
 

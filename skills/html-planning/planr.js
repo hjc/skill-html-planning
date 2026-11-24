@@ -982,6 +982,10 @@ const FIELD_KEYS = ['type', 'values', 'min', 'max', 'repeatable', 'from', 'label
 const BUILTIN_COLUMNS = ['path', 'blocked'];
 const SCHEMA_KEYS = ['fields', 'infer', 'defaults', 'rankings'];
 const FIELD_NAME = /^[a-z][a-z0-9-]*$/;
+// An enum value is typed into `--where` and split on a comma when stored, and
+// both trim the edges: a comma, a line break, a tab or an edge space makes a
+// value that no filter can match. Interior spaces are fine (`in progress`).
+const ENUM_VALUE = /^[^\s,](?:[^,\r\n\t]*[^\s,])?$/;
 // The header attributes a field may view: the three that carry a queryable
 // fact. A subtitle is prose, and free-text chips are deprecated.
 const HEADER_SOURCE = /^header:(title|status|date)$/;
@@ -1013,6 +1017,9 @@ function parseSchema(data, origin) {
         schemaFail(origin, `field '${name}': an enum declares a non-empty \`values\` array (its order is the sort order)`);
       if (def.values.some(v => typeof v !== 'string' || !v))
         schemaFail(origin, `field '${name}': every enum value must be a non-empty string`);
+      for (const v of def.values)
+        if (!ENUM_VALUE.test(v)) schemaFail(origin,
+          `field '${name}': enum value ${JSON.stringify(v)} must have no comma, line break, tab or leading/trailing space`);
       if (new Set(def.values).size !== def.values.length)
         schemaFail(origin, `field '${name}': enum values must be unique`);
     } else if (def.values !== undefined) {
@@ -1091,12 +1098,19 @@ function parseSchema(data, origin) {
   const rraw = data.rankings === undefined ? {} : data.rankings;
   if (!isPlainObject(rraw)) schemaFail(origin, '`rankings` must be an object of name → ranking');
   for (const [name, r] of Object.entries(rraw)) {
+    // A ranking is named on the command line (`--rank <name>`), so it takes
+    // the field-name rule.
+    if (!FIELD_NAME.test(name)) schemaFail(origin, `ranking name '${name}' must be lower-case letters, digits and hyphens`);
     if (!isPlainObject(r)) schemaFail(origin, `ranking '${name}' must be an object`);
     for (const k of Object.keys(r))
       if (!['where', 'order'].includes(k)) schemaFail(origin, `ranking '${name}': unknown key '${k}' — valid: where, order`);
     if (r.where !== undefined && !isPlainObject(r.where)) schemaFail(origin, `ranking '${name}': \`where\` must be an object`);
     if (r.order !== undefined && (!Array.isArray(r.order) || r.order.some(o => typeof o !== 'string')))
       schemaFail(origin, `ranking '${name}': \`order\` must be an array of "field" or "field:asc"/"field:desc" strings`);
+    // parseSort reads the entries joined on commas, so an entry holding one
+    // would silently become two keys.
+    for (const o of r.order || [])
+      if (o.includes(',')) schemaFail(origin, `ranking '${name}': \`order\` entry '${o}' names more than one key — write one key per entry`);
     rankings[name] = { where: r.where || {}, order: r.order || [], origin };
   }
   return { fields, infer, defaults: { ...defaults }, defaultsOrigin, rankings };
@@ -2527,11 +2541,17 @@ function parseWhere(schema, { where = [], has = [], missing = [] } = {}) {
   };
   for (const raw of where) {
     const expr = String(raw);
-    const hit = WHERE_SYNTAX.find(([tok]) => expr.includes(tok));
+    // The LEFTMOST operator splits: a field name never holds an operator
+    // character, so the first one ends it and the value may hold any. At a
+    // tie the longer token wins, which WHERE_SYNTAX's order gives.
+    let hit = null;
+    for (const [tok, op] of WHERE_SYNTAX) {
+      const i = expr.indexOf(tok);
+      if (i !== -1 && (hit === null || i < hit.at)) hit = { tok, op, at: i };
+    }
     if (!hit) throw new PlanError(`--where '${expr}' has no comparison — write ` +
       'key=value, key!=value, key>=value, key<=value, key>value, key<value or key~text');
-    const [tok, op] = hit;
-    const at = expr.indexOf(tok);
+    const { tok, op, at } = hit;
     const key = expr.slice(0, at).trim();
     const value = expr.slice(at + tok.length).trim();
     if (!key) throw new PlanError(`--where '${expr}' names no field`);
@@ -2654,7 +2674,9 @@ function cmpRank(a, b) {
 function parseSort(schema, spec, label = '--sort') {
   const out = [];
   for (const part of String(spec).split(',').map(s => s.trim()).filter(Boolean)) {
-    const [name, dir = 'asc'] = part.split(':');
+    const segs = part.split(':');
+    if (segs.length > 2) throw new PlanError(`${label} '${part}': write field or field:asc|desc`);
+    const [name, dir = 'asc'] = segs;
     const def = conditionDef(schema, name);
     if (!def) throw new PlanError(
       `${label} names unknown field '${name}' — declared: ${conditionNames(schema).join(', ') || '(none)'}`);
